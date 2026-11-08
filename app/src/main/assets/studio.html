@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  :root {
+    --accent: #0D84FF;
+    --text: #1b2430;
+    --muted: #697484;
+    --sign-bg: rgba(255, 255, 255, 0.94);
+    --sign-border: rgba(20, 32, 44, 0.08);
+    --sign-shadow: 0 6px 18px rgba(31, 45, 61, 0.16);
+  }
+  body[data-dark="true"] {
+    --text: #edf4ff;
+    --muted: #a8b6c9;
+    --sign-bg: rgba(20, 28, 42, 0.9);
+    --sign-border: rgba(255, 255, 255, 0.1);
+    --sign-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #cfe3d9;
+    font-family: -apple-system, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  #stage, #overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+  }
+  #stage { touch-action: none; }
+  #stage canvas { display: block; opacity: 0; transition: opacity 0.45s ease; }
+  #stage.is-entering canvas { opacity: 1; }
+  #overlay {
+    pointer-events: none;
+    overflow: hidden;
+  }
+  #overlay::after {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    background: radial-gradient(circle at 50% 42%, transparent 52%, rgba(8, 18, 28, 0.14) 100%);
+  }
+  body[data-dark="true"] #overlay::after {
+    background: radial-gradient(circle at 50% 42%, transparent 48%, rgba(0, 0, 0, 0.46) 100%);
+  }
+  .sign {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    max-width: 180px;
+    padding: 7px 10px 8px;
+    border: 1px solid var(--sign-border);
+    border-radius: 11px;
+    background: var(--sign-bg);
+    color: var(--text);
+    box-shadow: var(--sign-shadow);
+    pointer-events: auto;
+    text-align: left;
+    font: inherit;
+    line-height: 1.15;
+    transition: opacity 0.18s ease;
+  }
+  .sign[data-pick="true"] { cursor: pointer; }
+  .sign[data-pick="true"]:active { transform: scale(0.97); }
+  .sign .dot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    margin-top: 4px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px rgba(13, 132, 255, 0.18);
+  }
+  .sign[data-tone="calm"] .dot { background: #8b98a8; box-shadow: 0 0 0 3px rgba(139, 152, 168, 0.16); }
+  .sign[data-tone="busy"] .dot { background: var(--accent); }
+  .sign .copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .sign strong {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sign small {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #boot {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+  #boot[hidden] { display: none; }
+  #boot .spinner {
+    width: 13px;
+    height: 13px;
+    border: 2px solid rgba(13, 132, 255, 0.24);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #fallback[hidden] { display: none; }
+  #fallback {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    color: var(--text);
+    background: rgba(20, 32, 44, 0.08);
+    font-size: 13px;
+    line-height: 1.6;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="overlay"></div>
+<div id="boot"><span class="spinner"></span><span>正在加载 3D 场景…</span></div>
+<div id="fallback" hidden>这台设备无法显示 3D 场景（WebGL 不可用）。</div>
+<script>
+  (function () {
+    function show(message) {
+      var box = document.getElementById('fallback')
+      if (!box) return
+      box.hidden = false
+      box.textContent = message
+    }
+    window.__studioShowError = show
+    window.addEventListener('error', function (event) {
+      if (event && event.message) show('3D 脚本错误：' + event.message)
+    }, true)
+    window.addEventListener('unhandledrejection', function (event) {
+      var reason = event && event.reason
+      show('3D 运行错误：' + (reason && reason.message ? reason.message : String(reason || '未知错误')))
+    })
+    setTimeout(function () {
+      if (!document.querySelector('canvas')) show('3D 场景未初始化：WebView 未能加载脚本或创建画布')
+    }, 4000)
+  })()
+</script>
+<script src="three.min.js"></script>
+<script src="studio.js"></script>
+</body>
+</html>

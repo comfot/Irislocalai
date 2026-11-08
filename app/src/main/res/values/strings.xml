@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">IRIS LocalAI</string>
+    <string name="accessibility_service_label">IRIS 手机操作</string>
+    <string name="accessibility_service_description">用于在操作空间中执行点击、滑动、返回等手机操作。默认关闭，需要你在系统设置中手动开启。</string>
+</resources>

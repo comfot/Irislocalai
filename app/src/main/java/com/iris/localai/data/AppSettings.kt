@@ -1,0 +1,139 @@
+package com.iris.localai.data
+
+import com.iris.localai.engine.Backend
+
+/** 应用级配置。字段与 IRIDIS 的模型/采样设置保持同名，方便后续对齐。 */
+data class AppSettings(
+    val modelPath: String = "",
+    val backend: Backend = Backend.CPU,
+    val contextLength: Int = 4096,
+    val threads: Int = 4,
+    val temperature: Float = 0.7f,
+    val topP: Float = 0.95f,
+    val maxNewTokens: Int = 512,
+    val apiPort: Int = 8686,
+    val apiEnabled: Boolean = false,
+    val apiAllowLan: Boolean = false,
+    val apiKey: String = "",
+    val systemPrompt: String = "",
+    val space: Space = Space.COMPOSITE,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val userName: String = "你",
+    val userAvatarPath: String = "",
+    val userNarrative: String = "",
+    val userVisualTags: String = "",
+    val permissionMode: PermissionMode = PermissionMode.ASK_EVERY_TIME,
+    val operateBackgroundMode: Boolean = false,
+    val operateShizukuMode: Boolean = false,
+    val operationSurfaceMode: OperationSurfaceMode = OperationSurfaceMode.NORMAL,
+    val enabledMcpIds: Set<String> = setOf("local-files"),
+    val characterId: String = "xiaoman",
+    val characterModel: CharacterModel = CharacterModel.TWO_D,
+    val characterLayout: CharacterLayout = CharacterLayout.GRID,
+
+    // 模型与加载
+    val autoLoadLastModel: Boolean = true,
+    val visionQualitySide: Int = 1024,
+    val downloadSource: DownloadSource = DownloadSource.AUTO,
+    val flashAttention: Boolean = true,
+    val kvCacheType: Int = 0,
+    val batchSize: Int = 512,
+    val useMmap: Boolean = true,
+    val warmup: Boolean = true,
+
+    // 后端
+    val backendAuto: Boolean = true,
+    val backendFallback: Boolean = true,
+
+    // 生成
+    val deepThinking: Boolean = true,
+    val thinkingBudget: Int = 1024,
+    val topK: Int = 40,
+    val minP: Float = 0f,
+    val repeatPenalty: Float = 1.1f,
+    val repeatLastN: Int = 64,
+    val presencePenalty: Float = 0f,
+    val frequencyPenalty: Float = 0f,
+    val seedEnabled: Boolean = false,
+    val seedValue: Int = 42,
+    val useProfileGenerationParams: Boolean = true,
+
+    // 性能与资源
+    val resourceTier: Int = 1,
+    val idleUnloadMinutes: Int = 15,
+    val backgroundGeneration: Boolean = false,
+    val thermalLimitC: Int = 0,
+    val thermalCutoffC: Int = 0,
+    val keepScreenOn: Boolean = true,
+    val perfOverlay: Boolean = false,
+
+    // 智能体
+    val agentMode: Boolean = true,
+    val agentMaxSteps: Int = 4,
+    val planFirst: Boolean = false,
+    val lazyTools: Boolean = false,
+    val enabledToolIds: Set<String> = defaultEnabledTools,
+    val toolPermissions: Map<String, ToolPermission> = emptyMap(),
+    val workspaceLocation: WorkspaceLocation = WorkspaceLocation.APP_PRIVATE,
+    val customWorkspacePath: String = "",
+
+    // 上下文推理
+    val contextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW,
+    val contextKeepTurns: Int = 8,
+    val summaryTriggerPercent: Int = 80,
+    val autoCompact: Boolean = true,
+    val knowledgeInChat: Boolean = true,
+    val memoryEnabled: Boolean = true,
+    val memoryInjectChat: Boolean = true,
+    val memoryInjectAgent: Boolean = true,
+    val memorySuggest: Boolean = true,
+
+    // 语音
+    val ttsEngine: VoiceEngineType = VoiceEngineType.SYSTEM,
+    val ttsLocalModelId: String = "",
+    val ttsSpeed: Float = 1.0f,
+    val autoSpeak: Boolean = false,
+    val sttEngine: VoiceEngineType = VoiceEngineType.SYSTEM,
+    val sttLocalModelId: String = "",
+    val sttLanguage: String = "zh-CN",
+    val ttsCloudProvider: CloudVoiceProvider = CloudVoiceProvider.OPENAI,
+    val ttsCloudEndpoint: String = "",
+    val ttsCloudKey: String = "",
+    val ttsCloudModel: String = "",
+    val ttsCloudVoice: String = "",
+    val sttCloudProvider: CloudVoiceProvider = CloudVoiceProvider.OPENAI,
+    val sttCloudEndpoint: String = "",
+    val sttCloudKey: String = "",
+    val sttCloudModel: String = "",
+) {
+    companion object {
+        /** 默认开启的工具；Shell 仍需在「编程管理」单独开启。 */
+        val defaultEnabledTools: Set<String> = setOf(
+            "current_time",
+            "device_info",
+            "random_pick",
+            "use_skill",
+            "workspace",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "search_files",
+            "fetch_url",
+            "memory",
+        )
+
+        /** 首次升级时补默认开启的工具目录，避免旧安装一直停留在三五个工具。 */
+        val addedToolCatalog: Set<String> = setOf(
+            "use_skill",
+            "workspace",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "search_files",
+            "fetch_url",
+            "memory",
+        )
+    }
+}

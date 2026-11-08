@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font-family: -apple-system, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif; -webkit-tap-highlight-color: transparent; user-select: none; }
+  #stage { position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; touch-action: none; }
+  #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+  #status { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 80vw; padding: 9px 14px; border-radius: 999px; background: rgba(18, 25, 36, 0.62); color: rgba(255, 255, 255, 0.92); font-size: 11px; line-height: 1.5; text-align: center; backdrop-filter: blur(6px); }
+  #status[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="status">正在加载 MMD 模型…</div>
+<script src="assets/model/babylon/babylon.js"></script>
+<script src="assets/model/babylon/babylon.mmd.min.js"></script>
+<script>window.__MMD_CONFIG__ = __MMD_CONFIG_JSON__;</script>
+<script src="assets/mmd.js"></script>
+</body>
+</html>

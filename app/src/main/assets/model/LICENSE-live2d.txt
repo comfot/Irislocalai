@@ -1,0 +1,9 @@
+Live2D Cubism Core
+(C) 2019 Live2D Inc. All rights reserved.
+
+Live2D Cubism Core is redistributable code under the Live2D Proprietary Software
+License Agreement:
+https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html
+
+pixi-live2d-display is licensed under the MIT License.
+pixi.js is licensed under the MIT License.
