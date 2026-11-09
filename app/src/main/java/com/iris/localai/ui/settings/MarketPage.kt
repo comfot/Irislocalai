@@ -38,8 +38,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +72,7 @@ internal fun MarketPage(
     }
     val section by viewModel.section.collectAsStateWithLifecycle()
     val modelTab by viewModel.modelTab.collectAsStateWithLifecycle()
+    var characterTab by rememberSaveable { mutableIntStateOf(0) }
 
     val query by viewModel.query.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
@@ -159,7 +162,25 @@ internal fun MarketPage(
                     sourceNotice = sourceNotice,
                 )
             } else {
-                item { CharacterPlazaSection() }
+                item {
+                    TabRow(selectedTabIndex = characterTab) {
+                        Tab(
+                            selected = characterTab == 0,
+                            onClick = { characterTab = 0 },
+                            text = { Text("外观模型") },
+                        )
+                        Tab(
+                            selected = characterTab == 1,
+                            onClick = { characterTab = 1 },
+                            text = { Text("动作模型") },
+                        )
+                    }
+                }
+                if (characterTab == 0) {
+                    item { CharacterPlazaSection() }
+                } else {
+                    item { MotionMarketSection() }
+                }
             }
         } else {
             pluginMarket(

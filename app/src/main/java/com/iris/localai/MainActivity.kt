@@ -9,10 +9,14 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.iris.localai.data.resolveDark
+import com.iris.localai.motion.MotionEnvironment
 import com.iris.localai.notify.AppForeground
 import com.iris.localai.ui.MainScreen
 import com.iris.localai.ui.theme.IrisTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -20,6 +24,17 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         val graph = (application as IrisApp).graph
+        if (graph.settings.current.motionServiceAutoStart) {
+            val imageId = graph.code.settings.value.imageId
+            if (imageId.isNotBlank()) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val environment = MotionEnvironment(applicationContext)
+                    runCatching {
+                        if (environment.rootfsReady(imageId)) environment.start(imageId)
+                    }
+                }
+            }
+        }
         setContent {
             val settings by graph.settings.settings.collectAsStateWithLifecycle()
             val keepScreenOn = settings.keepScreenOn

@@ -71,12 +71,19 @@ class SettingsRepository(context: Context) {
             .putBoolean(KEY_L2D_TAP, next.l2dTapMotionEnabled)
             .putBoolean(KEY_L2D_MOUTH, next.l2dMouthSyncEnabled)
             .putString(KEY_MOTION_SOURCE, next.motionSource.name)
+            .putString(KEY_VRM_MOTION_ENGINE, next.vrmMotionEngine.name)
             .putString(KEY_MOTION_ENDPOINT, next.motionEndpoint)
             .putString(KEY_MOTION_KEY, next.motionApiKey)
             .putInt(KEY_MOTION_DURATION, next.motionDurationSeconds)
             .putBoolean(KEY_MOTION_AUTO_IDLE, next.motionAutoIdle)
             .putBoolean(KEY_MOTION_IN_CALL, next.motionInCall)
             .putInt(KEY_MOTION_AXIS, next.motionAxisFix)
+            .putBoolean(KEY_MOTION_AUTO_START, next.motionServiceAutoStart)
+            .putString(KEY_ASSET_REPO, next.assetRepo)
+            .putString(KEY_ASSET_BRANCH, next.assetBranch)
+            .putString(KEY_ASSET_TOKEN, next.assetToken)
+            .putString(KEY_IDLE_MOTION_ASSET, next.idleMotionAsset)
+            .putBoolean(KEY_DANCE_BGM, next.danceBgmEnabled)
             .putBoolean(KEY_AUTO_LOAD, next.autoLoadLastModel)
             .putInt(KEY_VISION_SIDE, next.visionQualitySide)
             .putString(KEY_DOWNLOAD_SOURCE, next.downloadSource.name)
@@ -198,12 +205,22 @@ class SettingsRepository(context: Context) {
         l2dTapMotionEnabled = prefs.getBoolean(KEY_L2D_TAP, true),
         l2dMouthSyncEnabled = prefs.getBoolean(KEY_L2D_MOUTH, true),
         motionSource = enumOf(prefs.getString(KEY_MOTION_SOURCE, null), MotionSource.NONE),
+        vrmMotionEngine = enumOf(
+            prefs.getString(KEY_VRM_MOTION_ENGINE, null),
+            VrmMotionEngine.HAST_SEC,
+        ),
         motionEndpoint = prefs.getString(KEY_MOTION_ENDPOINT, "") ?: "",
         motionApiKey = prefs.getString(KEY_MOTION_KEY, "") ?: "",
         motionDurationSeconds = prefs.getInt(KEY_MOTION_DURATION, 5),
         motionAutoIdle = prefs.getBoolean(KEY_MOTION_AUTO_IDLE, false),
         motionInCall = prefs.getBoolean(KEY_MOTION_IN_CALL, true),
         motionAxisFix = prefs.getInt(KEY_MOTION_AXIS, 1),
+        motionServiceAutoStart = prefs.getBoolean(KEY_MOTION_AUTO_START, true),
+        assetRepo = prefs.getString(KEY_ASSET_REPO, "comfot/self-resources") ?: "comfot/self-resources",
+        assetBranch = prefs.getString(KEY_ASSET_BRANCH, "main") ?: "main",
+        assetToken = prefs.getString(KEY_ASSET_TOKEN, "") ?: "",
+        idleMotionAsset = prefs.getString(KEY_IDLE_MOTION_ASSET, "") ?: "",
+        danceBgmEnabled = prefs.getBoolean(KEY_DANCE_BGM, true),
         autoLoadLastModel = prefs.getBoolean(KEY_AUTO_LOAD, true),
         visionQualitySide = prefs.getInt(KEY_VISION_SIDE, 1024),
         downloadSource = enumOf(prefs.getString(KEY_DOWNLOAD_SOURCE, null), DownloadSource.AUTO),
@@ -372,12 +389,19 @@ class SettingsRepository(context: Context) {
         const val KEY_L2D_TAP = "l2d_tap_motion"
         const val KEY_L2D_MOUTH = "l2d_mouth_sync"
         const val KEY_MOTION_SOURCE = "motion_source"
+        const val KEY_VRM_MOTION_ENGINE = "vrm_motion_engine"
         const val KEY_MOTION_ENDPOINT = "motion_endpoint"
         const val KEY_MOTION_KEY = "motion_api_key"
         const val KEY_MOTION_DURATION = "motion_duration"
         const val KEY_MOTION_AUTO_IDLE = "motion_auto_idle"
         const val KEY_MOTION_IN_CALL = "motion_in_call"
         const val KEY_MOTION_AXIS = "motion_axis_fix"
+        const val KEY_MOTION_AUTO_START = "motion_auto_start"
+        const val KEY_ASSET_REPO = "asset_repo"
+        const val KEY_ASSET_BRANCH = "asset_branch"
+        const val KEY_ASSET_TOKEN = "asset_token"
+        const val KEY_IDLE_MOTION_ASSET = "idle_motion_asset"
+        const val KEY_DANCE_BGM = "dance_bgm_enabled"
         const val KEY_AUTO_LOAD = "auto_load_last_model"
         const val KEY_VISION_SIDE = "vision_quality_side"
         const val KEY_DOWNLOAD_SOURCE = "download_source"

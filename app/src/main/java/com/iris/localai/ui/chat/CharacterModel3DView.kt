@@ -21,7 +21,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.IrisApp
+import com.iris.localai.data.VrmMotionEngine
 import com.iris.localai.motion.HastMotionStore
 import com.iris.localai.motion.MotionBridge
 import org.json.JSONObject
@@ -53,18 +57,45 @@ internal fun CharacterModel3DView(
     motionAxisFix: Int = 1,
     modifier: Modifier = Modifier,
 ) {
-    val key = "${modelFile.absolutePath}|$modelType|$accentHex|$dark|$portrait|$interactive|$modelRoot|$motionEndpoint|$motionIdle|$motionPack|$motionAxisFix"
+    val context = LocalContext.current
+    val appSettings by remember(context) {
+        (context.applicationContext as IrisApp).graph.settings.settings
+    }.collectAsStateWithLifecycle()
+    val vrmaEnabled = appSettings.vrmMotionEngine == VrmMotionEngine.VRMA
+    val resolvedEndpoint = if (vrmaEnabled) "" else motionEndpoint
+    val resolvedPack = if (vrmaEnabled) "vrma" else motionPack
+    val key = "${modelFile.absolutePath}|$modelType|$accentHex|$dark|$portrait|$interactive|$modelRoot|$resolvedEndpoint|$motionIdle|$resolvedPack|$motionAxisFix|$vrmaEnabled"
     var webView by remember { mutableStateOf<WebView?>(null) }
-    DisposableEffect(Unit) {
-        val motionEnabled = motionEndpoint.isNotBlank()
+    val motionEnabled = resolvedEndpoint.isNotBlank() || vrmaEnabled
+    DisposableEffect(motionEnabled) {
         MotionBridge.registerView(motionEnabled)
         onDispose { MotionBridge.unregisterView(motionEnabled) }
     }
     val motionCommand by MotionBridge.command.collectAsState()
+    val expressionCommand by MotionBridge.expressionCommand.collectAsState()
+    val vrmaCommand by MotionBridge.vrmaCommand.collectAsState()
     LaunchedEffect(motionCommand?.seq) {
         val command = motionCommand ?: return@LaunchedEffect
         webView?.evaluateJavascript(
             "window.irisMotion&&window.irisMotion.play(${JSONObject.quote(command.action)})",
+            null,
+        )
+    }
+    LaunchedEffect(vrmaCommand?.seq) {
+        val command = vrmaCommand ?: return@LaunchedEffect
+        if (command.url.isBlank()) {
+            webView?.evaluateJavascript("window.irisMotion&&window.irisMotion.stopVrma()", null)
+        } else {
+            webView?.evaluateJavascript(
+                "window.irisMotion&&window.irisMotion.playVrma(${JSONObject.quote(command.url)}, ${command.loop})",
+                null,
+            )
+        }
+    }
+    LaunchedEffect(expressionCommand?.seq) {
+        val name = expressionCommand?.name ?: return@LaunchedEffect
+        webView?.evaluateJavascript(
+            "window.irisMotion&&window.irisMotion.setExpression(${JSONObject.quote(name)})",
             null,
         )
     }
@@ -96,14 +127,14 @@ internal fun CharacterModel3DView(
                         request: WebResourceRequest,
                     ): WebResourceResponse? = interceptCharacterModel(context, request)
                 }
-                loadCharacter(this, context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, motionEndpoint, motionIdle, motionPack, motionAxisFix)
+                loadCharacter(this, context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, resolvedEndpoint, motionIdle, resolvedPack, motionAxisFix, vrmaEnabled)
                 tag = key
             }
         },
         update = { view ->
             if (view.tag != key) {
                 view.tag = key
-                loadCharacter(view, view.context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, motionEndpoint, motionIdle, motionPack, motionAxisFix)
+                loadCharacter(view, view.context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, resolvedEndpoint, motionIdle, resolvedPack, motionAxisFix, vrmaEnabled)
             }
         },
         onRelease = { view ->
@@ -128,6 +159,7 @@ private fun loadCharacter(
     motionIdle: Boolean,
     motionPack: String,
     motionAxisFix: Int,
+    vrmaEnabled: Boolean,
 ) {
     val root = File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
@@ -156,6 +188,7 @@ private fun loadCharacter(
         .put("motionIdle", motionIdle)
         .put("pack", motionPack)
         .put("axisFix", motionAxisFix)
+        .put("vrmaEnabled", vrmaEnabled)
         .toString()
     view.loadDataWithBaseURL(
         "https://$MODEL_HOST/",
@@ -188,11 +221,13 @@ internal fun interceptCharacterModel(context: Context, request: WebResourceReque
     }
     val scene = path.startsWith("/scene/")
     val petModels = path.startsWith("/petmodels/")
-    if (!scene && !path.startsWith("/models/") && !petModels) return null
+    val motionAssets = path.startsWith("/motionassets/")
+    if (!scene && !motionAssets && !path.startsWith("/models/") && !petModels) return null
     val relative = Uri.decode(
         path.removePrefix(
             when {
                 scene -> "/scene/"
+                motionAssets -> "/motionassets/"
                 petModels -> "/petmodels/"
                 else -> "/models/"
             },
@@ -202,13 +237,14 @@ internal fun interceptCharacterModel(context: Context, request: WebResourceReque
         context.filesDir,
         when {
             scene -> "scenes"
+            motionAssets -> "motion_assets"
             petModels -> "pet_models"
             else -> "character_models"
         },
     ).canonicalFile
-    val file = resolveModelFile(root, relative, scene) ?: return notFound()
+    val file = resolveModelFile(root, relative, scene || motionAssets) ?: return notFound()
     if (!file.path.startsWith(root.path + File.separator) || !file.isFile) return notFound()
-    if (!scene) {
+    if (!scene && !motionAssets) {
         optimizedTexture(context, file)?.let { return it }
     }
     return runCatching {
@@ -352,6 +388,7 @@ private fun notFound(): WebResourceResponse = WebResourceResponse(
 
 private fun mimeOf(name: String): String = when (name.substringAfterLast('.').lowercase()) {
     "glb", "vrm" -> "model/gltf-binary"
+    "vrma" -> "model/gltf-binary"
     "gltf" -> "model/gltf+json"
     "json" -> "application/json"
     "bin" -> "application/octet-stream"

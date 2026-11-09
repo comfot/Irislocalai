@@ -50,6 +50,7 @@
 
   let model = null
   let speaking = false
+  let mouthAmplitude = 0
   let mood = 'neutral'
   let currentMood = ''
   let mouthPhase = 0
@@ -260,6 +261,11 @@
     speaking = Boolean(value)
   }
 
+  function setAmplitude(value) {
+    const next = Number(value)
+    mouthAmplitude = Number.isFinite(next) ? Math.max(0, Math.min(1, next)) : 0
+  }
+
   function setMood(value) {
     if (!value) return
     mood = String(value)
@@ -268,6 +274,7 @@
 
   window.__live2dSetSpeaking = setSpeaking
   window.__live2dSetMood = setMood
+  window.__live2dSetAmplitude = setAmplitude
 
   window.irisLive2d = {
     setOptions(next) {
@@ -300,10 +307,13 @@
     const core = model.internalModel.coreModel
     if (speaking && options.mouth) {
       mouthPhase += 0.3
-      const open = 0.18 + 0.5 * Math.abs(Math.sin(mouthPhase))
+      const open = mouthAmplitude > 0.01
+        ? 0.12 + mouthAmplitude * 0.78
+        : 0.18 + 0.5 * Math.abs(Math.sin(mouthPhase))
       try { core.setParameterValueById('ParamMouthOpenY', open, 1) } catch (_) { }
     } else {
       mouthPhase = 0
+      mouthAmplitude = 0
       try { core.setParameterValueById('ParamMouthOpenY', 0, 1) } catch (_) { }
     }
   }, PIXI.UPDATE_PRIORITY.LOW)

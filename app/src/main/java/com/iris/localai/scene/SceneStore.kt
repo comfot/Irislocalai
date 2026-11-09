@@ -28,6 +28,7 @@ enum class StageBaseStyle(val label: String) {
     ROUND("圆形舞台"),
     GRID("网格平台"),
     GLOW("光晕底座"),
+    TEXTURE("纹理底座"),
 }
 
 data class SceneConfig(
@@ -38,6 +39,7 @@ data class SceneConfig(
     val backgroundPath: String = "",
     val baseStyle: StageBaseStyle = StageBaseStyle.ROUND,
     val baseColor: Long = 0xFF7DB3FF,
+    val baseTexturePath: String = "",
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -122,6 +124,54 @@ class SceneStore(context: Context) {
         target.absolutePath
     }
 
+    /** 把已下载到本地磁盘的素材复制为场景背景，场景之间不共享同一文件，避免删除场景误删素材。 */
+    fun importBackgroundFile(
+        source: File,
+        sceneId: String,
+        type: SceneBackgroundType = SceneBackgroundType.IMAGE,
+    ): Result<String> = runCatching {
+        require(source.isFile) { "素材文件不存在" }
+        if (sceneId.contains('/') || sceneId.contains("..")) error("invalid scene id")
+        val extension = if (type == SceneBackgroundType.VIDEO) "mp4" else "png"
+        val target = File(dir, "$sceneId.$extension")
+        source.inputStream().use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        }
+        target.absolutePath
+    }
+
+    fun createFromBackground(
+        name: String,
+        intro: String,
+        source: File,
+    ): Result<SceneConfig> = runCatching {
+        val scene = SceneConfig(
+            name = name.ifBlank { "素材场景" },
+            intro = intro,
+            backgroundType = SceneBackgroundType.IMAGE,
+            baseStyle = StageBaseStyle.ROUND,
+        )
+        val path = importBackgroundFile(source, scene.id).getOrThrow()
+        val created = scene.copy(backgroundPath = path)
+        _scenes.update { it + created }
+        persist()
+        setActive(created.id)
+        created
+    }
+
+    /** 把纹理素材设为当前场景的底座；纹理留在素材目录，场景只保存引用。 */
+    fun applyBaseTexture(source: File): Result<SceneConfig> = runCatching {
+        require(source.isFile) { "纹理文件不存在" }
+        val current = active() ?: create("舞台")
+        val updated = current.copy(
+            baseStyle = StageBaseStyle.TEXTURE,
+            baseTexturePath = source.absolutePath,
+        )
+        update(updated)
+        setActive(updated.id)
+        updated
+    }
+
     private fun load(): List<SceneConfig> {
         val raw = prefs.getString(KEY_SCENES, null) ?: return emptyList()
         return runCatching {
@@ -139,6 +189,7 @@ class SceneStore(context: Context) {
                         StageBaseStyle.valueOf(obj.string("baseStyle") ?: "")
                     }.getOrDefault(StageBaseStyle.ROUND),
                     baseColor = obj.long("baseColor") ?: 0xFF7DB3FF,
+                    baseTexturePath = obj.string("baseTexturePath").orEmpty(),
                     createdAt = obj.long("createdAt") ?: 0L,
                 )
             }
@@ -156,6 +207,7 @@ class SceneStore(context: Context) {
                     put("backgroundPath", scene.backgroundPath)
                     put("baseStyle", scene.baseStyle.name)
                     put("baseColor", scene.baseColor)
+                    put("baseTexturePath", scene.baseTexturePath)
                     put("createdAt", scene.createdAt)
                 }
             }

@@ -11,6 +11,8 @@
   const modelUrl = config.model || (params.get('model') ? decodeURIComponent(params.get('model')) : '')
   const motionUrl = config.motion || ''
   const idleUrl = config.idle || 'assets/model/mmd-idle.vmd'
+  const idleMotionUrl = config.idleMotion || ''
+  const motionAssetBase = 'https://iris.local/motionassets/'
 
   window.addEventListener('error', (event) => {
     console.error('[mmd] window error', event.message, event.filename, event.lineno)
@@ -116,15 +118,20 @@
   function portraitVisibleHeight() {
     return headY > 0 ? headY * 0.5 : modelHeight * 0.45
   }
-  let activeMood = null
   let mouthValue = 0
+  let mouthTarget = 0
   const moodMorphs = {
     happy: ['笑い', 'にっこり', '喜び', '笑顔'],
     angry: ['怒り', 'ぷんぷん', '怒'],
     sad: ['困る', '泣き', '悲しみ', '涙'],
     surprised: ['びっくり', '驚き', '驚'],
     think: ['じと目', '考え', '困り顔'],
+    thinking: ['じと目', '考え', '困り顔'],
   }
+  const blinkMorphs = ['まばたき', '瞬き', 'blink', 'ウィンク']
+  let moodState = { names: null, target: 0, current: 0 }
+  let blinkTimer = 2 + Math.random() * 3
+  let blinkElapsed = -1
 
   function setMorph(names, weight) {
     if (!model || !model.morph || !names) return
@@ -137,28 +144,61 @@
     }
   }
 
-  function resetMoodMorphs() {
-    if (!activeMood) return
-    for (const name of moodMorphs[activeMood] || []) {
-      try { model.morph.setMorphWeight(name, 0) } catch (_) { }
+  function updateMood(dt) {    if (!moodState.names) return
+    moodState.current += (moodState.target - moodState.current) * Math.min(1, dt * 8)
+    setMorph(moodState.names, Math.max(0, Math.min(1, moodState.current)))
+    if (moodState.target <= 0 && moodState.current < 0.01) {
+      setMorph(moodState.names, 0)
+      moodState.names = null
+      moodState.current = 0
     }
-    activeMood = null
+  }
+
+  function updateMouth(dt) {
+    if (!model) return
+    mouthValue += (mouthTarget - mouthValue) * Math.min(1, dt * 18)
+    setMorph(['あ', '口あ', '口_A', 'A', 'mouthOpen'], Math.max(0, Math.min(1, mouthValue)) * 0.85)
+  }
+
+  function updateBlink(dt) {
+    if (!model || !model.morph) return
+    if (blinkElapsed >= 0) {
+      blinkElapsed += dt
+      const value = blinkElapsed < 0.08
+        ? blinkElapsed / 0.08
+        : Math.max(0, 1 - (blinkElapsed - 0.08) / 0.12)
+      setMorph(blinkMorphs, value)
+      if (blinkElapsed > 0.22) {
+        blinkElapsed = -1
+        setMorph(blinkMorphs, 0)
+        blinkTimer = 2 + Math.random() * 3
+      }
+    } else {
+      blinkTimer -= dt
+      if (blinkTimer <= 0) blinkElapsed = 0
+    }
   }
 
   window.irisMmd = {
-    setMood(mood) {
+    setMood(mood, intensity) {
       if (!model) return
-      if (mood === activeMood) return
-      resetMoodMorphs()
-      const names = moodMorphs[mood]
-      if (!names) return
-      setMorph(names, 0.85)
-      activeMood = mood
+      const names = moodMorphs[mood] || null
+      if (!names) {
+        moodState.target = 0
+        return
+      }
+      if (moodState.names && moodState.names !== names) {
+        setMorph(moodState.names, 0)
+        moodState.current = 0
+      }
+      const target = Math.max(0, Math.min(1, Number(intensity) || 0.85))
+      moodState.names = names
+      moodState.target = target
+      if (moodState.current > 1 || !Number.isFinite(moodState.current)) moodState.current = 0
     },
     setMouthOpen(value) {
-      mouthValue = Math.max(0, Math.min(1, Number(value) || 0))
+      mouthTarget = Math.max(0, Math.min(1, Number(value) || 0))
       if (!model) return
-      setMorph(['あ', '口あ', '口_A', 'A', 'mouthOpen'], mouthValue * 0.85)
     },
     resetCamera() {
       if (!camera) return
@@ -169,7 +209,30 @@
     },
     setAnimation(url) {
       if (!model || !url) return Promise.resolve(false)
-      return loadMotion(url)
+      return playMotion(url, { loop: true, restart: true })
+    },
+    playMotion(url, loop) {
+      return playMotion(url, { loop: loop !== false, restart: true })
+    },
+    playAsset(path, loop) {
+      if (!path) return Promise.resolve(false)
+      const url = motionAssetBase + path.split('/').map(encodeURIComponent).join('/')
+      return playMotion(url, { loop: !!loop, restart: true })
+    },
+    stop() {
+      stopMotion(false, false)
+    },
+    playCamera(path, loop) {
+      const value = String(path || '')
+      if (value.startsWith('shot:')) return applyShot(value.slice(5))
+      return playCameraVmd(value, loop !== false)
+    },
+    playShot(name) {
+      return applyShot(name)
+    },
+    stopCamera() {
+      stopCameraVmd(true)
+      stopShot(true)
     },
     resize() {
       resize()
@@ -227,6 +290,8 @@
   let pinchRadius = 0
   canvas.addEventListener('pointerdown', (event) => {
     if (!interactive) return
+    if (cameraVmd) stopCameraVmd(true)
+    if (shotTransition || shotHome) stopShot(true)
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
     try { canvas.setPointerCapture(event.pointerId) } catch (_) { }
     if (pointers.size === 1) {
@@ -299,15 +364,470 @@
   }
 
   async function loadMotion(url) {
+    return playMotion(url, { loop: true, restart: true })
+  }
+
+  const MOTION_BLEND_SECONDS = 0.35
+  const MOTION_CACHE_MAX = 6
+  const motionCache = new Map()
+  let initialPose = null
+  let currentMotionUrl = ''
+  let playToken = 0
+  let transition = null
+  let heldPose = null
+  let onceDeadline = 0
+  let pendingHold = false
+  let idleTimer = 0
+  let cameraVmd = null
+  let cameraHome = null
+  let shotTransition = null
+  let shotHome = null
+
+  /** 收集所有实际参与骨骼动画的变换节点（babylon-mmd 可能挂在 mesh.skeleton 上）。 */
+  function motionNodes() {
+    const skeletons = new Set()
+    try { if (modelRoot && modelRoot.skeleton) skeletons.add(modelRoot.skeleton) } catch (_) { }
+    try { if (model && model.skeleton) skeletons.add(model.skeleton) } catch (_) { }
     try {
-      const animation = await new BABYLONMMD.VmdLoader(scene).loadAsync('mmdMotion', url)
-      const handle = model.createRuntimeAnimation(animation)
-      model.setRuntimeAnimation(handle)
-      return true
+      if (modelRoot && modelRoot.getChildMeshes) {
+        for (const mesh of modelRoot.getChildMeshes(false)) {
+          if (mesh && mesh.skeleton) skeletons.add(mesh.skeleton)
+        }
+      }
+    } catch (_) { }
+    const nodes = []
+    const seen = new Set()
+    for (const skeleton of skeletons) {
+      for (const bone of (skeleton.bones || [])) {
+        let node = null
+        try { node = bone.getTransformNode ? bone.getTransformNode() : null } catch (_) { }
+        if (!node || seen.has(node)) continue
+        seen.add(node)
+        nodes.push(node)
+      }
+    }
+    return nodes
+  }
+
+  function capturePose() {
+    const pose = new Map()
+    for (const node of motionNodes()) {
+      pose.set(node, {
+        position: node.position.clone(),
+        quaternion: node.rotationQuaternion ? node.rotationQuaternion.clone() : null,
+        rotation: !node.rotationQuaternion && node.rotation ? node.rotation.clone() : null,
+      })
+    }
+    return pose
+  }
+
+  function applyPose(pose) {
+    if (!pose) return
+    for (const [node, value] of pose) {
+      node.position.copyFrom(value.position)
+      if (value.quaternion && node.rotationQuaternion) {
+        node.rotationQuaternion.copyFrom(value.quaternion)
+      } else if (value.rotation && node.rotation) {
+        node.rotation.copyFrom(value.rotation)
+      }
+    }
+  }
+
+  function rememberClip(url, clip) {
+    motionCache.delete(url)
+    motionCache.set(url, clip)
+    while (motionCache.size > MOTION_CACHE_MAX) {
+      const oldest = motionCache.keys().next().value
+      if (oldest === currentMotionUrl) break
+      motionCache.delete(oldest)
+    }
+  }
+
+  function clipSeconds(clip) {
+    try {
+      if (typeof clip.getLength === 'function') {
+        const length = Number(clip.getLength())
+        if (Number.isFinite(length) && length > 0) return length
+      }
+    } catch (_) { }
+    const duration = Number(clip.duration)
+    return Number.isFinite(duration) && duration > 0 ? duration : 2
+  }
+
+  /** 切换动作：从当前姿势 smoothstep 过渡到新动作，避免骨骼瞬间跳变。 */
+  async function playMotion(url, options = {}) {
+    if (!model || !url) return false
+    const loop = options.loop !== false
+    if (!options.restart && currentMotionUrl === url) return true
+    const token = ++playToken
+    let clip = motionCache.get(url)
+    if (!clip) {
+      try {
+        clip = await new BABYLONMMD.VmdLoader(scene).loadAsync('mmdMotion', url)
+      } catch (error) {
+        console.warn('mmd motion failed', url, error)
+        return false
+      }
+      if (!clip) return false
+      rememberClip(url, clip)
+    }
+    if (token !== playToken || !model) return false
+    const from = capturePose()
+    try {
+      model.setRuntimeAnimation(model.createRuntimeAnimation(clip))
     } catch (error) {
-      console.warn('mmd motion failed', url, error)
+      console.warn('mmd motion attach failed', url, error)
       return false
     }
+    currentMotionUrl = url
+    clearTimeout(idleTimer)
+    heldPose = null
+    pendingHold = !!options.holdLast
+    transition = { from, to: null, elapsed: 0, duration: MOTION_BLEND_SECONDS }
+    onceDeadline = loop ? 0 : performance.now() + Math.max(clipSeconds(clip), 0.5) * 1000
+    return true
+  }
+
+  function stopMotion(freeze, silent) {
+    playToken += 1
+    const from = capturePose()
+    currentMotionUrl = ''
+    onceDeadline = 0
+    heldPose = null
+    try { model.setRuntimeAnimation(null) } catch (_) { }
+    if (freeze) {
+      heldPose = from
+      transition = null
+    } else {
+      heldPose = initialPose
+      transition = { from, to: initialPose, elapsed: 0, duration: MOTION_BLEND_SECONDS }
+    }
+    if (!silent) scheduleIdle(260)
+  }
+
+  function scheduleIdle(delay) {
+    clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      if (currentMotionUrl || !model) return
+      const url = idleMotionUrl || motionUrl
+      if (url) playMotion(url, { loop: true })
+    }, delay)
+  }
+
+  /** VMD 镜头：61 字节关键帧 = frame + distance + target xyz + rotation xyz + 24B 插值 + fov + perspective。 */
+  function parseCameraVmd(buffer) {
+    const view = new DataView(buffer)
+    let offset = 30 + 20
+    if (buffer.byteLength < offset + 4) return []
+    const bones = view.getUint32(offset, true)
+    offset += 4 + bones * 111
+    if (offset + 4 > buffer.byteLength) return []
+    const morphs = view.getUint32(offset, true)
+    offset += 4 + morphs * 23
+    if (offset + 4 > buffer.byteLength) return []
+    const count = view.getUint32(offset, true)
+    offset += 4
+    const keys = []
+    for (let i = 0; i < count && offset + 61 <= buffer.byteLength; i++) {
+      const frame = view.getUint32(offset, true)
+      const distance = view.getFloat32(offset + 4, true)
+      const x = view.getFloat32(offset + 8, true)
+      const y = view.getFloat32(offset + 12, true)
+      const z = view.getFloat32(offset + 16, true)
+      const rx = view.getFloat32(offset + 20, true)
+      const ry = view.getFloat32(offset + 24, true)
+      const rz = view.getFloat32(offset + 28, true)
+      const fov = view.getUint32(offset + 56, true)
+      offset += 61
+      if (!Number.isFinite(distance) || Math.abs(distance) < 0.001) continue
+      keys.push({
+        frame, distance, x, y, z, rx, ry, rz,
+        fov: fov > 1 && fov < 180 ? fov : 30,
+      })
+    }
+    return keys.sort((a, b) => a.frame - b.frame)
+  }
+
+  function sampleCameraKey(keys, frame) {
+    if (!keys.length) return null
+    if (frame <= keys[0].frame) return keys[0]
+    const last = keys[keys.length - 1]
+    if (frame >= last.frame) return last
+    let low = 0
+    let high = keys.length - 1
+    while (low + 1 < high) {
+      const mid = (low + high) >> 1
+      if (keys[mid].frame <= frame) low = mid
+      else high = mid
+    }
+    const a = keys[low]
+    const b = keys[high]
+    const span = b.frame - a.frame
+    const t = span > 0 ? (frame - a.frame) / span : 0
+    const mix = (p, q) => p + (q - p) * t
+    return {
+      frame,
+      distance: mix(a.distance, b.distance),
+      x: mix(a.x, b.x),
+      y: mix(a.y, b.y),
+      z: mix(a.z, b.z),
+      rx: mix(a.rx, b.rx),
+      ry: mix(a.ry, b.ry),
+      rz: mix(a.rz, b.rz),
+      fov: mix(a.fov, b.fov),
+    }
+  }
+
+  function applyCameraKey(key) {
+    if (!camera || !key) return
+    const target = new BABYLON.Vector3(key.x, key.y, key.z)
+    const rotation = BABYLON.Quaternion.RotationYawPitchRoll(key.ry, key.rx, key.rz)
+    const matrix = BABYLON.Matrix.Identity()
+    BABYLON.Matrix.FromQuaternionToRef(rotation, matrix)
+    const forward = new BABYLON.Vector3(0, 0, 1)
+    BABYLON.Vector3.TransformNormalToRef(forward, matrix, forward)
+    const position = target.subtract(forward.scale(key.distance))
+    camera.setPosition(position)
+    camera.setTarget(target)
+    camera.fov = Math.max(0.1, Math.min(2.1, key.fov * Math.PI / 180))
+  }
+
+  async function playCameraVmd(path, loop) {
+    if (!camera || !path) return false
+    try {
+      const url = motionAssetBase + path.split('/').map(encodeURIComponent).join('/')
+      const response = await fetch(url)
+      if (!response.ok) return false
+      const buffer = await response.arrayBuffer()
+      const keys = parseCameraVmd(buffer)
+      if (!keys.length) return false
+      stopShot(false)
+      shotHome = null
+      stopCameraVmd(false)
+      cameraHome = {
+        alpha: camera.alpha,
+        beta: camera.beta,
+        radius: camera.radius,
+        target: camera.target.clone(),
+        fov: camera.fov,
+        lower: camera.lowerRadiusLimit,
+        upper: camera.upperRadiusLimit,
+      }
+      camera.lowerRadiusLimit = 0.1
+      camera.upperRadiusLimit = 10000
+      cameraVmd = {
+        keys,
+        elapsed: 0,
+        duration: Math.max(0.2, keys[keys.length - 1].frame / 30),
+        loop: loop !== false,
+      }
+      applyCameraKey(keys[0])
+      return true
+    } catch (error) {
+      console.warn('mmd camera failed', path, error)
+      return false
+    }
+  }
+
+  function stopCameraVmd(restore = true) {
+    cameraVmd = null
+    if (!restore || !cameraHome || !camera) return
+    camera.alpha = cameraHome.alpha
+    camera.beta = cameraHome.beta
+    camera.radius = cameraHome.radius
+    camera.target.copyFrom(cameraHome.target)
+    camera.fov = cameraHome.fov
+    camera.lowerRadiusLimit = cameraHome.lower
+    camera.upperRadiusLimit = cameraHome.upper
+    cameraHome = null
+  }
+
+  const SHOT_PROFILES = {
+    ecu: { radius: 0.42, target: 0.9, fov: 30, variants: ['close'] },
+    bust: { radius: 0.78, target: 0.78, fov: 30, variants: ['bust', 'yawL45', 'yawR45'] },
+    half: { radius: 1.15, target: 0.58, fov: 30, variants: ['half', 'yawL45', 'yawR45'] },
+    threeQ: { radius: 1.45, target: 0.52, fov: 30, variants: ['threeQ', 'yawL90', 'yawR90'] },
+    full: { radius: 1.9, target: 0.5, fov: 30, variants: ['full', 'high45', 'yawL90', 'yawR90'] },
+    long: { radius: 2.8, target: 0.5, fov: 30, variants: ['long', 'high45'] },
+  }
+  const SHOT_ALIASES = {
+    close: 'ecu', ecu: 'ecu', 特写: 'ecu',
+    bust: 'bust', 胸: 'bust', 半身特写: 'bust',
+    half: 'half', 半身: 'half',
+    threeq: 'threeQ', '3/4': 'threeQ', 七分: 'threeQ', 七分身: 'threeQ',
+    full: 'full', 全身: 'full',
+    long: 'long', 远景: 'long',
+  }
+  const SHOT_WEIGHTS = { S: 0.55, A: 0.32, B: 0.13 }
+
+  function normalizeShotName(name) {
+    const key = String(name || '').trim().toLowerCase()
+    return SHOT_ALIASES[key] || SHOT_ALIASES[key.replace(/[\s_-]/g, '')] || ''
+  }
+
+  function gradeOfVariant(variant) {
+    if (['close', 'bust', 'half', 'threeQ', 'full', 'long'].includes(variant)) return 'S'
+    return 'A'
+  }
+
+  function pickShotVariant(profile) {
+    const roll = Math.random()
+    const grade = roll < SHOT_WEIGHTS.S ? 'S' : roll < SHOT_WEIGHTS.S + SHOT_WEIGHTS.A ? 'A' : 'B'
+    const graded = profile.variants.filter((v) => gradeOfVariant(v) === grade)
+    const pool = graded.length ? graded : profile.variants
+    return pool[Math.floor(Math.random() * pool.length)] || 'half'
+  }
+
+  function shotCameraTarget(distance, variant) {
+    const profile = SHOT_PROFILES[distance] || SHOT_PROFILES.half
+    const homeAlpha = shotHome ? shotHome.alpha : -Math.PI / 2
+    const homeBeta = shotHome ? shotHome.beta : Math.PI / 2
+    let alpha = homeAlpha
+    let beta = homeBeta
+    if (variant === 'yawL45') alpha -= 0.5
+    if (variant === 'yawR45') alpha += 0.5
+    if (variant === 'yawL90') alpha -= 0.9
+    if (variant === 'yawR90') alpha += 0.9
+    if (variant === 'high45') beta = Math.max(0.35, beta - 0.35)
+    return {
+      alpha,
+      beta,
+      radius: Math.max(0.2, modelHeight * profile.radius),
+      target: new BABYLON.Vector3(0, modelHeight * profile.target, 0),
+      fov: profile.fov * Math.PI / 180,
+    }
+  }
+
+  function captureCamera() {
+    return {
+      alpha: camera.alpha,
+      beta: camera.beta,
+      radius: camera.radius,
+      target: camera.target.clone(),
+      fov: camera.fov,
+    }
+  }
+
+  /** 景别语法：特写/胸/半身/七分/全身/远景，每个景别随机取 S/A/B 机位。 */
+  function applyShot(name) {
+    if (!camera) return false
+    const distance = normalizeShotName(name)
+    if (!SHOT_PROFILES[distance]) return false
+    stopCameraVmd(false)
+    cameraHome = null
+    if (!shotHome) {
+      shotHome = {
+        alpha: camera.alpha,
+        beta: camera.beta,
+        radius: camera.radius,
+        target: camera.target.clone(),
+        fov: camera.fov,
+        lower: camera.lowerRadiusLimit,
+        upper: camera.upperRadiusLimit,
+      }
+    }
+    camera.lowerRadiusLimit = 0.1
+    camera.upperRadiusLimit = 10000
+    const variant = pickShotVariant(SHOT_PROFILES[distance])
+    const target = shotCameraTarget(distance, variant)
+    shotTransition = {
+      from: captureCamera(),
+      to: target,
+      elapsed: 0,
+      duration: 1.1 + Math.random() * 0.35,
+    }
+    return true
+  }
+
+  function updateShot(dt) {
+    if (!shotTransition || !camera) return
+    shotTransition.elapsed += dt
+    const k = Math.min(1, shotTransition.elapsed / shotTransition.duration)
+    const eased = k * k * (3 - 2 * k)
+    const from = shotTransition.from
+    const to = shotTransition.to
+    camera.alpha = from.alpha + (to.alpha - from.alpha) * eased
+    camera.beta = from.beta + (to.beta - from.beta) * eased
+    camera.radius = from.radius + (to.radius - from.radius) * eased
+    camera.target.set(
+      from.target.x + (to.target.x - from.target.x) * eased,
+      from.target.y + (to.target.y - from.target.y) * eased,
+      from.target.z + (to.target.z - from.target.z) * eased,
+    )
+    camera.fov = from.fov + (to.fov - from.fov) * eased
+    if (k >= 1) shotTransition = null
+  }
+
+  function stopShot(restore = true) {
+    shotTransition = null
+    if (!restore || !shotHome || !camera) return
+    camera.alpha = shotHome.alpha
+    camera.beta = shotHome.beta
+    camera.radius = shotHome.radius
+    camera.target.copyFrom(shotHome.target)
+    camera.fov = shotHome.fov
+    camera.lowerRadiusLimit = shotHome.lower
+    camera.upperRadiusLimit = shotHome.upper
+    shotHome = null
+  }
+
+  function updateCameraVmd(dt) {
+    if (!cameraVmd || !camera) return
+    cameraVmd.elapsed += dt
+    if (cameraVmd.elapsed >= cameraVmd.duration) {
+      if (cameraVmd.loop) {
+        cameraVmd.elapsed %= cameraVmd.duration
+      } else {
+        stopCameraVmd(true)
+        return
+      }
+    }
+    applyCameraKey(sampleCameraKey(cameraVmd.keys, cameraVmd.elapsed * 30))
+  }
+
+  function updateTransition(dt) {
+    if (!transition) return
+    transition.elapsed += dt
+    const k = Math.min(1, transition.elapsed / Math.max(transition.duration, 1e-4))
+    const eased = k * k * (3 - 2 * k)
+    for (const [node, from] of transition.from) {
+      const to = transition.to ? transition.to.get(node) : null
+      const targetX = to ? to.position.x : node.position.x
+      const targetY = to ? to.position.y : node.position.y
+      const targetZ = to ? to.position.z : node.position.z
+      node.position.set(
+        from.position.x + (targetX - from.position.x) * eased,
+        from.position.y + (targetY - from.position.y) * eased,
+        from.position.z + (targetZ - from.position.z) * eased,
+      )
+      if (from.quaternion && node.rotationQuaternion) {
+        const target = to && to.quaternion ? to.quaternion : node.rotationQuaternion
+        BABYLON.Quaternion.SlerpToRef(from.quaternion, target, eased, node.rotationQuaternion)
+      }
+    }
+    if (k >= 1) transition = null
+  }
+
+  const motionTicker = scene.onAfterAnimationsObservable || scene.onAfterRenderObservable
+  if (motionTicker) {
+    motionTicker.add(() => {
+      const dt = Math.min(0.05, engine.getDeltaTime() / 1000)
+      if (onceDeadline > 0 && performance.now() >= onceDeadline) {
+        onceDeadline = 0
+        const freeze = pendingHold
+        stopMotion(freeze, true)
+        if (!freeze) scheduleIdle(180)
+        return
+      }
+      if (transition) {
+        updateTransition(dt)
+      } else if (heldPose) {
+        applyPose(heldPose)
+      }
+      updateMood(dt)
+      updateMouth(dt)
+      updateBlink(dt)
+    })
   }
 
   function applyModelBounds() {
@@ -345,9 +865,11 @@
       if (!model) throw new Error('MMD 运行时初始化失败')
 
       let loaded = false
-      if (motionUrl) loaded = await loadMotion(motionUrl)
-      if (!loaded) loaded = await loadMotion(idleUrl)
       runtime.playAnimation()
+      initialPose = capturePose()
+      const firstMotion = idleMotionUrl || motionUrl
+      if (firstMotion) loaded = await playMotion(firstMotion, { loop: true, restart: true })
+      if (!loaded) loaded = await playMotion(idleUrl, { loop: true, restart: true })
       if (!loaded) showStatus('模型已加载，但没有可用动作')
       else hideStatus()
       if (config.mood) window.irisMmd.setMood(config.mood)
@@ -411,6 +933,8 @@
 
   load()
   engine.runRenderLoop(() => {
+    updateCameraVmd(engine.getDeltaTime() / 1000)
+    updateShot(engine.getDeltaTime() / 1000)
     // 通话取景每帧校正：模型加载、动作与物理都会重算包围盒/相机，
     // 只在 fitCamera 里设一次会被后续流程覆盖。
     if (portrait && camera && model) {

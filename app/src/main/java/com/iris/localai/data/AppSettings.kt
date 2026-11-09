@@ -57,6 +57,7 @@ data class AppSettings(
     val l2dTapMotionEnabled: Boolean = true,
     val l2dMouthSyncEnabled: Boolean = true,
     val motionSource: MotionSource = MotionSource.NONE,
+    val vrmMotionEngine: VrmMotionEngine = VrmMotionEngine.HAST_SEC,
     val motionEndpoint: String = "",
     val motionApiKey: String = "",
     val motionDurationSeconds: Int = 5,
@@ -64,6 +65,15 @@ data class AppSettings(
     val motionInCall: Boolean = true,
     /** 0=不修正，1=前后翻转（z 取反），2=左右翻转（x 取反），3=前后+左右。 */
     val motionAxisFix: Int = 1,
+    /** 启动应用后自动启动 PRoot 内置动作服务。 */
+    val motionServiceAutoStart: Boolean = true,
+
+    // 素材库
+    val assetRepo: String = "comfot/self-resources",
+    val assetBranch: String = "main",
+    val assetToken: String = "",
+    val idleMotionAsset: String = "",
+    val danceBgmEnabled: Boolean = true,
 
     // 模型与加载
     val autoLoadLastModel: Boolean = true,
@@ -155,6 +165,8 @@ data class AppSettings(
             "search_files",
             "fetch_url",
             "memory",
+            "motion_control",
+            "expression_control",
         )
 
         /** 首次升级时补默认开启的工具目录，避免旧安装一直停留在三五个工具。 */
@@ -168,6 +180,8 @@ data class AppSettings(
             "search_files",
             "fetch_url",
             "memory",
+            "motion_control",
+            "expression_control",
         )
     }
 }

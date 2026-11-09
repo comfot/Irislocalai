@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation'
 
 (() => {
   'use strict'
@@ -73,15 +74,27 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
   let mixer = null
   let motionMixer = null
   let motionAction = null
+  let motionBlend = null
+  let vrmaMixer = null
+  let vrmaAction = null
+  let vrmaLoading = false
+  let lastVrmPose = null
+  const MOTION_BLEND_SECONDS = 0.35
   const restRotations = new Map()
+  const restPoses = new Map()
   let motionEndpoint = typeof config.motion === 'string' ? config.motion : ''
   const motionIdle = config.motionIdle !== false
   const motionPack = String(config.pack || '')
+  const vrmaEnabled = config.vrmaEnabled === true
+  const vrmaLoader = new GLTFLoader()
+  vrmaLoader.register((parser) => new VRMAnimationLoaderPlugin(parser))
   const idleMotionName = 'idle'
   const tapMotionName = motionPack === 'hast' ? 'right-摆动手臂' : 'wave'
   const motionAxisFix = Number(config.axisFix || 0)
   let modelHeight = 1.7
   const pointerPositions = new Map()
+  let diagUntil = 0
+  let diagLast = 0
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x8a94a6, 1.35))
   const key = new THREE.DirectionalLight(0xfff4e6, 2.2)
@@ -194,18 +207,35 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
       return
     }
     model.traverse((item) => {
-      if (item.isBone) restRotations.set(item, item.quaternion.clone())
+      if (item.isBone) {
+        restRotations.set(item, item.quaternion.clone())
+        restPoses.set(item, {
+          position: item.position.clone(),
+          quaternion: item.quaternion.clone(),
+          scale: item.scale.clone(),
+        })
+      }
     })
     model.traverse((item) => {
       if (item.isMesh) {
         item.castShadow = true
         item.receiveShadow = true
         item.frustumCulled = false
+        const isHair = /hair/i.test(item.name || '') || /hair/i.test(item.parent?.name || '')
+        if (isHair) {
+          item.visible = true
+          const materials = Array.isArray(item.material) ? item.material : [item.material]
+          materials.forEach((material) => {
+            if (!material) return
+            material.side = THREE.DoubleSide
+            material.needsUpdate = true
+          })
+        }
       }
     })
     group.add(model)
     frameModel(model)
-    if (animations && animations.length > 0 && !motionEndpoint) {
+    if (animations && animations.length > 0 && !motionEndpoint && !vrmaEnabled) {
       mixer = new THREE.AnimationMixer(model)
       animations.forEach((clip) => mixer.clipAction(clip).play())
     }
@@ -216,7 +246,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
       relaxArmsVrm()
     }
     if (motionEndpoint) {
-      if (motionIdle) playMotion(idleMotionName, true)
+      if (motionIdle && !vrmaEnabled) playMotion(idleMotionName, true)
     }
   }
 
@@ -242,6 +272,109 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
   const sampleFrom = new THREE.Quaternion()
   const sampleTo = new THREE.Quaternion()
   const sampleResult = new THREE.Quaternion()
+
+  class OneEuroFilter {
+    constructor(minCutoff, beta, dCutoff) {
+      this.minCutoff = minCutoff
+      this.beta = beta
+      this.dCutoff = dCutoff
+      this.prev = null
+      this.prevDeriv = 0
+      this.prevTs = null
+    }
+
+    alpha(cutoff, dt) {
+      const tau = 1 / (2 * Math.PI * cutoff)
+      return 1 / (1 + tau / dt)
+    }
+
+    filter(value, ts) {
+      if (this.prev === null || this.prevTs === null) {
+        this.prev = value
+        this.prevTs = ts
+        return value
+      }
+      const dt = (ts - this.prevTs) / 1000
+      if (dt <= 0 || dt > 1) {
+        this.prev = value
+        this.prevDeriv = 0
+        this.prevTs = ts
+        return value
+      }
+      const rawDeriv = (value - this.prev) / dt
+      const aD = this.alpha(this.dCutoff, dt)
+      const filteredDeriv = aD * rawDeriv + (1 - aD) * this.prevDeriv
+      const cutoff = this.minCutoff + this.beta * Math.abs(filteredDeriv)
+      const a = this.alpha(cutoff, dt)
+      const filtered = a * value + (1 - a) * this.prev
+      this.prev = filtered
+      this.prevDeriv = filteredDeriv
+      this.prevTs = ts
+      return filtered
+    }
+  }
+
+  class QuaternionOneEuroFilter {
+    constructor(minCutoff, beta, dCutoff) {
+      this.minCutoff = minCutoff
+      this.beta = beta
+      this.prev = new THREE.Quaternion()
+      this.hasPrev = false
+      this.prevTs = 0
+      this.prevSpeed = 0
+      this.speedFilter = new OneEuroFilter(dCutoff, 0, dCutoff)
+      this.maxSpeed = 30
+      this.maxAccel = 450
+    }
+
+    filter(q, ts, out) {
+      const aligned = q.clone()
+      if (this.hasPrev && this.prev.dot(aligned) < 0) {
+        aligned.x *= -1; aligned.y *= -1; aligned.z *= -1; aligned.w *= -1
+      }
+      if (!this.hasPrev) {
+        this.prev.copy(aligned)
+        this.hasPrev = true
+        this.prevTs = ts
+        return out.copy(aligned)
+      }
+      const dt = (ts - this.prevTs) / 1000
+      if (dt <= 0 || dt > 1) {
+        this.prev.copy(aligned)
+        this.prevTs = ts
+        this.prevSpeed = 0
+        return out.copy(aligned)
+      }
+      let speed = this.prev.angleTo(aligned) / dt
+      const maxStep = this.prevSpeed + this.maxAccel * dt
+      speed = Math.min(speed, Math.min(this.maxSpeed, maxStep))
+      speed = this.speedFilter.filter(speed, ts)
+      this.prevSpeed = speed
+      const cutoff = this.minCutoff + this.beta * speed
+      const tau = 1 / (2 * Math.PI * cutoff)
+      const alpha = 1 / (1 + tau / dt)
+      out.copy(this.prev).slerp(aligned, alpha)
+      this.prev.copy(out)
+      this.prevTs = ts
+      return out
+    }
+  }
+
+  const motionFilters = new Map()
+  const filterQuaternion = new THREE.Quaternion()
+
+  function smoothQuaternion(bone, values, ts) {
+    let filter = motionFilters.get(bone)
+    if (!filter) {
+      filter = new QuaternionOneEuroFilter(1.6, 0.05, 1.0)
+      motionFilters.set(bone, filter)
+    }
+    sampleFrom.fromArray(values)
+    filter.filter(sampleFrom, ts, filterQuaternion)
+    const result = filterQuaternion.toArray()
+    if (!result.every((value) => Number.isFinite(value))) return values
+    return result
+  }
 
   function sampleTrack(track, time) {
     const times = track.times
@@ -280,15 +413,36 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
       return
     }
     const time = motion.loop ? motion.time % motion.duration : motion.time
+    if (motionBlend) motionBlend.elapsed += dt
+    const k = motionBlend ? Math.min(1, motionBlend.elapsed / motionBlend.duration) : 1
+    const eased = k * k * (3 - 2 * k)
     const pose = {}
+    const from = new THREE.Quaternion()
+    const target = new THREE.Quaternion()
+    const blended = new THREE.Quaternion()
+    const now = performance.now()
     for (const track of motion.tracks) {
-      pose[track.bone] = { rotation: sampleTrack(track, time) }
+      const torso = ['hips', 'spine', 'chest', 'neck', 'head'].includes(track.bone)
+      const sampled = (!torso && motionPack !== 'hast')
+        ? smoothQuaternion(track.bone, sampleTrack(track, time), now)
+        : sampleTrack(track, time)
+      if (motionBlend && motionBlend.from[track.bone]) {
+        from.fromArray(motionBlend.from[track.bone])
+        target.fromArray(sampled)
+        blended.copy(from).slerp(target, eased)
+        pose[track.bone] = { rotation: blended.toArray() }
+      } else {
+        pose[track.bone] = { rotation: sampled }
+      }
     }
     vrm.humanoid.setNormalizedPose(pose)
+    lastVrmPose = pose
+    if (motionBlend && k >= 1) motionBlend = null
   }
 
   async function playMotion(name, loop) {
     if (!model || !motionEndpoint) return false
+    stopVrma()
     try {
       if (motionPack === 'hast') {
         const alias = String(name || '').toLowerCase()
@@ -296,7 +450,8 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
         else if (alias === 'dance' || alias === '跳舞') name = 'body-自然活动'
         else if (alias === 'nod' || alias === '点头') name = 'body-自然活动'
       }
-      const base = motionEndpoint.replace(/\/$/, '')
+        const base = motionEndpoint.replace(/\/$/, '')
+      const armOnly = motionPack === 'hast' && /^(left|right)-/.test(name)
       const response = await fetch(`${base}/motion?name=${encodeURIComponent(name)}`)
       if (!response.ok) return false
       const data = await response.json()
@@ -305,21 +460,42 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
         for (const track of data.tracks || []) {
           const bone = String(track.bone || '')
           if (!bone || !vrm.humanoid.getNormalizedBoneNode(bone)) continue
+          // 单臂技能只跳过躯干/头部，另一只手臂仍使用动作数据里的自然姿态。
+          if (armOnly && ['hips', 'spine', 'chest', 'neck', 'head'].includes(bone)) continue
           const times = Array.isArray(track.times) ? track.times : []
           const source = Array.isArray(track.quaternions) ? track.quaternions : []
           if (times.length === 0 || source.length < 4) continue
           const quats = new Float32Array(source.length)
           for (let i = 0; i < source.length; i += 4) {
             const flip = vrmVersion === '0'
-            quats[i] = flip ? -source[i] : source[i]
-            quats[i + 1] = source[i + 1]
-            quats[i + 2] = flip ? -source[i + 2] : source[i + 2]
-            quats[i + 3] = source[i + 3]
+            let x = flip ? -source[i] : source[i]
+            let y = source[i + 1]
+            let z = flip ? -source[i + 2] : source[i + 2]
+            let w = source[i + 3]
+            const length = Math.hypot(x, y, z, w)
+            if (!Number.isFinite(length) || length < 1e-5) {
+              x = 0; y = 0; z = 0; w = 1
+            } else {
+              x /= length; y /= length; z /= length; w /= length
+            }
+            quats[i] = x
+            quats[i + 1] = y
+            quats[i + 2] = z
+            quats[i + 3] = w
           }
           tracks.push({ bone, times, quats })
         }
         if (tracks.length === 0) return false
+        beginDiagnostics('switch ' + name + ' tracks=' + tracks.length + ' armOnly=' + armOnly)
+        motionBlend = lastVrmPose ? {
+          from: lastVrmPose,
+          elapsed: 0,
+          duration: MOTION_BLEND_SECONDS,
+        } : null
         vrm.humanoid.resetNormalizedPose()
+        relaxArmsVrm()
+        refreshSkinning()
+        motionFilters.clear()
         activeMotion = {
           name: data.name || name,
           tracks,
@@ -362,11 +538,14 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
       if (tracks.length === 0) return false
       const clip = new THREE.AnimationClip(data.name || name, data.duration || 2, tracks)
       if (!motionMixer) motionMixer = new THREE.AnimationMixer(model)
-      if (motionAction) motionAction.stop()
+      const previous = motionAction
       motionAction = motionMixer.clipAction(clip)
       motionAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
       motionAction.clampWhenFinished = !loop
-      motionAction.play()
+      motionAction.reset().play()
+      if (previous && previous !== motionAction && previous.isRunning()) {
+        motionAction.crossFadeFrom(previous, MOTION_BLEND_SECONDS, true)
+      }
       if (!loop && motionIdle) {
         const clipDuration = data.duration || 2
         setTimeout(() => { playMotion(idleMotionName, true) }, clipDuration * 1000 + 120)
@@ -378,10 +557,70 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
     }
   }
 
+  function stopVrma() {
+    if (vrmaAction) {
+      vrmaAction.stop()
+      vrmaAction = null
+    }
+    if (vrmaMixer) vrmaMixer.stopAllAction()
+  }
+
+  async function playVrma(url, loop) {
+    if (!vrm || !url || vrmaLoading) return false
+    vrmaLoading = true
+    try {
+      const gltf = await vrmaLoader.loadAsync(url)
+      const animations = gltf.userData?.vrmAnimations || []
+      if (animations.length === 0) {
+        console.warn('VRMA: no animation data', url)
+        return false
+      }
+      const clip = createVRMAnimationClip(animations[0], vrm)
+      if (!vrmaMixer) vrmaMixer = new THREE.AnimationMixer(vrm.scene)
+      const previous = vrmaAction
+      vrmaAction = vrmaMixer.clipAction(clip)
+      vrmaAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
+      vrmaAction.clampWhenFinished = !loop
+      vrmaAction.reset().play()
+      if (previous && previous !== vrmaAction && previous.isRunning()) {
+        vrmaAction.crossFadeFrom(previous, MOTION_BLEND_SECONDS, true)
+      }
+      // 进入 VRMA 时暂停 HAST 手动姿态，避免两套轨道同时写 humanoid。
+      activeMotion = null
+      lastVrmPose = null
+      motionBlend = null
+      if (motionAction) motionAction.stop()
+      if (motionMixer) motionMixer.stopAllAction()
+      hideStatus()
+      return true
+    } catch (error) {
+      console.warn('VRMA error', error)
+      return false
+    } finally {
+      vrmaLoading = false
+    }
+  }
+
   window.irisMotion = {
     play(name) { return playMotion(name, false) },
     idle() { return playMotion(idleMotionName, true) },
+    playVrma(url, loop) { return playVrma(url, loop === true) },
+    stopVrma() { stopVrma() },
     setEndpoint(value) { motionEndpoint = String(value || '') },
+    setExpression(name) {
+      const manager = vrm && vrm.expressionManager
+      if (!manager) return false
+      const key = String(name || '').toLowerCase()
+      const aliases = {
+        '开心': 'happy', '高兴': 'happy', '难过': 'sad', '伤心': 'sad',
+        '生气': 'angry', '惊讶': 'surprised', '放松': 'relaxed', '思考': 'think',
+      }
+      const expression = manager.getExpression(aliases[key] || key)
+      if (!expression) return false
+      for (const item of manager.expressions) item.weight = 0
+      expression.weight = 1
+      return true
+    },
   }
 
   function loadModel() {
@@ -408,7 +647,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
         }
         if (loadedVrm) {
           VRMUtils.rotateVRM0(loadedVrm)
-          VRMUtils.combineSkeletons(loadedVrm.scene)
+          // 保留模型自带的多个 skin；强制合并骨骼会让部分多材质/多 skin 的头发网格丢失。
           if (loadedVrm.lookAt) loadedVrm.lookAt.autoUpdate = false
         }
         prepareModel(scene, gltf.animations || [], loadedVrm)
@@ -500,22 +739,100 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
   applyCamera()
   loadModel()
 
+  function beginDiagnostics(reason) {
+    diagUntil = performance.now() + 2200
+    diagLast = 0
+    console.warn('[iris-diag] begin ' + reason)
+  }
+
+  function diagnosticsTick() {
+    const now = performance.now()
+    if (now > diagUntil || now - diagLast < 120) return
+    diagLast = now
+    if (!model) return
+    let body = null
+    model.traverse((item) => {
+      if (!body && item.isSkinnedMesh && /body/i.test(item.name || '')) body = item
+    })
+    if (!body) {
+      console.warn('[iris-diag] no body mesh')
+      return
+    }
+    const bones = body.skeleton ? body.skeleton.bones : []
+    const badNames = []
+    for (const bone of bones) {
+      if (!Number.isFinite(bone.quaternion.x) || !Number.isFinite(bone.quaternion.w) ||
+        !Number.isFinite(bone.position.x)) badNames.push(bone.name || '?')
+    }
+    const material = Array.isArray(body.material) ? body.material[0] : body.material
+    console.warn('[iris-diag] ' + JSON.stringify({
+      t: Math.round(now),
+      motion: activeMotion ? activeMotion.name : '',
+      tracks: activeMotion ? activeMotion.tracks.length : 0,
+      calls: renderer.info.render.calls,
+      tris: renderer.info.render.triangles,
+      cam: [Number(camera.position.distanceTo(target).toFixed(2)), Number(target.y.toFixed(2))],
+      body: {
+        v: body.visible ? 1 : 0,
+        mv: material && material.visible === false ? 0 : 1,
+        side: material ? material.side : -1,
+        bad: badNames.length,
+        names: badNames.slice(0, 24),
+        c: body.geometry && body.geometry.attributes && body.geometry.attributes.position
+          ? body.geometry.attributes.position.count : 0,
+      },
+    }))
+  }
+
+  function sanitizeBones() {
+    if (!model) return
+    model.traverse((item) => {
+      if (!item.isBone) return
+      const rest = restPoses.get(item)
+      if (!rest) return
+      const q = item.quaternion
+      const p = item.position
+      const s = item.scale
+      if (!Number.isFinite(q.x) || !Number.isFinite(q.y) || !Number.isFinite(q.z) || !Number.isFinite(q.w)) {
+        q.copy(rest.quaternion)
+      }
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) {
+        p.copy(rest.position)
+      }
+      if (!Number.isFinite(s.x) || !Number.isFinite(s.y) || !Number.isFinite(s.z)) {
+        s.copy(rest.scale)
+      }
+    })
+  }
+
+  function refreshSkinning() {
+    if (!model) return
+    sanitizeBones()
+    model.updateMatrixWorld(true)
+    model.traverse((item) => {
+      if (item.isSkinnedMesh && item.skeleton) item.skeleton.update()
+    })
+  }
+
   function animate(now = performance.now()) {
     requestAnimationFrame(animate)
     const dt = Math.min(0.05, clock.getDelta())
     if (mixer) mixer.update(dt)
     if (motionMixer) motionMixer.update(dt)
+    if (vrmaMixer) vrmaMixer.update(dt)
     if (vrm) {
       advanceMotion(dt)
       vrm.update(dt)
+      refreshSkinning()
     }
-    if (model && !dragging && now - idleSince > 6000) {
+    if (model && !dragging && !activeMotion && !(motionAction && motionAction.isRunning()) && !(vrmaAction && vrmaAction.isRunning()) && now - idleSince > 6000) {
       group.rotation.y += dt * 0.045
     }
     if (model) {
       group.position.y = Math.sin(now * 0.0016) * 0.008
     }
     renderer.render(scene, camera)
+    try { diagnosticsTick() } catch (error) { console.warn('[iris-diag] failed ' + (error && error.message ? error.message : error)) }
   }
   animate()
 })()

@@ -14,9 +14,13 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.motion.MotionBridge
 import org.json.JSONObject
 import java.io.File
 
@@ -40,10 +44,15 @@ internal fun releaseModelWebView(view: WebView) {
 private class Live2DController {
     var speaking: Boolean = false
     var mood: String = "neutral"
+    var mouthAmplitude: Float = 0f
 
     fun apply(view: WebView) {
         view.evaluateJavascript(
             "window.__live2dSetSpeaking&&window.__live2dSetSpeaking(${if (speaking) "true" else "false"})",
+            null,
+        )
+        view.evaluateJavascript(
+            "window.__live2dSetAmplitude&&window.__live2dSetAmplitude(${mouthAmplitude.coerceIn(0f, 1f)})",
             null,
         )
         view.evaluateJavascript(
@@ -60,6 +69,7 @@ internal fun Live2DView(
     dark: Boolean,
     speaking: Boolean,
     mood: String,
+    mouthAmplitude: Float = 0f,
     portrait: Boolean = false,
     interactive: Boolean = true,
     modelRoot: String = "character_models",
@@ -72,8 +82,17 @@ internal fun Live2DView(
 ) {
     val controller = remember { Live2DController() }
     val holder = remember { WebViewHolder() }
+    val expressionCommand by MotionBridge.expressionCommand.collectAsStateWithLifecycle()
+    LaunchedEffect(expressionCommand?.seq) {
+        val name = expressionCommand?.name ?: return@LaunchedEffect
+        holder.view?.evaluateJavascript(
+            "window.__live2dSetMood&&window.__live2dSetMood(${JSONObject.quote(name)})",
+            null,
+        )
+    }
     controller.speaking = speaking
     controller.mood = mood
+    controller.mouthAmplitude = mouthAmplitude
     DisposableEffect(holder) {
         onDispose { holder.view?.let { releaseModelWebView(it) } }
     }

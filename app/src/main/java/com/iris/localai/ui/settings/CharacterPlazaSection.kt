@@ -65,7 +65,7 @@ internal fun CharacterPlazaSection(viewModel: CharacterPlazaViewModel = viewMode
         }
     }
 
-    SettingsCard("角色模型广场") {
+    SettingsCard("外观模型广场") {
         Text(
             text = "参照 MikuMikuAR 广场：远端配置可提供模之屋、Bowlroll、BOOTH、VRoid Hub 等站点与创作者名录；配置不可用时回退内置站点。广场不托管模型，安装前请遵守原作者的许可。",
             style = MaterialTheme.typography.bodySmall,

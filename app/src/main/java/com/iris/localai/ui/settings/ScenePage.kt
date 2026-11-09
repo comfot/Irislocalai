@@ -1,6 +1,7 @@
 package com.iris.localai.ui.settings
 
 import android.graphics.BitmapFactory
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -32,36 +33,138 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.iris.localai.IrisApp
 import com.iris.localai.scene.SceneBackgroundType
 import com.iris.localai.scene.SceneConfig
+import com.iris.localai.scene.StageAssetCatalog
 import com.iris.localai.scene.StageBaseStyle
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun ScenePage(viewModel: SceneViewModel = viewModel()) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
     val scenes by viewModel.scenes.collectAsStateWithLifecycle()
     val activeId by viewModel.activeId.collectAsStateWithLifecycle()
+    val downloads = remember(graph) { graph.assetDownloads }
+    val tasks by downloads.tasks.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val backgroundDir = remember(context) {
+        File(context.filesDir, "stage_assets/backgrounds").apply { mkdirs() }
+    }
+    val textureDir = remember(context) {
+        File(context.filesDir, "stage_assets/textures").apply { mkdirs() }
+    }
+    val activeScene = scenes.firstOrNull { it.id == activeId }
 
+    var tab by rememberSaveable { mutableIntStateOf(0) }
     var editing by remember { mutableStateOf<SceneConfig?>(null) }
     var pendingDelete by remember { mutableStateOf<SceneConfig?>(null) }
 
+    fun toast(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
     SettingsPage {
+        TabRow(selectedTabIndex = tab) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("场景") })
+            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("下载") })
+        }
+        if (tab == 1) {
+            Text(
+                text = "场景背景与舞台纹理按需下载，不增加安装包体积。下载后可直接设为场景或舞台底座。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            StageAssetList(
+                items = StageAssetCatalog.backgrounds,
+                dir = backgroundDir,
+                keyPrefix = "stage-bg",
+                tasks = tasks,
+                actionLabel = "设为场景",
+                onDownload = { item ->
+                    downloads.enqueue(
+                        key = "stage-bg-${item.id}",
+                        title = item.name,
+                        url = item.url,
+                        destDir = backgroundDir,
+                        fileName = item.fileName,
+                    )
+                },
+                onCancel = { item -> downloads.cancel("stage-bg-${item.id}") },
+                onApply = { item ->
+                    val file = File(backgroundDir, item.fileName)
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            graph.scenes.createFromBackground(
+                                name = item.name,
+                                intro = "来自场景下载的背景。",
+                                source = file,
+                            )
+                        }
+                        result.onSuccess { toast("已应用场景：${it.name}") }
+                            .onFailure { toast(it.message ?: "应用失败") }
+                    }
+                },
+            )
+            StageAssetList(
+                items = StageAssetCatalog.textures,
+                dir = textureDir,
+                keyPrefix = "stage-tex",
+                tasks = tasks,
+                actionLabel = "设为基础",
+                onDownload = { item ->
+                    downloads.enqueue(
+                        key = "stage-tex-${item.id}",
+                        title = item.name,
+                        url = item.url,
+                        destDir = textureDir,
+                        fileName = item.fileName,
+                    )
+                },
+                onCancel = { item -> downloads.cancel("stage-tex-${item.id}") },
+                onApply = { item ->
+                    val file = File(textureDir, item.fileName)
+                    graph.scenes.applyBaseTexture(file)
+                        .onSuccess { toast("舞台底座已切换为「${item.name}」") }
+                        .onFailure { toast(it.message ?: "应用失败") }
+                },
+            )
+            activeScene?.let { scene ->
+                Text(
+                    text = "当前场景：${scene.name} · ${scene.baseStyle.label}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            return@SettingsPage
+        }
         SettingsCard("场景") {
             Button(
                 onClick = {
@@ -383,4 +486,5 @@ private fun StageBaseStyle.hint(): String = when (this) {
     StageBaseStyle.ROUND -> "圆形舞台"
     StageBaseStyle.GRID -> "网格平台"
     StageBaseStyle.GLOW -> "光晕底座"
+    StageBaseStyle.TEXTURE -> "使用素材库纹理"
 }

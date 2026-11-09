@@ -18,6 +18,7 @@ import com.iris.localai.agent.tools.FetchUrlTool
 import com.iris.localai.agent.tools.ListFilesTool
 import com.iris.localai.agent.tools.MemoryTool
 import com.iris.localai.agent.tools.MotionControlTool
+import com.iris.localai.agent.tools.ExpressionControlTool
 import com.iris.localai.agent.tools.RandomPickTool
 import com.iris.localai.agent.tools.ReadFileTool
 import com.iris.localai.agent.tools.SearchFilesTool
@@ -29,6 +30,7 @@ import com.iris.localai.code.CodeSettingsStore
 import com.iris.localai.code.ShellTool
 import com.iris.localai.character.CharacterModelStore
 import com.iris.localai.data.HuggingFaceClient
+import com.iris.localai.data.AssetDownloadManager
 import com.iris.localai.data.ModelDownloadManager
 import com.iris.localai.data.ModelProfileStore
 import com.iris.localai.data.ModelRole
@@ -46,6 +48,11 @@ import com.iris.localai.mcp.McpConnectionManager
 import com.iris.localai.mcp.McpServerService
 import com.iris.localai.mcp.McpStore
 import com.iris.localai.motion.HastMotionStore
+import com.iris.localai.motion.GitHubAssetClient
+import com.iris.localai.motion.MotionAssetStore
+import com.iris.localai.motion.VrmaMotionStore
+import com.iris.localai.motion.MotionBindingStore
+import com.iris.localai.motion.ExpressionBindingStore
 import com.iris.localai.memory.MemoryStore
 import com.iris.localai.notify.ChatNotifier
 import com.iris.localai.permission.DeviceActionExecutor
@@ -92,6 +99,12 @@ class AppGraph(
     val code = CodeSettingsStore(context)
     val workspaces = WorkspaceStore(context)
     val huggingFace = HuggingFaceClient()
+    val assetDownloads = AssetDownloadManager(context, ioScope)
+    val motionAssets = MotionAssetStore(context)
+    val vrmaMotions = VrmaMotionStore(context)
+    val motionBindings = MotionBindingStore(context)
+    val expressionBindings = ExpressionBindingStore(context)
+    val githubAssets = GitHubAssetClient(settings)
     val downloads = ModelDownloadManager(context, ioScope, huggingFace)
     val voiceDownloads = VoiceDownloadManager(context, ioScope, huggingFace, voiceModels)
     val tts = TtsController(context)
@@ -132,7 +145,8 @@ class AppGraph(
         register(SearchFilesTool(context, code, workspaces))
         register(FetchUrlTool())
         register(MemoryTool(memory))
-        register(MotionControlTool(toolClips))
+        register(MotionControlTool(toolClips, motionAssets, motionBindings, characterModels, vrmaMotions, settings))
+        register(ExpressionControlTool(expressionBindings, characterModels))
         register(ShellTool(code, workspaces, context))
         register(DeviceOpenAppTool(deviceActions))
         register(DeviceTapTool(deviceActions))

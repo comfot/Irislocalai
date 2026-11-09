@@ -70,7 +70,7 @@ object SettingsCatalog {
                 SettingsEntry("memory", "记忆", "长期记忆与检索策略", Icons.Outlined.History),
                 SettingsEntry("character-model", "角色模型", "为角色绑定模型与参数", Icons.Outlined.SmartToy),
                 SettingsEntry("voice", "语音", "离线识别、合成与音色", Icons.Outlined.RecordVoiceOver),
-                SettingsEntry("scene", "场景", "场景模板与开场白", Icons.Outlined.TheaterComedy),
+                SettingsEntry("scene", "场景", "场景模板、开场白与背景/舞台下载", Icons.Outlined.TheaterComedy),
             ),
         ),
         SettingsSection(

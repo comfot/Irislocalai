@@ -63,9 +63,11 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
@@ -73,22 +75,26 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.agent.AssistantMessageParser
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.character.CharacterCardData
 import com.iris.localai.character.CharacterEntry
 import com.iris.localai.character.CharacterModelEntry
 import com.iris.localai.character.CharacterModelType
 import com.iris.localai.data.CharacterModel
-import com.iris.localai.data.MotionSource
+import com.iris.localai.data.VrmMotionEngine
 import com.iris.localai.scene.SceneConfig
 import com.iris.localai.scene.StageBaseStyle
 import java.io.File
@@ -103,7 +109,10 @@ fun LifeSpaceScreen(
     val input by viewModel.input.collectAsStateWithLifecycle()
     val running by viewModel.running.collectAsStateWithLifecycle()
     val ttsSpeaking by viewModel.ttsSpeaking.collectAsStateWithLifecycle()
+    val ttsAmplitude by viewModel.ttsAmplitude.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val performanceMood by viewModel.performanceMood.collectAsStateWithLifecycle()
+    val performanceIntensity by viewModel.performanceIntensity.collectAsStateWithLifecycle()
     val activeCharacter by viewModel.activeCharacter.collectAsStateWithLifecycle()
     val characterModels by viewModel.characterModels.collectAsStateWithLifecycle()
     val activeModelId by viewModel.activeCharacterModelId.collectAsStateWithLifecycle()
@@ -147,9 +156,13 @@ fun LifeSpaceScreen(
     val modelThumbnail = remember(activeModel?.thumbnail) {
         activeModel?.thumbnail?.let { File(it) }?.takeIf { it.isFile }
     }
-    val lastAssistantText = messages.lastOrNull { it.role == ChatRole.ASSISTANT }?.text.orEmpty()
-    val live2dMood = remember(running, lastAssistantText) {
+    val lastAssistantText = messages.lastOrNull { it.role == ChatRole.ASSISTANT }
+        ?.text
+        ?.let { AssistantMessageParser.mainText(it) }
+        .orEmpty()
+    val live2dMood = remember(running, lastAssistantText, performanceMood) {
         when {
+            performanceMood != "neutral" -> performanceMood
             running -> "thinking"
             else -> detectMood(lastAssistantText)
         }
@@ -187,7 +200,9 @@ fun LifeSpaceScreen(
                 modelThumbnail = modelThumbnail,
                 scene = scene,
                 live2dMood = live2dMood,
+                moodIntensity = performanceIntensity,
                 live2dSpeaking = live2dSpeaking,
+                mouthAmplitude = ttsAmplitude,
                 model = settings.characterModel,
                 fullscreen = fullscreen,
                 l2dExpressions = settings.l2dExpressionsEnabled,
@@ -195,13 +210,13 @@ fun LifeSpaceScreen(
                 l2dIdleMotion = settings.l2dIdleMotionEnabled,
                 l2dTapMotion = settings.l2dTapMotionEnabled,
                 l2dMouthSync = settings.l2dMouthSyncEnabled,
-                motionEndpoint = when (settings.motionSource) {
-                    MotionSource.HAST_SEC -> "https://iris.local/hast"
-                    MotionSource.NONE -> ""
-                    else -> settings.motionEndpoint
+                motionEndpoint = if (settings.vrmMotionEngine == VrmMotionEngine.HAST_SEC) {
+                    "https://iris.local/hast"
+                } else {
+                    ""
                 },
                 motionIdle = settings.motionAutoIdle,
-                motionPack = if (settings.motionSource == MotionSource.HAST_SEC) "hast" else "",
+                motionPack = if (settings.vrmMotionEngine == VrmMotionEngine.HAST_SEC) "hast" else "vrma",
                 motionAxisFix = settings.motionAxisFix,
                 onEnterFullscreen = { fullscreen = true },
                 onExitFullscreen = { fullscreen = false },
@@ -270,13 +285,13 @@ fun LifeSpaceScreen(
                     l2dIdleMotion = settings.l2dIdleMotionEnabled,
                     l2dTapMotion = settings.l2dTapMotionEnabled,
                     l2dMouthSync = settings.l2dMouthSyncEnabled,
-                    motionEndpoint = when (settings.motionSource) {
-                        MotionSource.HAST_SEC -> "https://iris.local/hast"
-                        MotionSource.NONE -> ""
-                        else -> settings.motionEndpoint
+                    motionEndpoint = if (settings.vrmMotionEngine == VrmMotionEngine.HAST_SEC) {
+                        "https://iris.local/hast"
+                    } else {
+                        ""
                     },
                     motionIdle = settings.motionAutoIdle,
-                    motionPack = if (settings.motionSource == MotionSource.HAST_SEC) "hast" else "",
+                    motionPack = if (settings.vrmMotionEngine == VrmMotionEngine.HAST_SEC) "hast" else "vrma",
                     motionAxisFix = settings.motionAxisFix,
                 )
             }
@@ -306,7 +321,9 @@ private fun CharacterStage(
     modelThumbnail: File?,
     scene: SceneConfig?,
     live2dMood: String,
+    moodIntensity: Float,
     live2dSpeaking: Boolean,
+    mouthAmplitude: Float,
     model: CharacterModel,
     fullscreen: Boolean,
     l2dExpressions: Boolean,
@@ -410,7 +427,9 @@ private fun CharacterStage(
                 accentHex = accentHex,
                 dark = dark,
                 mood = live2dMood,
+                moodIntensity = moodIntensity,
                 speaking = live2dSpeaking,
+                mouthAmplitude = mouthAmplitude,
                 fullscreen = fullscreen,
                 modifier = modelOffset,
             )
@@ -431,6 +450,7 @@ private fun CharacterStage(
                 dark = dark,
                 speaking = live2dSpeaking,
                 mood = live2dMood,
+                mouthAmplitude = mouthAmplitude,
                 expressionsEnabled = l2dExpressions,
                 motionsEnabled = l2dMotions,
                 idleMotionEnabled = l2dIdleMotion,
@@ -824,6 +844,10 @@ private fun detectMood(text: String): String {
 @Composable
 private fun StageBase(scene: SceneConfig?) {
     if (scene == null || scene.baseStyle == StageBaseStyle.NONE) return
+    val texture = remember(scene.baseTexturePath) {
+        scene.baseTexturePath.takeIf { it.isNotBlank() && scene.baseStyle == StageBaseStyle.TEXTURE }
+            ?.let { path -> runCatching { BitmapFactory.decodeFile(path) }.getOrNull()?.asImageBitmap() }
+    }
     Canvas(modifier = Modifier.fillMaxSize()) {
         val centerX = size.width / 2f
         val baseY = size.height * 0.9f
@@ -855,6 +879,34 @@ private fun StageBase(scene: SceneConfig?) {
                 radius = 92f,
                 center = Offset(centerX, baseY),
             )
+            StageBaseStyle.TEXTURE -> {
+                val width = 260f
+                val height = 64f
+                val left = centerX - width / 2f
+                val top = baseY - height / 2f
+                if (texture != null) {
+                    val oval = Path().apply { addOval(Rect(left, top, left + width, top + height)) }
+                    clipPath(oval) {
+                        drawImage(
+                            image = texture,
+                            dstOffset = IntOffset(left.toInt(), top.toInt()),
+                            dstSize = IntSize(width.toInt(), height.toInt()),
+                        )
+                    }
+                    drawOval(
+                        color = base.copy(alpha = 0.5f),
+                        topLeft = Offset(left, top),
+                        size = Size(width, height),
+                        style = Stroke(width = 2f),
+                    )
+                } else {
+                    drawOval(
+                        color = base.copy(alpha = 0.38f),
+                        topLeft = Offset(left, top),
+                        size = Size(width, height),
+                    )
+                }
+            }
             StageBaseStyle.NONE -> Unit
         }
     }

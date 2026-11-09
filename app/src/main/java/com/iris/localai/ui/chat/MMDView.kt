@@ -2,6 +2,7 @@ package com.iris.localai.ui.chat
 
 import android.content.Context
 import android.graphics.Color
+import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -11,8 +12,19 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.IrisApp
+import com.iris.localai.motion.MotionBridge
+import com.iris.localai.motion.MotionCategory
 import org.json.JSONObject
 import java.io.File
 
@@ -26,17 +38,103 @@ internal fun MMDView(
     accentHex: String?,
     dark: Boolean,
     mood: String = "neutral",
+    moodIntensity: Float = 0.85f,
     speaking: Boolean = false,
+    mouthAmplitude: Float = 0f,
     fullscreen: Boolean = false,
     portrait: Boolean = false,
     interactive: Boolean = true,
     modelRoot: String = "character_models",
     modifier: Modifier = Modifier,
 ) {
-    val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot"
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val appSettings by graph.settings.settings.collectAsStateWithLifecycle()
+    val idleMotionAsset = appSettings.idleMotionAsset
+    val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot|$idleMotionAsset"
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var bgmPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    val assetCommand by MotionBridge.assetCommand.collectAsStateWithLifecycle()
+    val cameraCommand by MotionBridge.cameraCommand.collectAsStateWithLifecycle()
+    val motionCommand by MotionBridge.command.collectAsStateWithLifecycle()
+    val expressionCommand by MotionBridge.expressionCommand.collectAsStateWithLifecycle()
+    DisposableEffect(Unit) {
+        MotionBridge.registerMmdView()
+        onDispose {
+            MotionBridge.unregisterMmdView()
+            bgmPlayer?.release()
+            bgmPlayer = null
+        }
+    }
+    LaunchedEffect(assetCommand?.seq) {
+        val command = assetCommand ?: return@LaunchedEffect
+        if (command.path.isBlank()) {
+            webView?.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
+            bgmPlayer?.release()
+            bgmPlayer = null
+            return@LaunchedEffect
+        }
+        webView?.evaluateJavascript(
+            "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop})",
+            null,
+        )
+        bgmPlayer?.release()
+        bgmPlayer = null
+        val bgm = command.bgmPath
+        if (appSettings.danceBgmEnabled && !bgm.isNullOrBlank() && File(bgm).isFile) {
+            runCatching {
+                MediaPlayer.create(context, Uri.fromFile(File(bgm)))
+            }.onSuccess { player ->
+                player.setOnCompletionListener {
+                    it.release()
+                    bgmPlayer = null
+                    webView?.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
+                }
+                player.start()
+                bgmPlayer = player
+            }
+        }
+    }
+    LaunchedEffect(motionCommand?.seq) {
+        val action = motionCommand?.action ?: return@LaunchedEffect
+        val assets = graph.motionAssets
+        val asset = when (action.lowercase()) {
+            "wave", "挥手", "摆手", "打招呼" ->
+                assets.assets.value.firstOrNull { it.category == MotionCategory.GREET }
+            "dance", "跳舞" ->
+                assets.assets.value.firstOrNull { it.category == MotionCategory.DANCE }
+            "idle", "待机" ->
+                assets.assets.value.firstOrNull { it.category == MotionCategory.IDLE }
+            else -> assets.findByName(action)
+        }
+        if (asset != null) {
+            webView?.evaluateJavascript(
+                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(asset.id)}, ${asset.category == MotionCategory.DANCE})",
+                null,
+            )
+        }
+    }
+    LaunchedEffect(expressionCommand?.seq) {
+        val name = expressionCommand?.name ?: return@LaunchedEffect
+        webView?.evaluateJavascript(
+            "window.irisMmd&&window.irisMmd.setMood(${JSONObject.quote(name)}, 1.0)",
+            null,
+        )
+    }
+    LaunchedEffect(cameraCommand?.seq) {
+        val command = cameraCommand ?: return@LaunchedEffect
+        if (command.path.isBlank()) {
+            webView?.evaluateJavascript("window.irisMmd&&window.irisMmd.stopCamera()", null)
+        } else {
+            webView?.evaluateJavascript(
+                "window.irisMmd&&window.irisMmd.playCamera(${JSONObject.quote(command.path)}, ${command.loop})",
+                null,
+            )
+        }
+    }
     AndroidView(
-        factory = { context ->
-            WebView(context).apply {
+        factory = { ctx ->
+            WebView(ctx).apply {
                 setBackgroundColor(Color.TRANSPARENT)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
@@ -69,21 +167,25 @@ internal fun MMDView(
                         return true
                     }
                 }
-                loadMmd(this, context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot)
+                loadMmd(this, ctx, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset)
                 tag = key
+                webView = this
             }
         },
         update = { view ->
             if (view.tag != key) {
                 view.tag = key
-                loadMmd(view, view.context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot)
+                loadMmd(view, view.context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset)
             }
-            applyMmdState(view, mood, speaking)
+            applyMmdState(view, mood, speaking, moodIntensity, mouthAmplitude)
             view.postDelayed({
                 view.evaluateJavascript("window.irisMmd&&window.irisMmd.resize()", null)
             }, if (fullscreen) 180 else 80)
         },
-        onRelease = { view -> releaseModelWebView(view) },
+        onRelease = { view ->
+            webView = null
+            releaseModelWebView(view)
+        },
         modifier = modifier,
     )
 }
@@ -99,6 +201,7 @@ private fun loadMmd(
     portrait: Boolean,
     interactive: Boolean,
     modelRoot: String,
+    idleMotionAsset: String,
 ) {
     val root = File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
@@ -125,7 +228,8 @@ private fun loadMmd(
         .put("portrait", portrait)
         .put("interactive", interactive)
     Log.d("MMDView", "load portrait=$portrait root=$modelRoot file=${modelFile.name} mood=$mood")
-    findMmdMotion(modelFile, context)?.let { config.put("motion", it) }
+    findMmdMotion(modelFile, context, modelRoot)?.let { config.put("motion", it) }
+    if (idleMotionAsset.isNotBlank()) config.put("idleMotion", motionAssetUrl(idleMotionAsset))
     view.loadDataWithBaseURL(
         "https://iris.local/",
         mmdHtml(context, config.toString()),
@@ -135,17 +239,31 @@ private fun loadMmd(
     )
 }
 
-private fun applyMmdState(view: WebView, mood: String, speaking: Boolean) {
+private fun applyMmdState(
+    view: WebView,
+    mood: String,
+    speaking: Boolean,
+    moodIntensity: Float,
+    mouthAmplitude: Float,
+) {
     val safeMood = mood.replace("'", "").replace("\\", "")
+    val intensity = moodIntensity.coerceIn(0f, 1f)
+    val mouth = if (mouthAmplitude > 0.02f) {
+        mouthAmplitude.coerceIn(0f, 1f)
+    } else if (speaking) {
+        0.28f
+    } else {
+        0f
+    }
     view.evaluateJavascript(
-        "window.irisMmd&&window.irisMmd.setMood('$safeMood');" +
-            "window.irisMmd&&window.irisMmd.setMouthOpen(${if (speaking) 0.28 else 0.0});",
+        "window.irisMmd&&window.irisMmd.setMood('$safeMood', $intensity);" +
+            "window.irisMmd&&window.irisMmd.setMouthOpen($mouth);",
         null,
     )
 }
 
-private fun findMmdMotion(modelFile: File, context: Context): String? {
-    val root = File(context.filesDir, "character_models").canonicalFile
+private fun findMmdMotion(modelFile: File, context: Context, modelRoot: String): String? {
+    val root = File(context.filesDir, modelRoot).canonicalFile
     val motions = modelFile.parentFile?.listFiles()
         ?.filter { it.isFile && it.extension.equals("vmd", ignoreCase = true) }
         ?.sortedBy { it.name.lowercase() }
@@ -154,8 +272,13 @@ private fun findMmdMotion(modelFile: File, context: Context): String? {
         ?: return null
     val relative = runCatching { motion.canonicalFile.relativeTo(root).invariantSeparatorsPath }.getOrNull()
         ?: return null
-    return "https://iris.local/models/${relative.split('/').joinToString("/") { Uri.encode(it) }}"
+    val prefix = if (modelRoot == "character_models") "/models/" else "/petmodels/"
+    return "https://iris.local$prefix${relative.split('/').joinToString("/") { Uri.encode(it) }}"
 }
+
+private fun motionAssetUrl(relative: String): String =
+    "https://iris.local/motionassets/" +
+        relative.split('/').joinToString("/") { Uri.encode(it) }
 
 private var cachedMmdTemplate: String? = null
 
