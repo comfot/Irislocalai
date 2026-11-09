@@ -13,8 +13,17 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import com.iris.localai.motion.HastMotionStore
+import com.iris.localai.motion.MotionBridge
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -35,12 +44,34 @@ internal fun CharacterModel3DView(
     modelType: String,
     accentHex: String?,
     dark: Boolean,
+    portrait: Boolean = false,
+    interactive: Boolean = true,
+    modelRoot: String = "character_models",
+    motionEndpoint: String = "",
+    motionIdle: Boolean = false,
+    motionPack: String = "",
+    motionAxisFix: Int = 1,
     modifier: Modifier = Modifier,
 ) {
-    val key = "${modelFile.absolutePath}|$modelType|$accentHex|$dark"
+    val key = "${modelFile.absolutePath}|$modelType|$accentHex|$dark|$portrait|$interactive|$modelRoot|$motionEndpoint|$motionIdle|$motionPack|$motionAxisFix"
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    DisposableEffect(Unit) {
+        val motionEnabled = motionEndpoint.isNotBlank()
+        MotionBridge.registerView(motionEnabled)
+        onDispose { MotionBridge.unregisterView(motionEnabled) }
+    }
+    val motionCommand by MotionBridge.command.collectAsState()
+    LaunchedEffect(motionCommand?.seq) {
+        val command = motionCommand ?: return@LaunchedEffect
+        webView?.evaluateJavascript(
+            "window.irisMotion&&window.irisMotion.play(${JSONObject.quote(command.action)})",
+            null,
+        )
+    }
     AndroidView(
         factory = { context ->
             WebView(context).apply {
+                webView = this
                 setBackgroundColor(Color.TRANSPARENT)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
@@ -65,17 +96,20 @@ internal fun CharacterModel3DView(
                         request: WebResourceRequest,
                     ): WebResourceResponse? = interceptCharacterModel(context, request)
                 }
-                loadCharacter(this, context, modelFile, modelType, accentHex, dark)
+                loadCharacter(this, context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, motionEndpoint, motionIdle, motionPack, motionAxisFix)
                 tag = key
             }
         },
         update = { view ->
             if (view.tag != key) {
                 view.tag = key
-                loadCharacter(view, view.context, modelFile, modelType, accentHex, dark)
+                loadCharacter(view, view.context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, motionEndpoint, motionIdle, motionPack, motionAxisFix)
             }
         },
-        onRelease = { view -> releaseModelWebView(view) },
+        onRelease = { view ->
+            webView = null
+            releaseModelWebView(view)
+        },
         modifier = modifier,
     )
 }
@@ -87,8 +121,15 @@ private fun loadCharacter(
     modelType: String,
     accentHex: String?,
     dark: Boolean,
+    portrait: Boolean,
+    interactive: Boolean,
+    modelRoot: String,
+    motionEndpoint: String,
+    motionIdle: Boolean,
+    motionPack: String,
+    motionAxisFix: Int,
 ) {
-    val root = File(context.filesDir, "character_models").canonicalFile
+    val root = File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
         modelFile.canonicalFile.relativeTo(root).invariantSeparatorsPath
     }.getOrNull()
@@ -102,12 +143,19 @@ private fun loadCharacter(
         )
         return
     }
-    val modelUrl = "https://$MODEL_HOST/models/${relative.split('/').joinToString("/") { Uri.encode(it) }}"
+    val prefix = if (modelRoot == "character_models") "/models/" else "/petmodels/"
+    val modelUrl = "https://$MODEL_HOST$prefix${relative.split('/').joinToString("/") { Uri.encode(it) }}"
     val config = JSONObject()
         .put("model", modelUrl)
         .put("type", modelType)
         .put("accent", accentHex ?: "#0D84FF")
         .put("dark", dark)
+        .put("portrait", portrait)
+        .put("interactive", interactive)
+        .put("motion", motionEndpoint)
+        .put("motionIdle", motionIdle)
+        .put("pack", motionPack)
+        .put("axisFix", motionAxisFix)
         .toString()
     view.loadDataWithBaseURL(
         "https://$MODEL_HOST/",
@@ -123,11 +171,41 @@ internal fun interceptCharacterModel(context: Context, request: WebResourceReque
     if (url.host != MODEL_HOST) return null
     val path = url.path ?: return null
     if (path.startsWith("/assets/")) return assetResponse(context, Uri.decode(path.removePrefix("/assets/")))
+    if (path == "/hast/motion") {
+        val name = Uri.decode(url.getQueryParameter("name").orEmpty())
+        val json = HastMotionStore.get(context).motionJson(name) ?: return notFound()
+        return WebResourceResponse(
+            "application/json",
+            "UTF-8",
+            200,
+            "OK",
+            mapOf(
+                "Access-Control-Allow-Origin" to "*",
+                "Cache-Control" to "no-store",
+            ),
+            ByteArrayInputStream(json.toByteArray(Charsets.UTF_8)),
+        )
+    }
     val scene = path.startsWith("/scene/")
-    if (!scene && !path.startsWith("/models/")) return null
-    val relative = Uri.decode(path.removePrefix(if (scene) "/scene/" else "/models/"))
-        .replace('\\', '/')
-    val root = File(context.filesDir, if (scene) "scenes" else "character_models").canonicalFile
+    val petModels = path.startsWith("/petmodels/")
+    if (!scene && !path.startsWith("/models/") && !petModels) return null
+    val relative = Uri.decode(
+        path.removePrefix(
+            when {
+                scene -> "/scene/"
+                petModels -> "/petmodels/"
+                else -> "/models/"
+            },
+        ),
+    ).replace('\\', '/')
+    val root = File(
+        context.filesDir,
+        when {
+            scene -> "scenes"
+            petModels -> "pet_models"
+            else -> "character_models"
+        },
+    ).canonicalFile
     val file = resolveModelFile(root, relative, scene) ?: return notFound()
     if (!file.path.startsWith(root.path + File.separator) || !file.isFile) return notFound()
     if (!scene) {
@@ -171,30 +249,30 @@ private fun resolveModelFile(root: File, relative: String, scene: Boolean): File
     return found ?: exact
 }
 
-private fun optimizedTexture(context: Context, file: File): WebResourceResponse? {
+private fun optimizedTexture(context: Context, file: File, maxSide: Int = 1024): WebResourceResponse? {
     val extension = file.extension.lowercase()
     if (extension !in setOf("png", "jpg", "jpeg", "webp")) return null
     if (file.length() < 400_000) return null
     val cacheDir = File(context.cacheDir, "model-textures").apply { mkdirs() }
     val cache = File(
         cacheDir,
-        "${file.absolutePath.hashCode()}-${file.lastModified()}-${file.length()}.webp",
+        "${file.absolutePath.hashCode()}-${file.lastModified()}-${file.length()}-$maxSide.webp",
     )
     if (cache.isFile) return imageResponse(cache)
     return runCatching {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        if (bounds.outWidth <= 1024 && bounds.outHeight <= 1024 && file.length() < 1_500_000) return null
+        if (bounds.outWidth <= maxSide && bounds.outHeight <= maxSide && file.length() < 1_500_000) return null
         var sample = 1
-        while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+        while (bounds.outWidth / sample > maxSide || bounds.outHeight / sample > maxSide) sample *= 2
         val decoded = BitmapFactory.decodeFile(
             file.absolutePath,
             BitmapFactory.Options().apply { inSampleSize = sample },
         ) ?: return null
-        val maxSide = maxOf(decoded.width, decoded.height)
-        val scaled = if (maxSide > 1024) {
-            val ratio = 1024f / maxSide
+        val decodedSide = maxOf(decoded.width, decoded.height)
+        val scaled = if (decodedSide > maxSide) {
+            val ratio = maxSide.toFloat() / decodedSide
             Bitmap.createScaledBitmap(
                 decoded,
                 (decoded.width * ratio).toInt().coerceAtLeast(1),
@@ -291,36 +369,7 @@ private fun mimeOf(name: String): String = when (name.substringAfterLast('.').lo
     else -> "application/octet-stream"
 }
 
-private var cachedCharacterTemplate: String? = null
-private var cachedCharacterScript: String? = null
-
 private fun characterHtml(context: Context, configJson: String): String {
-    val template = cachedCharacterTemplate ?: run {
-        val html = context.assets.open("character.html").bufferedReader().use { it.readText() }
-        val three = context.assets.open("model/three.min.js").bufferedReader().use { it.readText() }
-        val geometry = context.assets.open("model/BufferGeometryUtils.js").bufferedReader().use { it.readText() }
-        val loader = context.assets.open("model/GLTFLoader.js").bufferedReader().use { it.readText() }
-        val scene = context.assets.open("character.js").bufferedReader().use { it.readText() }
-        cachedCharacterScript = scene
-        html
-            .replace(
-                "<script src=\"model/three.min.js\"></script>",
-                "<script>\n" + three.replace("</script", "<\\/script") + "\n</script>",
-            )
-            .replace(
-                "<script src=\"model/BufferGeometryUtils.js\"></script>",
-                "<script>\n" + geometry.replace("</script", "<\\/script") + "\n</script>",
-            )
-            .replace(
-                "<script src=\"model/GLTFLoader.js\"></script>",
-                "<script>\n" + loader.replace("</script", "<\\/script") + "\n</script>",
-            )
-            .replace("<script src=\"character.js\"></script>", "__CHARACTER_SCRIPT__")
-            .also { cachedCharacterTemplate = it }
-    }
-    val script = cachedCharacterScript.orEmpty().replace("</script", "<\\/script")
-    return template.replace(
-        "__CHARACTER_SCRIPT__",
-        "<script>window.__CHARACTER_CONFIG__ = $configJson;</script><script>\n$script\n</script>",
-    )
+    val template = context.assets.open("character.html").bufferedReader().use { it.readText() }
+    return template.replace("__CHARACTER_CONFIG_JSON__", configJson)
 }

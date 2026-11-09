@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Pets
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Restore
@@ -37,6 +38,8 @@ data class SettingsEntry(
     val title: String,
     val summary: String,
     val icon: ImageVector,
+    /** 只作为二级页面存在，不在设置首页列出。 */
+    val hidden: Boolean = false,
 )
 
 data class SettingsSection(
@@ -100,6 +103,27 @@ object SettingsCatalog {
                 SettingsEntry("security", "安全", "本地数据与 API 鉴权", Icons.Outlined.Shield),
                 SettingsEntry("about", "关于", "版本、许可与技术栈", Icons.Outlined.Info),
                 SettingsEntry("developer", "开发者选项", "日志、诊断与实验开关", Icons.Outlined.Build),
+                SettingsEntry(
+                    "pet",
+                    "桌宠穿透",
+                    "桌面悬浮形象与互动",
+                    Icons.Outlined.Pets,
+                    hidden = true,
+                ),
+                SettingsEntry(
+                    "live2d-control",
+                    "Live2D 控制",
+                    "表情、动作与口型",
+                    Icons.Outlined.Pets,
+                    hidden = true,
+                ),
+                SettingsEntry(
+                    "model3d-control",
+                    "3D 控制",
+                    "动作模型与服务配置",
+                    Icons.Outlined.Pets,
+                    hidden = true,
+                ),
             ),
         ),
         SettingsSection(

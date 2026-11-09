@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.Videocam
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
@@ -82,8 +81,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.character.CharacterCardData
@@ -91,6 +88,7 @@ import com.iris.localai.character.CharacterEntry
 import com.iris.localai.character.CharacterModelEntry
 import com.iris.localai.character.CharacterModelType
 import com.iris.localai.data.CharacterModel
+import com.iris.localai.data.MotionSource
 import com.iris.localai.scene.SceneConfig
 import com.iris.localai.scene.StageBaseStyle
 import java.io.File
@@ -192,6 +190,19 @@ fun LifeSpaceScreen(
                 live2dSpeaking = live2dSpeaking,
                 model = settings.characterModel,
                 fullscreen = fullscreen,
+                l2dExpressions = settings.l2dExpressionsEnabled,
+                l2dMotions = settings.l2dMotionsEnabled,
+                l2dIdleMotion = settings.l2dIdleMotionEnabled,
+                l2dTapMotion = settings.l2dTapMotionEnabled,
+                l2dMouthSync = settings.l2dMouthSyncEnabled,
+                motionEndpoint = when (settings.motionSource) {
+                    MotionSource.HAST_SEC -> "https://iris.local/hast"
+                    MotionSource.NONE -> ""
+                    else -> settings.motionEndpoint
+                },
+                motionIdle = settings.motionAutoIdle,
+                motionPack = if (settings.motionSource == MotionSource.HAST_SEC) "hast" else "",
+                motionAxisFix = settings.motionAxisFix,
                 onEnterFullscreen = { fullscreen = true },
                 onExitFullscreen = { fullscreen = false },
                 onModelChange = { model ->
@@ -248,6 +259,25 @@ fun LifeSpaceScreen(
                     character = character,
                     input = input,
                     running = running,
+                    activeModel = activeModel,
+                    modelFile = modelFile,
+                    live2dFile = live2dFile,
+                    mmdFile = mmdFile,
+                    model = settings.characterModel,
+                    scene = scene,
+                    l2dExpressions = settings.l2dExpressionsEnabled,
+                    l2dMotions = settings.l2dMotionsEnabled,
+                    l2dIdleMotion = settings.l2dIdleMotionEnabled,
+                    l2dTapMotion = settings.l2dTapMotionEnabled,
+                    l2dMouthSync = settings.l2dMouthSyncEnabled,
+                    motionEndpoint = when (settings.motionSource) {
+                        MotionSource.HAST_SEC -> "https://iris.local/hast"
+                        MotionSource.NONE -> ""
+                        else -> settings.motionEndpoint
+                    },
+                    motionIdle = settings.motionAutoIdle,
+                    motionPack = if (settings.motionSource == MotionSource.HAST_SEC) "hast" else "",
+                    motionAxisFix = settings.motionAxisFix,
                 )
             }
         }
@@ -279,6 +309,15 @@ private fun CharacterStage(
     live2dSpeaking: Boolean,
     model: CharacterModel,
     fullscreen: Boolean,
+    l2dExpressions: Boolean,
+    l2dMotions: Boolean,
+    l2dIdleMotion: Boolean,
+    l2dTapMotion: Boolean,
+    l2dMouthSync: Boolean,
+    motionEndpoint: String,
+    motionIdle: Boolean,
+    motionPack: String,
+    motionAxisFix: Int,
     onEnterFullscreen: () -> Unit,
     onExitFullscreen: () -> Unit,
     onModelChange: (CharacterModel) -> Unit,
@@ -349,6 +388,10 @@ private fun CharacterStage(
                 modelType = activeModel?.type?.name.orEmpty(),
                 accentHex = accentHex,
                 dark = dark,
+                motionEndpoint = motionEndpoint,
+                motionIdle = motionIdle,
+                motionPack = motionPack,
+                motionAxisFix = motionAxisFix,
                 modifier = modelOffset,
             )
             Box(
@@ -388,6 +431,11 @@ private fun CharacterStage(
                 dark = dark,
                 speaking = live2dSpeaking,
                 mood = live2dMood,
+                expressionsEnabled = l2dExpressions,
+                motionsEnabled = l2dMotions,
+                idleMotionEnabled = l2dIdleMotion,
+                tapMotionEnabled = l2dTapMotion,
+                mouthSyncEnabled = l2dMouthSync,
                 modifier = modelOffset,
             )
             Box(
@@ -818,6 +866,21 @@ private fun LifeComposer(
     character: CharacterCardData,
     input: String,
     running: Boolean,
+    activeModel: CharacterModelEntry?,
+    modelFile: File?,
+    live2dFile: File?,
+    mmdFile: File?,
+    model: CharacterModel,
+    scene: SceneConfig?,
+    l2dExpressions: Boolean,
+    l2dMotions: Boolean,
+    l2dIdleMotion: Boolean,
+    l2dTapMotion: Boolean,
+    l2dMouthSync: Boolean,
+    motionEndpoint: String,
+    motionIdle: Boolean,
+    motionPack: String,
+    motionAxisFix: Int,
 ) {
     var showVoice by remember { mutableStateOf(false) }
     var showVideo by remember { mutableStateOf(false) }
@@ -903,68 +966,25 @@ private fun LifeComposer(
     }
 
     if (showVideo) {
-        VideoCallDialog(character = character, onDismiss = { showVideo = false })
+        VideoCallScreen(
+            character = character,
+            activeModel = activeModel,
+            modelFile = modelFile,
+            live2dFile = live2dFile,
+            mmdFile = mmdFile,
+            model = model,
+            scene = scene,
+            l2dExpressions = l2dExpressions,
+            l2dMotions = l2dMotions,
+            l2dIdleMotion = l2dIdleMotion,
+            l2dTapMotion = l2dTapMotion,
+            l2dMouthSync = l2dMouthSync,
+            motionEndpoint = motionEndpoint,
+            motionIdle = motionIdle,
+            motionPack = motionPack,
+            motionAxisFix = motionAxisFix,
+            onDismiss = { showVideo = false },
+        )
     }
 }
 
-@Composable
-private fun VideoCallDialog(character: CharacterCardData, onDismiss: () -> Unit) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFF0E0E12)),
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawCircle(
-                    color = Color(character.accent ?: 0xFF7DB3FF).copy(alpha = 0.25f),
-                    radius = size.minDimension * 0.55f,
-                    center = Offset(size.width / 2f, size.height * 0.38f),
-                )
-            }
-            Column(
-                modifier = Modifier.align(Alignment.Center),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color(character.accent ?: 0xFF7DB3FF),
-                    modifier = Modifier.size(120.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = character.charName.take(1),
-                            fontSize = 48.sp,
-                            color = Color.White,
-                        )
-                    }
-                }
-                Text(
-                    text = character.charName,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = Color.White,
-                )
-                Text(
-                    text = "视频通话中 · 界面占位",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.65f),
-                )
-                Spacer(Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    IconButton(onClick = {}) {
-                        Icon(
-                            imageVector = Icons.Default.Mic,
-                            contentDescription = "静音",
-                            tint = Color.White,
-                        )
-                    }
-                    Button(onClick = onDismiss) { Text("挂断") }
-                }
-            }
-        }
-    }
-}

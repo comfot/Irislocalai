@@ -61,6 +61,24 @@ class ProotRuntime(
         timeoutSeconds: Int,
         outputLimit: Int,
     ): ProotResult {
+        val process = launch(imageId, workspaceDir, command)
+
+        return process.readResult(
+            timeoutMillis = timeoutSeconds.coerceIn(1, 300) * 1000L,
+            maxChars = outputLimit.coerceIn(1024, 200_000),
+        )
+    }
+
+    /** 启动常驻会话（如容器内 HTTP 服务）；调用方负责在不用时 [ProotSession.stop]。 */
+    fun openSession(imageId: String, workspaceDir: File, command: String): ProotSession {
+        val process = launch(imageId, workspaceDir, command)
+        val session = ProotSession(process)
+        session.drain(process.inputStream)
+        session.drain(process.errorStream)
+        return session
+    }
+
+    private fun launch(imageId: String, workspaceDir: File, command: String): Process {
         val rootfs = paths.rootfsDir(imageId)
         require(ProotPaths.isUsableRootfs(rootfs)) {
             "PRoot 镜像未安装：请先在「编程管理 › 容器与镜像」安装 rootfs"
@@ -76,7 +94,7 @@ class ProotRuntime(
         val tempDir = paths.tempDir(imageId).apply { mkdirs() }
         patcher.patch(rootfs)
 
-        val process = ProcessBuilder(buildCommand(imageId, command, proot, rootfs, workspaceDir))
+        return ProcessBuilder(buildCommand(imageId, command, proot, rootfs, workspaceDir))
             .directory(context.filesDir)
             .redirectErrorStream(false)
             .apply {
@@ -87,11 +105,6 @@ class ProotRuntime(
                 environment()["PROOT_NO_SECCOMP"] = "1"
             }
             .start()
-
-        return process.readResult(
-            timeoutMillis = timeoutSeconds.coerceIn(1, 300) * 1000L,
-            maxChars = outputLimit.coerceIn(1024, 200_000),
-        )
     }
 
     private fun buildCommand(

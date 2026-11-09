@@ -52,11 +52,15 @@ data class CharacterModelEntry(
  * 模型文件存放在 `filesDir/character_models/<id>/`，并尽量抽取缩略图。
  * 实际渲染参考 AIRI：WebView + Three.js / Live2D；本模板先完成导入、管理与预览图。
  */
-class CharacterModelStore(private val context: Context) {
+class CharacterModelStore(
+    private val context: Context,
+    modelsDir: String = MODELS_DIR,
+    prefsName: String = PREFS,
+) {
 
     private val prefs = context.applicationContext
-        .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private val root = File(context.filesDir, MODELS_DIR).apply { mkdirs() }
+        .getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+    private val root = File(context.filesDir, modelsDir).apply { mkdirs() }
 
     private val _models = MutableStateFlow(loadModels())
     val models: StateFlow<List<CharacterModelEntry>> = _models.asStateFlow()
@@ -276,6 +280,8 @@ class CharacterModelStore(private val context: Context) {
                 val id = obj.string("id") ?: return@mapNotNull null
                 val directory = obj.string("directory") ?: return@mapNotNull null
                 if (!File(root, directory).isDirectory) return@mapNotNull null
+                // FBX 支持已移除；旧数据直接跳过，避免出现无法渲染的条目。
+                if ((obj.string("type") ?: "").equals("FBX", ignoreCase = true)) return@mapNotNull null
                 CharacterModelEntry(
                     id = id,
                     name = obj.string("name") ?: "角色模型",

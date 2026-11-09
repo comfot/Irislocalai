@@ -54,9 +54,16 @@
     }
   }, 5000)
 </script>
-<script src="model/three.min.js"></script>
-<script src="model/BufferGeometryUtils.js"></script>
-<script src="model/GLTFLoader.js"></script>
-<script src="character.js"></script>
+<script>window.__CHARACTER_CONFIG__ = __CHARACTER_CONFIG_JSON__;</script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "/assets/model/vendor/three.module.js",
+    "three/addons/": "/assets/model/vendor/addons/",
+    "@pixiv/three-vrm": "/assets/model/vendor/three-vrm.module.js"
+  }
+}
+</script>
+<script type="module" src="/assets/character.js"></script>
 </body>
 </html>

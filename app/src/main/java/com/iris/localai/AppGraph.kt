@@ -17,6 +17,7 @@ import com.iris.localai.agent.tools.EditFileTool
 import com.iris.localai.agent.tools.FetchUrlTool
 import com.iris.localai.agent.tools.ListFilesTool
 import com.iris.localai.agent.tools.MemoryTool
+import com.iris.localai.agent.tools.MotionControlTool
 import com.iris.localai.agent.tools.RandomPickTool
 import com.iris.localai.agent.tools.ReadFileTool
 import com.iris.localai.agent.tools.SearchFilesTool
@@ -44,7 +45,9 @@ import com.iris.localai.mcp.McpClient
 import com.iris.localai.mcp.McpConnectionManager
 import com.iris.localai.mcp.McpServerService
 import com.iris.localai.mcp.McpStore
+import com.iris.localai.motion.HastMotionStore
 import com.iris.localai.memory.MemoryStore
+import com.iris.localai.notify.ChatNotifier
 import com.iris.localai.permission.DeviceActionExecutor
 import com.iris.localai.permission.DevicePermissionStore
 import com.iris.localai.permission.VirtualDisplayController
@@ -71,10 +74,16 @@ class AppGraph(
     engineFactory: ((Backend) -> InferenceEngine)? = null,
 ) {
     val settings = SettingsRepository(context)
+    val notifier = ChatNotifier(context, settings)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val models = ModelProfileStore(context)
     val characters = CharacterCardStore(context)
     val characterModels = CharacterModelStore(context)
+    val petModels = CharacterModelStore(
+        context = context,
+        modelsDir = "pet_models",
+        prefsName = "iris_pet_models",
+    )
     val voiceModels = VoiceModelStore(context)
     val worldBooks = WorldBookStore(context)
     val memory = MemoryStore(context)
@@ -109,6 +118,7 @@ class AppGraph(
             if (provider.kind == ProviderKind.LOCAL) provider.localModelPath else settings.current.modelPath
         },
     )
+    val toolClips = HastMotionStore.get(context)
     val tools = ToolRegistry().apply {
         register(CurrentTimeTool())
         register(DeviceInfoTool())
@@ -122,6 +132,7 @@ class AppGraph(
         register(SearchFilesTool(context, code, workspaces))
         register(FetchUrlTool())
         register(MemoryTool(memory))
+        register(MotionControlTool(toolClips))
         register(ShellTool(code, workspaces, context))
         register(DeviceOpenAppTool(deviceActions))
         register(DeviceTapTool(deviceActions))

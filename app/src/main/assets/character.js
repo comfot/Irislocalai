@@ -1,3 +1,7 @@
+import * as THREE from 'three'
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
+
 (() => {
   'use strict'
 
@@ -5,6 +9,9 @@
   const status = document.getElementById('status')
   const params = new URLSearchParams(location.hash.startsWith('#') ? location.hash.substring(1) : '')
   const config = window.__CHARACTER_CONFIG__ || {}
+  // 通话页需要上半身取景：抬高相机目标并拉近，而不是整体缩放。
+  const portrait = !!config.portrait
+  const interactive = config.interactive !== false
   const modelUrl = config.model || (params.get('model') ? decodeURIComponent(params.get('model')) : '')
   const modelType = (config.type || params.get('type') || '').toUpperCase()
   const accent = config.accent || params.get('accent') || '#0D84FF'
@@ -60,7 +67,19 @@
   let moved = 0
   let idleSince = performance.now()
   let model = null
+  let vrm = null
+  let vrmVersion = '1'
+  let activeMotion = null
   let mixer = null
+  let motionMixer = null
+  let motionAction = null
+  const restRotations = new Map()
+  let motionEndpoint = typeof config.motion === 'string' ? config.motion : ''
+  const motionIdle = config.motionIdle !== false
+  const motionPack = String(config.pack || '')
+  const idleMotionName = 'idle'
+  const tapMotionName = motionPack === 'hast' ? 'right-摆动手臂' : 'wave'
+  const motionAxisFix = Number(config.axisFix || 0)
   let modelHeight = 1.7
   const pointerPositions = new Map()
 
@@ -112,10 +131,23 @@
     camera.updateProjectionMatrix()
     const fit = (modelHeight / 2) / Math.tan((camera.fov * Math.PI / 180) / 2)
     radius = Math.max(2.8, fit / Math.max(0.58, camera.aspect) * 1.35)
+    if (portrait) {
+      // 可见高度约半个身高：头到胸口铺满画面，与画布宽高比无关。
+      radius = (modelHeight * 0.5 / 2) / Math.tan((camera.fov * Math.PI / 180) / 2)
+      applyCamera()
+      return
+    }
     applyCamera()
   }
 
+  const portraitTarget = new THREE.Vector3()
   function applyCamera() {
+    if (portrait) {
+      portraitTarget.set(0, modelHeight * 0.8, 0)
+      camera.position.set(Math.sin(yaw) * radius * 0.72, modelHeight * 0.8, radius)
+      camera.lookAt(portraitTarget)
+      return
+    }
     camera.position.set(
       target.x + Math.sin(yaw) * radius * 0.72,
       cameraY,
@@ -141,83 +173,253 @@
     loaded.updateMatrixWorld(true)
   }
 
-  function humanoidBone(gltf, name) {
-    const json = gltf.parser && gltf.parser.json
-    if (!json || !json.nodes) return null
-    const vrm1 = json.extensions && json.extensions.VRMC_vrm
-    const vrm0 = json.extensions && json.extensions.VRM
-    const humanBones = (vrm1 && vrm1.humanoid && vrm1.humanoid.humanBones) ||
-      (vrm0 && vrm0.humanoid && vrm0.humanoid.humanBones)
-    let index = null
-    if (Array.isArray(humanBones)) {
-      const entry = humanBones.find((item) => item.bone === name)
-      index = entry ? entry.node : null
-    } else if (humanBones) {
-      const entry = humanBones[name]
-      index = typeof entry === 'number' ? entry : entry && entry.node
-    }
-    if (index === null || index === undefined) return null
-    const nodeName = json.nodes[index] && json.nodes[index].name
-    return nodeName ? gltf.scene.getObjectByName(nodeName) : null
+  function relaxArmsVrm() {
+    if (!vrm) return
+    const direction = vrmVersion === '0' ? -1 : 1
+    const left = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 1.08 * direction))
+    const right = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -1.08 * direction))
+    vrm.humanoid.setNormalizedPose({
+      leftUpperArm: { rotation: left.toArray() },
+      rightUpperArm: { rotation: right.toArray() },
+    })
   }
 
-  function relaxArms(gltf) {
-    const left = humanoidBone(gltf, 'leftUpperArm')
-    const right = humanoidBone(gltf, 'rightUpperArm')
-    if (left) left.rotation.z += 1.08
-    if (right) right.rotation.z -= 1.08
+  function prepareModel(object, animations, loadedVrm) {
+    model = object
+    vrm = loadedVrm || null
+    vrmVersion = vrm && vrm.meta && String(vrm.meta.metaVersion || '') === '0' ? '0' : '1'
+    activeMotion = null
+    if (!model) {
+      showStatus('模型没有可显示的场景')
+      return
+    }
+    model.traverse((item) => {
+      if (item.isBone) restRotations.set(item, item.quaternion.clone())
+    })
+    model.traverse((item) => {
+      if (item.isMesh) {
+        item.castShadow = true
+        item.receiveShadow = true
+        item.frustumCulled = false
+      }
+    })
+    group.add(model)
+    frameModel(model)
+    if (animations && animations.length > 0 && !motionEndpoint) {
+      mixer = new THREE.AnimationMixer(model)
+      animations.forEach((clip) => mixer.clipAction(clip).play())
+    }
+    resize()
+    hideStatus()
+    if (vrm) {
+      vrm.humanoid.resetNormalizedPose()
+      relaxArmsVrm()
+    }
+    if (motionEndpoint) {
+      if (motionIdle) playMotion(idleMotionName, true)
+    }
+  }
+
+  function findBone(key) {
+    let found = null
+    const raw = String(key || '')
+    const wanted = raw.toLowerCase()
+    if (!wanted) return null
+    let alias = wanted
+    if (wanted.startsWith('left')) alias = 'l_' + wanted.slice(4)
+    else if (wanted.startsWith('right')) alias = 'r_' + wanted.slice(5)
+    else if (['hips', 'spine', 'chest', 'neck', 'head'].includes(wanted)) alias = 'c_' + wanted
+    model.traverse((object) => {
+      if (found || !object.isBone) return
+      const name = object.name.toLowerCase()
+      if (name.includes(alias) || name.includes(wanted) || name.replace(/_/g, '').includes(wanted)) {
+        found = object
+      }
+    })
+    return found
+  }
+
+  const sampleFrom = new THREE.Quaternion()
+  const sampleTo = new THREE.Quaternion()
+  const sampleResult = new THREE.Quaternion()
+
+  function sampleTrack(track, time) {
+    const times = track.times
+    const count = times.length
+    if (count === 0) return [0, 0, 0, 1]
+    if (count === 1 || time <= times[0]) {
+      sampleResult.fromArray(track.quats, 0)
+      return sampleResult.toArray()
+    }
+    if (time >= times[count - 1]) {
+      sampleResult.fromArray(track.quats, (count - 1) * 4)
+      return sampleResult.toArray()
+    }
+    let low = 0
+    let high = count - 1
+    while (low + 1 < high) {
+      const mid = (low + high) >> 1
+      if (times[mid] <= time) low = mid
+      else high = mid
+    }
+    const span = times[high] - times[low]
+    const alpha = span > 1e-6 ? (time - times[low]) / span : 0
+    sampleFrom.fromArray(track.quats, low * 4)
+    sampleTo.fromArray(track.quats, high * 4)
+    sampleResult.slerpQuaternions(sampleFrom, sampleTo, alpha)
+    return sampleResult.toArray()
+  }
+
+  function advanceMotion(dt) {
+    if (!vrm || !activeMotion) return
+    const motion = activeMotion
+    motion.time += dt
+    if (!motion.loop && motion.time >= motion.duration) {
+      activeMotion = null
+      if (motionIdle) setTimeout(() => { playMotion(idleMotionName, true) }, 120)
+      return
+    }
+    const time = motion.loop ? motion.time % motion.duration : motion.time
+    const pose = {}
+    for (const track of motion.tracks) {
+      pose[track.bone] = { rotation: sampleTrack(track, time) }
+    }
+    vrm.humanoid.setNormalizedPose(pose)
+  }
+
+  async function playMotion(name, loop) {
+    if (!model || !motionEndpoint) return false
+    try {
+      if (motionPack === 'hast') {
+        const alias = String(name || '').toLowerCase()
+        if (alias === 'wave' || alias === '挥手' || alias === '摆手') name = 'right-摆动手臂'
+        else if (alias === 'dance' || alias === '跳舞') name = 'body-自然活动'
+        else if (alias === 'nod' || alias === '点头') name = 'body-自然活动'
+      }
+      const base = motionEndpoint.replace(/\/$/, '')
+      const response = await fetch(`${base}/motion?name=${encodeURIComponent(name)}`)
+      if (!response.ok) return false
+      const data = await response.json()
+      if (vrm) {
+        const tracks = []
+        for (const track of data.tracks || []) {
+          const bone = String(track.bone || '')
+          if (!bone || !vrm.humanoid.getNormalizedBoneNode(bone)) continue
+          const times = Array.isArray(track.times) ? track.times : []
+          const source = Array.isArray(track.quaternions) ? track.quaternions : []
+          if (times.length === 0 || source.length < 4) continue
+          const quats = new Float32Array(source.length)
+          for (let i = 0; i < source.length; i += 4) {
+            const flip = vrmVersion === '0'
+            quats[i] = flip ? -source[i] : source[i]
+            quats[i + 1] = source[i + 1]
+            quats[i + 2] = flip ? -source[i + 2] : source[i + 2]
+            quats[i + 3] = source[i + 3]
+          }
+          tracks.push({ bone, times, quats })
+        }
+        if (tracks.length === 0) return false
+        vrm.humanoid.resetNormalizedPose()
+        activeMotion = {
+          name: data.name || name,
+          tracks,
+          duration: Math.max(0.1, Number(data.duration) || 2),
+          loop: !!loop,
+          time: 0,
+        }
+        return true
+      }
+      const tracks = []
+      for (const track of data.tracks || []) {
+        const bone = findBone(track.bone)
+        if (!bone) continue
+        const rest = restRotations.get(bone)
+        const source = track.quaternions
+        const composed = new Float32Array(source.length)
+        const local = new THREE.Quaternion()
+        const out = new THREE.Quaternion()
+        for (let i = 0; i < source.length; i += 4) {
+          let x = source[i]
+          let y = source[i + 1]
+          let z = source[i + 2]
+          const w = source[i + 3]
+          if (motionAxisFix === 1 || motionAxisFix === 3) z = -z
+          if (motionAxisFix === 2 || motionAxisFix === 3) x = -x
+          local.set(x, y, z, w)
+          if (rest) out.copy(rest).multiply(local)
+          else out.copy(local)
+          composed[i] = out.x
+          composed[i + 1] = out.y
+          composed[i + 2] = out.z
+          composed[i + 3] = out.w
+        }
+        tracks.push(new THREE.QuaternionKeyframeTrack(
+          `${bone.name}.quaternion`,
+          track.times,
+          composed,
+        ))
+      }
+      if (tracks.length === 0) return false
+      const clip = new THREE.AnimationClip(data.name || name, data.duration || 2, tracks)
+      if (!motionMixer) motionMixer = new THREE.AnimationMixer(model)
+      if (motionAction) motionAction.stop()
+      motionAction = motionMixer.clipAction(clip)
+      motionAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
+      motionAction.clampWhenFinished = !loop
+      motionAction.play()
+      if (!loop && motionIdle) {
+        const clipDuration = data.duration || 2
+        setTimeout(() => { playMotion(idleMotionName, true) }, clipDuration * 1000 + 120)
+      }
+      return true
+    } catch (error) {
+      console.warn('motion error', error)
+      return false
+    }
+  }
+
+  window.irisMotion = {
+    play(name) { return playMotion(name, false) },
+    idle() { return playMotion(idleMotionName, true) },
+    setEndpoint(value) { motionEndpoint = String(value || '') },
   }
 
   function loadModel() {
     showStatus('正在加载角色模型…')
-    const loader = new THREE.GLTFLoader()
+    const onProgress = (event) => {
+      if (event && event.total > 0) {
+        showStatus(`正在加载角色模型… ${Math.min(100, Math.round(event.loaded / event.total * 100))}%`)
+      }
+    }
+    const onError = (error) => {
+      console.error('character model error', error)
+      showStatus('角色模型加载失败：' + (error && error.message ? error.message : '文件无法读取'))
+    }
+    const loader = new GLTFLoader()
+    loader.register((parser) => new VRMLoaderPlugin(parser))
     loader.load(
       modelUrl,
       (gltf) => {
-        model = gltf.scene || gltf.scenes?.[0]
-        if (!model) {
-          showStatus('模型没有可显示的场景')
+        const scene = gltf.scene || gltf.scenes?.[0]
+        const loadedVrm = gltf.userData?.vrm || null
+        if (modelType === 'VRM' && !loadedVrm) {
+          showStatus('该文件不是有效的 VRM 模型')
           return
         }
-        model.traverse((item) => {
-          if (item.isMesh) {
-            item.castShadow = true
-            item.receiveShadow = true
-            item.frustumCulled = false
-            const materials = Array.isArray(item.material) ? item.material : [item.material]
-            materials.forEach((material) => {
-              if (!material) return
-              material.side = THREE.DoubleSide
-              material.needsUpdate = true
-            })
-          }
-        })
-        if (modelType === 'VRM') {
-          model.rotation.y = Math.PI
-          relaxArms(gltf)
+        if (loadedVrm) {
+          VRMUtils.rotateVRM0(loadedVrm)
+          VRMUtils.combineSkeletons(loadedVrm.scene)
+          if (loadedVrm.lookAt) loadedVrm.lookAt.autoUpdate = false
         }
-        group.add(model)
-        frameModel(model)
-        if (gltf.animations && gltf.animations.length > 0) {
-          mixer = new THREE.AnimationMixer(model)
-          gltf.animations.forEach((clip) => mixer.clipAction(clip).play())
-        }
-        resize()
-        hideStatus()
+        prepareModel(scene, gltf.animations || [], loadedVrm)
       },
-      (event) => {
-        if (event && event.total > 0) {
-          showStatus(`正在加载角色模型… ${Math.min(100, Math.round(event.loaded / event.total * 100))}%`)
-        }
-      },
-      (error) => {
-        console.error('character model error', error)
-        showStatus('角色模型加载失败：' + (error && error.message ? error.message : '文件无法读取'))
-      },
+      onProgress,
+      onError,
     )
   }
 
   function onPointerDown(event) {
+    if (!interactive) return
     if (event.pointerType === 'mouse' && event.button !== 0) return
     pointerPositions.set(event.pointerId, { x: event.clientX, y: event.clientY })
     try { stage.setPointerCapture(event.pointerId) } catch (_) { }
@@ -241,6 +443,7 @@
   }
 
   function onPointerMove(event) {
+    if (!interactive) return
     const current = pointerPositions.get(event.pointerId)
     if (!current) return
     current.x = event.clientX
@@ -272,6 +475,7 @@
     pointerPositions.delete(event.pointerId)
     try { stage.releasePointerCapture(event.pointerId) } catch (_) { }
     if (event.pointerId === pointerId) {
+      if (interactive && moved < 6 && motionEndpoint) playMotion(tapMotionName, false)
       dragging = false
       pointerId = pointerPositions.keys().next().value ?? null
     }
@@ -282,6 +486,7 @@
   stage.addEventListener('pointerup', onPointerUp)
   stage.addEventListener('pointercancel', onPointerUp)
   stage.addEventListener('wheel', (event) => {
+    if (!interactive) return
     radius = Math.max(1.8, Math.min(9, radius + event.deltaY * 0.004))
     idleSince = performance.now()
     applyCamera()
@@ -299,6 +504,11 @@
     requestAnimationFrame(animate)
     const dt = Math.min(0.05, clock.getDelta())
     if (mixer) mixer.update(dt)
+    if (motionMixer) motionMixer.update(dt)
+    if (vrm) {
+      advanceMotion(dt)
+      vrm.update(dt)
+    }
     if (model && !dragging && now - idleSince > 6000) {
       group.rotation.y += dt * 0.045
     }

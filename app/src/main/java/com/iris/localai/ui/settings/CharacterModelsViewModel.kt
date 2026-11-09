@@ -70,9 +70,6 @@ class CharacterModelsViewModel(application: Application) : AndroidViewModel(appl
 
     fun setActive(id: String) = store.setActive(id)
 
-    fun updateOffset(id: String, offsetX: Float, offsetY: Float) =
-        store.updateOffset(id, offsetX, offsetY)
-
     fun clearActive() = store.clearActive()
 
     fun bind(characterId: String, modelId: String) {

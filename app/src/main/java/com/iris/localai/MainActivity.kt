@@ -10,6 +10,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.data.resolveDark
+import com.iris.localai.notify.AppForeground
 import com.iris.localai.ui.MainScreen
 import com.iris.localai.ui.theme.IrisTheme
 
@@ -36,5 +37,15 @@ class MainActivity : ComponentActivity() {
                 MainScreen()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppForeground.visible = true
+    }
+
+    override fun onPause() {
+        AppForeground.visible = false
+        super.onPause()
     }
 }

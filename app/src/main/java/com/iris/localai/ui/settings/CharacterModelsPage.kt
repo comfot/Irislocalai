@@ -109,13 +109,6 @@ internal fun CharacterModelsPage(viewModel: CharacterModelsViewModel = viewModel
             }
         }
 
-        if (active != null) {
-            ModelOffsetCard(
-                model = active,
-                onOffsetChange = { x, y -> viewModel.updateOffset(active.id, x, y) },
-            )
-        }
-
         SettingsCard("角色绑定") {
             if (activeCharacter == null) {
                 Text(
@@ -244,66 +237,6 @@ internal fun CharacterModelsPage(viewModel: CharacterModelsViewModel = viewModel
                 TextButton(onClick = { pendingDelete = null }) { Text("取消") }
             },
         )
-    }
-}
-
-@Composable
-private fun ModelOffsetCard(
-    model: CharacterModelEntry,
-    onOffsetChange: (Float, Float) -> Unit,
-) {
-    var offsetX by remember(model.id) { mutableFloatStateOf(model.offsetX) }
-    var offsetY by remember(model.id) { mutableFloatStateOf(model.offsetY) }
-    LaunchedEffect(model.offsetX, model.offsetY) {
-        offsetX = model.offsetX
-        offsetY = model.offsetY
-    }
-
-    SettingsCard("模型位置") {
-        Text(
-            text = "调整当前模型在舞台中的位置，仅对「${model.name}」生效。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = "左右偏移 ${(offsetX * 100).roundToInt()}%",
-            style = MaterialTheme.typography.labelMedium,
-        )
-        Slider(
-            value = offsetX,
-            onValueChange = { offsetX = it },
-            onValueChangeFinished = { onOffsetChange(offsetX, offsetY) },
-            valueRange = -0.5f..0.5f,
-        )
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Text("左", style = MaterialTheme.typography.labelSmall)
-            Spacer(Modifier.weight(1f))
-            Text("右", style = MaterialTheme.typography.labelSmall)
-        }
-        Text(
-            text = "上下偏移 ${(offsetY * 100).roundToInt()}%",
-            style = MaterialTheme.typography.labelMedium,
-        )
-        Slider(
-            value = offsetY,
-            onValueChange = { offsetY = it },
-            onValueChangeFinished = { onOffsetChange(offsetX, offsetY) },
-            valueRange = -0.5f..0.5f,
-        )
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Text("上", style = MaterialTheme.typography.labelSmall)
-            Spacer(Modifier.weight(1f))
-            Text("下", style = MaterialTheme.typography.labelSmall)
-        }
-        TextButton(
-            onClick = {
-                offsetX = 0f
-                offsetY = 0f
-                onOffsetChange(0f, 0f)
-            },
-        ) {
-            Text("重置位置")
-        }
     }
 }
 

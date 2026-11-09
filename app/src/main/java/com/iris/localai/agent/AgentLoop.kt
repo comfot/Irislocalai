@@ -179,6 +179,10 @@ class AgentLoop(
         } else {
             appendLine("可用工具：")
             appendLine(availableTools.joinToString("\n") { "- ${it.name}: ${it.description}" })
+            if (availableTools.any { it.name == "motion_control" }) {
+                appendLine("当用户要求角色做动作、比手势、跳舞、打招呼时，调用 motion_control，不要声称自己无法控制模型。")
+                appendLine("调用时必须带 arguments.action，例如 {\"action\":\"wave\"}；用户只说“挥手”就传 wave。")
+            }
             if (availableTools.any { it.name == "read_file" }) {
                 appendLine("文件操作建议：先用 list_files / search_files 定位，再用 read_file 确认原文；" +
                     "局部修改用 edit_file，整文件重写用 write_file。")

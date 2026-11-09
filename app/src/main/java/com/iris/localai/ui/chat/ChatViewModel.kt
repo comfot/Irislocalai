@@ -28,6 +28,9 @@ import com.iris.localai.engine.EngineState
 import com.iris.localai.engine.PromptMessage
 import com.iris.localai.engine.SamplingConfig
 import com.iris.localai.lorebook.LorebookResolver
+import com.iris.localai.pet.PetChatBus
+import com.iris.localai.pet.PetDestination
+import com.iris.localai.pet.PetNavigator
 import com.iris.localai.plugin.PluginHookDescriptor
 import com.iris.localai.scene.SceneConfig
 import com.iris.localai.workspace.Workspace
@@ -222,6 +225,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _pluginMenuItems.value = registrations.values
                     .flatMap { it.hooksOf("chat_message_menu_item") }
             }
+        }
+        // 桌宠输入栏与菜单跳转：桌宠在后台运行，消息经总线进入生活空间会话。
+        viewModelScope.launch {
+            PetChatBus.messages.collect { text -> sendPetMessage(text) }
+        }
+        viewModelScope.launch {
+            PetNavigator.events.collect { event ->
+                if (event?.destination == PetDestination.LIFE_CHAT) {
+                    graph.settings.update { it.copy(space = Space.LIFE) }
+                    openLatest(Space.LIFE)
+                }
+            }
+        }
+    }
+
+    private fun sendPetMessage(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            graph.settings.update { it.copy(space = Space.LIFE) }
+            val conversation = store.conversations.value.firstOrNull { it.space == Space.LIFE }
+                ?: store.create(
+                    space = Space.LIFE,
+                    workspaceId = graph.workspaces.active()?.id.orEmpty(),
+                )
+            _currentId.value = conversation.id
+            _input.value = trimmed
+            send()
         }
     }
 
@@ -535,7 +566,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 ?.firstOrNull { it.id == assistantId }
                                 ?.let { notifyPluginChatMessage(conversation.id, it, "ai") }
                             notifyPluginChatRuntime(conversation.id, "completed")
-                            speakIfEnabled(event.text.ifBlank { store.find(conversation.id)?.messages?.lastOrNull()?.text.orEmpty() })
+                            val finalText = event.text.ifBlank {
+                                store.find(conversation.id)?.messages?.lastOrNull()?.text.orEmpty()
+                            }
+                            graph.notifier.notifyReply(
+                                title = conversation.title.ifBlank { "对话" },
+                                body = finalText,
+                            )
+                            speakIfEnabled(finalText)
                         }
                         is AgentEvent.Failed -> {
                             appendError(conversation.id, assistantId, event.message)

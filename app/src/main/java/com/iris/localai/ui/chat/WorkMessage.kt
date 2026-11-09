@@ -11,6 +11,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -41,8 +44,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -78,6 +83,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +100,7 @@ import com.iris.localai.agent.ChatMessage
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
 import com.iris.localai.plugin.PluginHookDescriptor
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -111,6 +118,14 @@ internal fun WorkMessageList(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            info.totalItemsCount == 0 || lastVisible >= info.totalItemsCount - 1
+        }
+    }
     val signature = messages.lastOrNull()?.let { "${it.id}:${it.text.length}:${it.steps.size}" }.orEmpty()
     val lastIndex = messages.lastIndex
     val tailIsUser = messages.lastOrNull()?.role == ChatRole.USER
@@ -127,22 +142,40 @@ internal fun WorkMessageList(
         if (messages.isNotEmpty() && (followTail || tailIsUser)) listState.scrollToItem(messages.size)
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier,
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
-            val streaming = running && message.id == messages.last().id
-            if (message.role == ChatRole.USER) {
-                WorkUserBubble(message, pluginMenuItems, onPluginMenu, index)
-            } else {
-                WorkAssistantMessage(message, streaming, pluginMenuItems, onPluginMenu, index)
+    Box(modifier = modifier) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
+                val streaming = running && message.id == messages.last().id
+                if (message.role == ChatRole.USER) {
+                    WorkUserBubble(message, pluginMenuItems, onPluginMenu, index)
+                } else {
+                    WorkAssistantMessage(message, streaming, pluginMenuItems, onPluginMenu, index)
+                }
+            }
+            item(key = "work-bottom-anchor") {
+                Spacer(Modifier.height(2.dp))
             }
         }
-        item(key = "work-bottom-anchor") {
-            Spacer(Modifier.height(2.dp))
+        AnimatedVisibility(
+            visible = messages.isNotEmpty() && !atBottom,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp),
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut(),
+        ) {
+            FilledTonalIconButton(
+                onClick = {
+                    scope.launch { listState.animateScrollToItem(messages.size) }
+                },
+            ) {
+                Icon(Icons.Filled.ArrowDownward, contentDescription = "回到底部")
+            }
         }
     }
 }

@@ -8,9 +8,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.activity.compose.BackHandler
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.outlined.Pets
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -33,12 +38,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.localai.data.Space
 import com.iris.localai.engine.EngineState
+import com.iris.localai.pet.PetOverlayController
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,8 +68,21 @@ fun ChatScreen(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val petRunning by PetOverlayController.running.collectAsStateWithLifecycle()
     var lifeFullscreen by remember { mutableStateOf(false) }
     var sidebarPinned by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(settings.petOverlayEnabled) {
+        if (settings.petOverlayEnabled && !PetOverlayController.running.value) {
+            if (Settings.canDrawOverlays(context)) {
+                PetOverlayController.start(context)
+            } else {
+                viewModel.updateSettings { it.copy(petOverlayEnabled = false) }
+                Toast.makeText(context, "需要悬浮窗权限才能显示桌宠", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     LaunchedEffect(space) {
         if (space != Space.LIFE) lifeFullscreen = false
@@ -154,6 +174,41 @@ fun ChatScreen(
                         }
                     },
                         actions = {
+                            if (space == Space.LIFE) {
+                                IconButton(
+                                    onClick = {
+                                        if (!Settings.canDrawOverlays(context)) {
+                                            runCatching {
+                                                context.startActivity(
+                                                    Intent(
+                                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                        Uri.parse("package:${context.packageName}"),
+                                                    ),
+                                                )
+                                            }
+                                            Toast.makeText(context, "请允许显示在其他应用上层", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            val next = !settings.petOverlayEnabled
+                                            viewModel.updateSettings { it.copy(petOverlayEnabled = next) }
+                                            if (next) {
+                                                PetOverlayController.start(context)
+                                            } else {
+                                                PetOverlayController.stop(context)
+                                            }
+                                        }
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Pets,
+                                        contentDescription = if (petRunning) "关闭桌宠穿透" else "开启桌宠穿透",
+                                        tint = if (petRunning) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                }
+                            }
                             SpaceSwitchButton(
                                 current = space,
                                 onSelect = viewModel::selectSpace,

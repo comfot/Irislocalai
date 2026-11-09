@@ -31,6 +31,40 @@ data class AppSettings(
     val characterModel: CharacterModel = CharacterModel.TWO_D,
     val characterLayout: CharacterLayout = CharacterLayout.GRID,
 
+    // 桌宠穿透
+    val petOverlayEnabled: Boolean = false,
+    val petCuteAvatar: Boolean = true,
+    val petModelId: String = "",
+    val petTapAction: PetTapAction = PetTapAction.BUBBLE,
+    val petLongPressAction: PetLongPressAction = PetLongPressAction.MENU,
+    val petDraggable: Boolean = true,
+    val petIdleAnimation: Boolean = true,
+    val petScale: Float = 1f,
+    val petFeedEnabled: Boolean = true,
+    val petSingEnabled: Boolean = true,
+    val petWakeEnabled: Boolean = true,
+
+    // 通知
+    val notifyReplies: Boolean = true,
+    val notifyLockScreen: Boolean = true,
+    val notifyHeadsUp: Boolean = false,
+    val notifyIsland: Boolean = false,
+
+    // 模型控制
+    val l2dExpressionsEnabled: Boolean = true,
+    val l2dMotionsEnabled: Boolean = true,
+    val l2dIdleMotionEnabled: Boolean = true,
+    val l2dTapMotionEnabled: Boolean = true,
+    val l2dMouthSyncEnabled: Boolean = true,
+    val motionSource: MotionSource = MotionSource.NONE,
+    val motionEndpoint: String = "",
+    val motionApiKey: String = "",
+    val motionDurationSeconds: Int = 5,
+    val motionAutoIdle: Boolean = false,
+    val motionInCall: Boolean = true,
+    /** 0=不修正，1=前后翻转（z 取反），2=左右翻转（x 取反），3=前后+左右。 */
+    val motionAxisFix: Int = 1,
+
     // 模型与加载
     val autoLoadLastModel: Boolean = true,
     val visionQualitySide: Int = 1024,

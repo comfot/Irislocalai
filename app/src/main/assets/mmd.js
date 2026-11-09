@@ -4,6 +4,9 @@
   const stage = document.getElementById('stage')
   const status = document.getElementById('status')
   const config = window.__MMD_CONFIG__ || {}
+  // 通话页只露上半身：抬高相机目标并拉近。
+  const portrait = !!config.portrait
+  const interactive = config.interactive !== false
   const params = new URLSearchParams(location.hash.startsWith('#') ? location.hash.substring(1) : '')
   const modelUrl = config.model || (params.get('model') ? decodeURIComponent(params.get('model')) : '')
   const motionUrl = config.motion || ''
@@ -43,6 +46,76 @@
   let modelRoot
   let fitRadius = 30
   let baseScale = 1
+  let headY = 0
+  const headTmp = new BABYLON.Vector3()
+
+  /** 用头骨的实际世界高度作为取景基准；找不到头骨时退回包围盒高度。 */
+  function computeHeadY() {
+    try {
+      const skeletons = []
+      try { if (modelRoot && modelRoot.skeleton) skeletons.push(modelRoot.skeleton) } catch (_) { }
+      try { if (model && model.skeleton) skeletons.push(model.skeleton) } catch (_) { }
+      try {
+        if (scene && scene.skeletons) {
+          for (const skeleton of scene.skeletons) skeletons.push(skeleton)
+        }
+      } catch (_) { }
+      try {
+        if (modelRoot && modelRoot.getChildMeshes) {
+          for (const mesh of modelRoot.getChildMeshes(false)) {
+            if (mesh && mesh.skeleton) skeletons.push(mesh.skeleton)
+          }
+        }
+      } catch (_) { }
+      const bones = []
+      for (const skeleton of skeletons) {
+        const list = skeleton && skeleton.bones ? skeleton.bones : []
+        for (const bone of list) bones.push(bone)
+      }
+      const head = bones.find((bone) => {
+        const name = (bone.name || '').toLowerCase()
+        return name === '頭' || name === '头' || name === 'head' || name.includes('head') || name.includes('頭')
+      })
+      if (head && modelRoot) {
+        const local = head.getAbsolutePosition()
+        BABYLON.Vector3.TransformCoordinatesToRef(local, modelRoot.getWorldMatrix(), headTmp)
+        if (Number.isFinite(headTmp.y) && headTmp.y > modelHeight * 0.2) {
+          headY = headTmp.y
+          return
+        }
+      }
+      // 没有头骨时取最高骨骼作为头顶近似（跳过 IK/物理辅助骨）。
+      let bestY = 0
+      for (const bone of bones) {
+        try {
+          const name = (bone.name || '').toLowerCase()
+          if (name.includes('ik') || name.includes('effector') || name.includes('エフェクタ') ||
+            name.includes('skirt') || name.includes('スカート')) continue
+          const point = bone.getAbsolutePosition()
+          BABYLON.Vector3.TransformCoordinatesToRef(point, modelRoot.getWorldMatrix(), headTmp)
+          if (Number.isFinite(headTmp.y) && headTmp.y > bestY) bestY = headTmp.y
+        } catch (_) { }
+      }
+      if (bestY > 0) {
+        headY = bestY
+      }
+    } catch (error) {
+      console.warn('[mmd-frame] head bone lookup failed: ' + error)
+    }
+  }
+
+  function portraitFocusY() {
+    return headY > 0 ? headY * 0.92 : modelHeight * 0.88
+  }
+
+  /** 包围盒可能被骨骼撑大，有头骨时以头高作为身体高度。 */
+  function portraitHeight() {
+    return headY > 0 ? headY : modelHeight
+  }
+
+  function portraitVisibleHeight() {
+    return headY > 0 ? headY * 0.5 : modelHeight * 0.45
+  }
   let activeMood = null
   let mouthValue = 0
   const moodMorphs = {
@@ -153,6 +226,7 @@
   let pinchDistance = 0
   let pinchRadius = 0
   canvas.addEventListener('pointerdown', (event) => {
+    if (!interactive) return
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
     try { canvas.setPointerCapture(event.pointerId) } catch (_) { }
     if (pointers.size === 1) {
@@ -167,6 +241,7 @@
   }, { passive: false })
 
   canvas.addEventListener('pointermove', (event) => {
+    if (!interactive) return
     const point = pointers.get(event.pointerId)
     if (!point) return
     point.x = event.clientX
@@ -210,10 +285,17 @@
     const halfHeight = Math.max(1, modelHeight / 2)
     const fitHeight = halfHeight / Math.tan(camera.fov / 2)
     fitRadius = fitHeight * (aspect < 0.75 ? 0.72 : 0.85)
-    camera.radius = fitRadius
+    camera.radius = portrait ? (modelHeight * 0.45 / 2) / Math.tan(camera.fov / 2) : fitRadius
     camera.lowerRadiusLimit = fitRadius * 0.32
     camera.upperRadiusLimit = fitRadius * 2.8
-    camera.target.set(0, modelHeight * 0.52, 0)
+    camera.target.set(0, modelHeight * (portrait ? 0.85 : 0.52), 0)
+    if (portrait) {
+      camera.beta = Math.PI / 2
+      camera.alpha = -Math.PI / 2
+      computeHeadY()
+      camera.radius = (portraitVisibleHeight() / 2) / Math.tan(camera.fov / 2)
+      camera.target.set(0, portraitFocusY(), 0)
+    }
   }
 
   async function loadMotion(url) {
@@ -328,5 +410,15 @@
   })
 
   load()
-  engine.runRenderLoop(() => scene.render())
+  engine.runRenderLoop(() => {
+    // 通话取景每帧校正：模型加载、动作与物理都会重算包围盒/相机，
+    // 只在 fitCamera 里设一次会被后续流程覆盖。
+    if (portrait && camera && model) {
+      camera.beta = Math.PI / 2
+      camera.alpha = -Math.PI / 2
+      camera.target.set(0, portraitFocusY(), 0)
+      camera.radius = (portraitVisibleHeight() / 2) / Math.tan(camera.fov / 2)
+    }
+    scene.render()
+  })
 })()

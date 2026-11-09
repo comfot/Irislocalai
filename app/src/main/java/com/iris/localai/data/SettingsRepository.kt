@@ -50,6 +50,33 @@ class SettingsRepository(context: Context) {
             .putString(KEY_CHARACTER, next.characterId)
             .putString(KEY_CHARACTER_MODEL, next.characterModel.name)
             .putString(KEY_CHARACTER_LAYOUT, next.characterLayout.name)
+            .putBoolean(KEY_PET_OVERLAY, next.petOverlayEnabled)
+            .putBoolean(KEY_PET_CUTE, next.petCuteAvatar)
+            .putString(KEY_PET_MODEL, next.petModelId)
+            .putString(KEY_PET_TAP, next.petTapAction.name)
+            .putString(KEY_PET_LONG_PRESS, next.petLongPressAction.name)
+            .putBoolean(KEY_PET_DRAGGABLE, next.petDraggable)
+            .putBoolean(KEY_PET_IDLE, next.petIdleAnimation)
+            .putFloat(KEY_PET_SCALE, next.petScale)
+            .putBoolean(KEY_PET_FEED, next.petFeedEnabled)
+            .putBoolean(KEY_PET_SING, next.petSingEnabled)
+            .putBoolean(KEY_PET_WAKE, next.petWakeEnabled)
+            .putBoolean(KEY_NOTIFY_REPLIES, next.notifyReplies)
+            .putBoolean(KEY_NOTIFY_LOCKSCREEN, next.notifyLockScreen)
+            .putBoolean(KEY_NOTIFY_HEADS_UP, next.notifyHeadsUp)
+            .putBoolean(KEY_NOTIFY_ISLAND, next.notifyIsland)
+            .putBoolean(KEY_L2D_EXPRESSIONS, next.l2dExpressionsEnabled)
+            .putBoolean(KEY_L2D_MOTIONS, next.l2dMotionsEnabled)
+            .putBoolean(KEY_L2D_IDLE, next.l2dIdleMotionEnabled)
+            .putBoolean(KEY_L2D_TAP, next.l2dTapMotionEnabled)
+            .putBoolean(KEY_L2D_MOUTH, next.l2dMouthSyncEnabled)
+            .putString(KEY_MOTION_SOURCE, next.motionSource.name)
+            .putString(KEY_MOTION_ENDPOINT, next.motionEndpoint)
+            .putString(KEY_MOTION_KEY, next.motionApiKey)
+            .putInt(KEY_MOTION_DURATION, next.motionDurationSeconds)
+            .putBoolean(KEY_MOTION_AUTO_IDLE, next.motionAutoIdle)
+            .putBoolean(KEY_MOTION_IN_CALL, next.motionInCall)
+            .putInt(KEY_MOTION_AXIS, next.motionAxisFix)
             .putBoolean(KEY_AUTO_LOAD, next.autoLoadLastModel)
             .putInt(KEY_VISION_SIDE, next.visionQualitySide)
             .putString(KEY_DOWNLOAD_SOURCE, next.downloadSource.name)
@@ -150,6 +177,33 @@ class SettingsRepository(context: Context) {
         characterId = prefs.getString(KEY_CHARACTER, "xiaoman") ?: "xiaoman",
         characterModel = enumOf(prefs.getString(KEY_CHARACTER_MODEL, null), CharacterModel.TWO_D),
         characterLayout = enumOf(prefs.getString(KEY_CHARACTER_LAYOUT, null), CharacterLayout.GRID),
+        petOverlayEnabled = prefs.getBoolean(KEY_PET_OVERLAY, false),
+        petCuteAvatar = prefs.getBoolean(KEY_PET_CUTE, true),
+        petModelId = prefs.getString(KEY_PET_MODEL, "") ?: "",
+        petTapAction = enumOf(prefs.getString(KEY_PET_TAP, null), PetTapAction.BUBBLE),
+        petLongPressAction = enumOf(prefs.getString(KEY_PET_LONG_PRESS, null), PetLongPressAction.MENU),
+        petDraggable = prefs.getBoolean(KEY_PET_DRAGGABLE, true),
+        petIdleAnimation = prefs.getBoolean(KEY_PET_IDLE, true),
+        petScale = prefs.getFloat(KEY_PET_SCALE, 1f),
+        petFeedEnabled = prefs.getBoolean(KEY_PET_FEED, true),
+        petSingEnabled = prefs.getBoolean(KEY_PET_SING, true),
+        petWakeEnabled = prefs.getBoolean(KEY_PET_WAKE, true),
+        notifyReplies = prefs.getBoolean(KEY_NOTIFY_REPLIES, true),
+        notifyLockScreen = prefs.getBoolean(KEY_NOTIFY_LOCKSCREEN, true),
+        notifyHeadsUp = prefs.getBoolean(KEY_NOTIFY_HEADS_UP, false),
+        notifyIsland = prefs.getBoolean(KEY_NOTIFY_ISLAND, false),
+        l2dExpressionsEnabled = prefs.getBoolean(KEY_L2D_EXPRESSIONS, true),
+        l2dMotionsEnabled = prefs.getBoolean(KEY_L2D_MOTIONS, true),
+        l2dIdleMotionEnabled = prefs.getBoolean(KEY_L2D_IDLE, true),
+        l2dTapMotionEnabled = prefs.getBoolean(KEY_L2D_TAP, true),
+        l2dMouthSyncEnabled = prefs.getBoolean(KEY_L2D_MOUTH, true),
+        motionSource = enumOf(prefs.getString(KEY_MOTION_SOURCE, null), MotionSource.NONE),
+        motionEndpoint = prefs.getString(KEY_MOTION_ENDPOINT, "") ?: "",
+        motionApiKey = prefs.getString(KEY_MOTION_KEY, "") ?: "",
+        motionDurationSeconds = prefs.getInt(KEY_MOTION_DURATION, 5),
+        motionAutoIdle = prefs.getBoolean(KEY_MOTION_AUTO_IDLE, false),
+        motionInCall = prefs.getBoolean(KEY_MOTION_IN_CALL, true),
+        motionAxisFix = prefs.getInt(KEY_MOTION_AXIS, 1),
         autoLoadLastModel = prefs.getBoolean(KEY_AUTO_LOAD, true),
         visionQualitySide = prefs.getInt(KEY_VISION_SIDE, 1024),
         downloadSource = enumOf(prefs.getString(KEY_DOWNLOAD_SOURCE, null), DownloadSource.AUTO),
@@ -297,6 +351,33 @@ class SettingsRepository(context: Context) {
         const val KEY_CHARACTER = "character"
         const val KEY_CHARACTER_MODEL = "character_model"
         const val KEY_CHARACTER_LAYOUT = "character_layout"
+        const val KEY_PET_OVERLAY = "pet_overlay_enabled"
+        const val KEY_PET_CUTE = "pet_cute_avatar"
+        const val KEY_PET_MODEL = "pet_model_id"
+        const val KEY_PET_TAP = "pet_tap_action"
+        const val KEY_PET_LONG_PRESS = "pet_long_press_action"
+        const val KEY_PET_DRAGGABLE = "pet_draggable"
+        const val KEY_PET_IDLE = "pet_idle_animation"
+        const val KEY_PET_SCALE = "pet_scale"
+        const val KEY_PET_FEED = "pet_feed_enabled"
+        const val KEY_PET_SING = "pet_sing_enabled"
+        const val KEY_PET_WAKE = "pet_wake_enabled"
+        const val KEY_NOTIFY_REPLIES = "notify_replies"
+        const val KEY_NOTIFY_LOCKSCREEN = "notify_lockscreen"
+        const val KEY_NOTIFY_HEADS_UP = "notify_heads_up"
+        const val KEY_NOTIFY_ISLAND = "notify_island"
+        const val KEY_L2D_EXPRESSIONS = "l2d_expressions"
+        const val KEY_L2D_MOTIONS = "l2d_motions"
+        const val KEY_L2D_IDLE = "l2d_idle_motion"
+        const val KEY_L2D_TAP = "l2d_tap_motion"
+        const val KEY_L2D_MOUTH = "l2d_mouth_sync"
+        const val KEY_MOTION_SOURCE = "motion_source"
+        const val KEY_MOTION_ENDPOINT = "motion_endpoint"
+        const val KEY_MOTION_KEY = "motion_api_key"
+        const val KEY_MOTION_DURATION = "motion_duration"
+        const val KEY_MOTION_AUTO_IDLE = "motion_auto_idle"
+        const val KEY_MOTION_IN_CALL = "motion_in_call"
+        const val KEY_MOTION_AXIS = "motion_axis_fix"
         const val KEY_AUTO_LOAD = "auto_load_last_model"
         const val KEY_VISION_SIDE = "vision_quality_side"
         const val KEY_DOWNLOAD_SOURCE = "download_source"

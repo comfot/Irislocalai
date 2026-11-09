@@ -278,6 +278,8 @@ private fun LazyListScope.llmMarket(
         }
     }
 
+    item { ActionModelCard() }
+
     if (searching) {
         item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
     }
@@ -593,6 +595,30 @@ private fun LazyListScope.pluginMarket(
 @Composable
 private fun SortChip(label: String, selected: Boolean, onClick: () -> Unit) {
     FilterChip(selected = selected, onClick = onClick, label = { Text(label) })
+}
+
+@Composable
+private fun ActionModelCard() {
+    val context = LocalContext.current
+    fun open(url: String) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+    }
+    SettingsCard("动作模型（3D 控制）") {
+        Text(
+            text = "Kimodo：NVIDIA 文本/约束驱动的动作扩散模型，PyTorch + GPU，可导出 BVH；HAST-SEC：本地中文动作服务，Node.js，非商用研究许可。两者都需在电脑端运行。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = { open("https://github.com/nv-tlabs/kimodo") }) { Text("Kimodo GitHub") }
+        TextButton(onClick = { open("https://huggingface.co/collections/nvidia/kimodo-v1") }) { Text("Kimodo 权重") }
+        TextButton(onClick = { open("https://github.com/sola1039/HAST-SEC") }) { Text("HAST-SEC GitHub") }
+        TextButton(onClick = { open("https://huggingface.co/sola1039/HAST-SEC") }) { Text("HAST-SEC 权重") }
+        Text(
+            text = "配置入口：设置 › 系统管理 › 交互 › 3D 控制。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
 }
 
 @Composable

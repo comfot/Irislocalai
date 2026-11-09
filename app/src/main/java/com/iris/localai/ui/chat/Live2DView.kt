@@ -60,6 +60,14 @@ internal fun Live2DView(
     dark: Boolean,
     speaking: Boolean,
     mood: String,
+    portrait: Boolean = false,
+    interactive: Boolean = true,
+    modelRoot: String = "character_models",
+    expressionsEnabled: Boolean = true,
+    motionsEnabled: Boolean = true,
+    idleMotionEnabled: Boolean = true,
+    tapMotionEnabled: Boolean = true,
+    mouthSyncEnabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val controller = remember { Live2DController() }
@@ -69,7 +77,7 @@ internal fun Live2DView(
     DisposableEffect(holder) {
         onDispose { holder.view?.let { releaseModelWebView(it) } }
     }
-    val key = "${modelFile.absolutePath}|$accentHex|$dark"
+    val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot"
     AndroidView(
         factory = { context ->
             WebView(context).apply {
@@ -103,16 +111,50 @@ internal fun Live2DView(
                         view.postDelayed({ controller.apply(view) }, 300)
                     }
                 }
-                loadLive2d(this, context, modelFile, accentHex, dark)
+                loadLive2d(
+                    this,
+                    context,
+                    modelFile,
+                    accentHex,
+                    dark,
+                    portrait,
+                    interactive,
+                    modelRoot,
+                    expressionsEnabled,
+                    motionsEnabled,
+                    idleMotionEnabled,
+                    tapMotionEnabled,
+                    mouthSyncEnabled,
+                )
                 tag = key
             }
         },
         update = { view ->
             if (view.tag != key) {
                 view.tag = key
-                loadLive2d(view, view.context, modelFile, accentHex, dark)
+                loadLive2d(
+                    view,
+                    view.context,
+                    modelFile,
+                    accentHex,
+                    dark,
+                    portrait,
+                    interactive,
+                    modelRoot,
+                    expressionsEnabled,
+                    motionsEnabled,
+                    idleMotionEnabled,
+                    tapMotionEnabled,
+                    mouthSyncEnabled,
+                )
             }
             controller.apply(view)
+            view.evaluateJavascript(
+                "window.irisLive2d&&window.irisLive2d.setOptions({" +
+                    "expressions:$expressionsEnabled,motions:$motionsEnabled," +
+                    "idle:$idleMotionEnabled,tap:$tapMotionEnabled,mouth:$mouthSyncEnabled})",
+                null,
+            )
         },
         onRelease = { view ->
             holder.view = null
@@ -128,8 +170,16 @@ private fun loadLive2d(
     modelFile: File,
     accentHex: String?,
     dark: Boolean,
+    portrait: Boolean,
+    interactive: Boolean,
+    modelRoot: String,
+    expressionsEnabled: Boolean,
+    motionsEnabled: Boolean,
+    idleMotionEnabled: Boolean,
+    tapMotionEnabled: Boolean,
+    mouthSyncEnabled: Boolean,
 ) {
-    val root = File(context.filesDir, "character_models").canonicalFile
+    val root = File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
         modelFile.canonicalFile.relativeTo(root).invariantSeparatorsPath
     }.getOrNull()
@@ -143,11 +193,19 @@ private fun loadLive2d(
         )
         return
     }
-    val modelUrl = "https://iris.local/models/${relative.split('/').joinToString("/") { Uri.encode(it) }}"
+    val prefix = if (modelRoot == "character_models") "/models/" else "/petmodels/"
+    val modelUrl = "https://iris.local$prefix${relative.split('/').joinToString("/") { Uri.encode(it) }}"
     val config = JSONObject()
         .put("model", modelUrl)
         .put("accent", accentHex ?: "#0D84FF")
         .put("dark", dark)
+        .put("portrait", portrait)
+        .put("interactive", interactive)
+        .put("expressions", expressionsEnabled)
+        .put("motions", motionsEnabled)
+        .put("idle", idleMotionEnabled)
+        .put("tap", tapMotionEnabled)
+        .put("mouth", mouthSyncEnabled)
         .toString()
     view.loadDataWithBaseURL(
         "https://iris.local/",

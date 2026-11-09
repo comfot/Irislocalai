@@ -28,6 +28,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -49,6 +50,8 @@ import com.iris.localai.server.ApiState
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    initialEntryId: String? = null,
+    navigationRequestId: Long = 0L,
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -61,10 +64,25 @@ fun SettingsScreen(
     var marketSectionName by rememberSaveable { mutableStateOf(MarketSection.MODELS.name) }
     val entry = SettingsCatalog.find(entryId)
 
+    LaunchedEffect(navigationRequestId, initialEntryId) {
+        if (!initialEntryId.isNullOrBlank()) {
+            entryId = initialEntryId
+            previousEntryId = if (initialEntryId == "pet") "interaction" else null
+        }
+    }
+
     fun goBack() {
         val previous = previousEntryId
         when {
             entryId == "market" && previous != null -> {
+                entryId = previous
+                previousEntryId = null
+            }
+            entryId == "pet" && previous != null -> {
+                entryId = previous
+                previousEntryId = null
+            }
+            (entryId == "live2d-control" || entryId == "model3d-control") && previous != null -> {
                 entryId = previous
                 previousEntryId = null
             }
@@ -118,6 +136,18 @@ fun SettingsScreen(
                         marketSectionName = section.name
                         previousEntryId = entryId
                         entryId = "market"
+                    },
+                    onOpenPet = {
+                        previousEntryId = entryId
+                        entryId = "pet"
+                    },
+                    onOpenLive2D = {
+                        previousEntryId = entryId
+                        entryId = "live2d-control"
+                    },
+                    onOpen3D = {
+                        previousEntryId = entryId
+                        entryId = "model3d-control"
                     },
                 )
             }
@@ -215,7 +245,7 @@ private fun SettingsSectionCard(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp),
             )
-            section.entries.forEachIndexed { index, entry ->
+            section.entries.filterNot { it.hidden }.forEachIndexed { index, entry ->
                 if (index > 0) {
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 16.dp),
@@ -284,6 +314,9 @@ private fun SettingsDetail(
     viewModel: SettingsViewModel,
     initialMarketSection: MarketSection,
     onOpenMarket: (MarketSection) -> Unit,
+    onOpenPet: () -> Unit,
+    onOpenLive2D: () -> Unit,
+    onOpen3D: () -> Unit,
 ) {
     when (entry.id) {
         "model" -> ModelSettingsPage(settings, engineState, viewModel) { onOpenMarket(MarketSection.MODELS) }
@@ -297,6 +330,17 @@ private fun SettingsDetail(
         "character-model" -> CharacterModelsPage()
         "voice" -> VoiceSettingsPage()
         "scene" -> ScenePage()
+        "interaction" -> InteractionPage(
+            settings,
+            viewModel,
+            onOpenPet = onOpenPet,
+            onOpenLive2D = onOpenLive2D,
+            onOpen3D = onOpen3D,
+        )
+        "live2d-control" -> Live2DControlPage(settings, viewModel)
+        "model3d-control" -> Model3DControlPage(settings, viewModel)
+        "notification" -> NotificationPage(settings, viewModel)
+        "pet" -> PetSettingsPage(settings, viewModel)
         "skill" -> SkillPage()
         "code" -> CodeManagementPage()
         "lorebook" -> WorldBookPage()

@@ -4,6 +4,17 @@
   const status = document.getElementById('status')
   const canvas = document.getElementById('live2d-canvas')
   const config = window.__LIVE2D_CONFIG__ || {}
+  // 通话页只露上半身：整体放大并把脚部移到画面下方之外。
+  const portrait = !!config.portrait
+  // 桌宠与通话页只展示不做交互：仍允许指针事件在页内被忽略。
+  const interactive = config.interactive !== false
+  const options = {
+    expressions: config.expressions !== false,
+    motions: config.motions !== false,
+    idle: config.idle !== false,
+    tap: config.tap !== false,
+    mouth: config.mouth !== false,
+  }
   const modelUrl = config.model || ''
   function showStatus(text) {
     if (!status) return
@@ -68,6 +79,15 @@
     if (!model) return
     const width = viewportWidth()
     const height = viewportHeight()
+    if (portrait) {
+      // 通话取景：直接按视口高度定缩放，不依赖模型宽度，避免宽画布把人物缩得很小。
+      const bodyHeight = height * 1.35
+      model.scale.set(bodyHeight / Math.max(1, modelBaseHeight))
+      model.x = width / 2
+      model.y = height * 1.47
+      canvas.style.transform = 'none'
+      return
+    }
     const base = Math.min(width / Math.max(1, modelBaseWidth), height / Math.max(1, modelBaseHeight)) * 0.98
     model.scale.set(base * zoom)
     model.x = width / 2
@@ -113,10 +133,7 @@
     if (!model || currentMood === mood) return
     const aliases = MOOD_ALIASES[mood] || []
     let expression = findName(availableExpressions, aliases)
-    if (!expression && availableExpressions.length > 0 && mood === 'happy') {
-      expression = availableExpressions[0]
-    }
-    if (expression) {
+    if (expression && options.expressions) {
       try { safely(model.expression(expression)) } catch (_) { }
     }
     let motion = findName(availableMotions, aliases)
@@ -124,10 +141,32 @@
       if (mood === 'angry' && availableMotions.length > 1) motion = availableMotions[1]
       else if (mood === 'happy' && availableMotions.length > 0) motion = availableMotions[0]
     }
-    if (motion) {
+    if (motion && options.motions) {
       try { safely(model.motion(motion)) } catch (_) { }
     }
     currentMood = mood
+  }
+
+  let idleTimer = null
+
+  function stopIdleMotion() {
+    if (idleTimer) {
+      clearInterval(idleTimer)
+      idleTimer = null
+    }
+  }
+
+  function startIdleMotion() {
+    stopIdleMotion()
+    if (!options.idle) return
+    idleTimer = setInterval(() => {
+      if (!model || speaking || pointers.size > 0) return
+      const pool = availableMotions.filter((name) => /idle|待機|待机|呼吸|loop/i.test(name))
+      const name = pool[0] || availableMotions[0]
+      if (name) {
+        try { safely(model.motion(name, undefined, { loop: true })) } catch (_) { }
+      }
+    }, 9000)
   }
 
   function clampOffsets() {
@@ -141,6 +180,7 @@
   }
 
   canvas.addEventListener('pointerdown', (event) => {
+    if (!interactive) return
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
     try { canvas.setPointerCapture(event.pointerId) } catch (_) { }
     if (pointers.size === 1) {
@@ -156,6 +196,7 @@
   })
 
   canvas.addEventListener('pointermove', (event) => {
+    if (!interactive) return
     const current = pointers.get(event.pointerId)
     if (!current) return
     current.x = event.clientX
@@ -186,10 +227,12 @@
     pointers.delete(event.pointerId)
     try { canvas.releasePointerCapture(event.pointerId) } catch (_) { }
     if (wasPrimary) {
-      if (moved < 8 && model) {
+      if (moved < 8 && model && options.tap) {
         try {
-          const motion = availableMotions[0] || 'A'
-          safely(model.motion(motion))
+          const name = availableMotions.length > 0
+            ? availableMotions[Math.floor(Math.random() * availableMotions.length)]
+            : 'A'
+          safely(model.motion(name))
         } catch (_) { }
       }
       pointerId = null
@@ -201,6 +244,7 @@
   canvas.addEventListener('pointerup', endPointer)
   canvas.addEventListener('pointercancel', endPointer)
   canvas.addEventListener('wheel', (event) => {
+    if (!interactive) return
     zoom *= event.deltaY > 0 ? 0.94 : 1.06
     clampOffsets()
     applyTransform()
@@ -225,10 +269,36 @@
   window.__live2dSetSpeaking = setSpeaking
   window.__live2dSetMood = setMood
 
+  window.irisLive2d = {
+    setOptions(next) {
+      if (!next) return
+      if (typeof next.expressions === 'boolean') options.expressions = next.expressions
+      if (typeof next.motions === 'boolean') options.motions = next.motions
+      if (typeof next.idle === 'boolean') options.idle = next.idle
+      if (typeof next.tap === 'boolean') options.tap = next.tap
+      if (typeof next.mouth === 'boolean') options.mouth = next.mouth
+      if (options.idle) startIdleMotion()
+      else stopIdleMotion()
+      currentMood = ''
+      applyMood()
+    },
+    playMotion(name) {
+      if (!model || !name) return
+      try { safely(model.motion(String(name))) } catch (_) { }
+    },
+    setExpression(name) {
+      if (!model || !name) return
+      try { safely(model.expression(String(name))) } catch (_) { }
+    },
+    list() {
+      return { expressions: availableExpressions, motions: availableMotions }
+    },
+  }
+
   PIXI.Ticker.shared.add(() => {
     if (!model || !model.internalModel || !model.internalModel.coreModel) return
     const core = model.internalModel.coreModel
-    if (speaking) {
+    if (speaking && options.mouth) {
       mouthPhase += 0.3
       const open = 0.18 + 0.5 * Math.abs(Math.sin(mouthPhase))
       try { core.setParameterValueById('ParamMouthOpenY', open, 1) } catch (_) { }
@@ -262,6 +332,7 @@
       } catch (_) { }
       currentMood = ''
       applyMood()
+      startIdleMotion()
     } catch (error) {
       console.error('live2d model error', error)
       showStatus('Live2D 模型加载失败：' + (error && error.message ? error.message : '文件无法读取'))

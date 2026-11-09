@@ -28,9 +28,12 @@ internal fun MMDView(
     mood: String = "neutral",
     speaking: Boolean = false,
     fullscreen: Boolean = false,
+    portrait: Boolean = false,
+    interactive: Boolean = true,
+    modelRoot: String = "character_models",
     modifier: Modifier = Modifier,
 ) {
-    val key = "${modelFile.absolutePath}|$accentHex|$dark"
+    val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot"
     AndroidView(
         factory = { context ->
             WebView(context).apply {
@@ -66,14 +69,14 @@ internal fun MMDView(
                         return true
                     }
                 }
-                loadMmd(this, context, modelFile, accentHex, dark, mood, speaking)
+                loadMmd(this, context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot)
                 tag = key
             }
         },
         update = { view ->
             if (view.tag != key) {
                 view.tag = key
-                loadMmd(view, view.context, modelFile, accentHex, dark, mood, speaking)
+                loadMmd(view, view.context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot)
             }
             applyMmdState(view, mood, speaking)
             view.postDelayed({
@@ -93,8 +96,11 @@ private fun loadMmd(
     dark: Boolean,
     mood: String,
     speaking: Boolean,
+    portrait: Boolean,
+    interactive: Boolean,
+    modelRoot: String,
 ) {
-    val root = File(context.filesDir, "character_models").canonicalFile
+    val root = File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
         modelFile.canonicalFile.relativeTo(root).invariantSeparatorsPath
     }.getOrNull()
@@ -108,13 +114,17 @@ private fun loadMmd(
         )
         return
     }
-    val modelUrl = "https://iris.local/models/${relative.split('/').joinToString("/") { Uri.encode(it) }}"
+    val prefix = if (modelRoot == "character_models") "/models/" else "/petmodels/"
+    val modelUrl = "https://iris.local$prefix${relative.split('/').joinToString("/") { Uri.encode(it) }}"
     val config = JSONObject()
         .put("model", modelUrl)
         .put("accent", accentHex ?: "#0D84FF")
         .put("dark", dark)
         .put("mood", mood)
         .put("speaking", speaking)
+        .put("portrait", portrait)
+        .put("interactive", interactive)
+    Log.d("MMDView", "load portrait=$portrait root=$modelRoot file=${modelFile.name} mood=$mood")
     findMmdMotion(modelFile, context)?.let { config.put("motion", it) }
     view.loadDataWithBaseURL(
         "https://iris.local/",
