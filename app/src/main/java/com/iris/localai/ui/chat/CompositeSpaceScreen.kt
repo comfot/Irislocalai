@@ -98,8 +98,11 @@ fun CompositeSpaceScreen(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val conversations by viewModel.conversations.collectAsStateWithLifecycle()
+    val allConversations by viewModel.conversations.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val conversations = allConversations.filter {
+        it.space != Space.LIFE || it.characterId == settings.characterId
+    }
     val characters by viewModel.characters.collectAsStateWithLifecycle()
     val workspaces by viewModel.workspaces.collectAsStateWithLifecycle()
     val workspace by viewModel.activeWorkspace.collectAsStateWithLifecycle()

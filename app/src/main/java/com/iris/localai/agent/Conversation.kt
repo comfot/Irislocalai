@@ -31,6 +31,8 @@ data class Conversation(
     val title: String,
     val space: Space,
     val workspaceId: String = "",
+    /** 生活空间按角色卡隔离会话；其他空间为空。 */
+    val characterId: String = "",
     val messages: List<ChatMessage> = emptyList(),
     val updatedAt: Long = System.currentTimeMillis(),
 )

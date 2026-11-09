@@ -11,11 +11,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.iris.localai.IrisApp
 import com.iris.localai.agent.AgentEvent
+import com.iris.localai.agent.AgentStep
+import com.iris.localai.agent.AssistantMessageParser
 import com.iris.localai.agent.AttachmentKind
 import com.iris.localai.agent.ChatAttachment
 import com.iris.localai.agent.ChatMessage
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.Conversation
+import com.iris.localai.agent.PerformanceTag
+import com.iris.localai.agent.RoleplayOverlay
+import com.iris.localai.agent.StepStatus
 import com.iris.localai.character.CharacterEntry
 import com.iris.localai.data.AppSettings
 import com.iris.localai.data.ContextStrategy
@@ -28,6 +33,8 @@ import com.iris.localai.engine.EngineState
 import com.iris.localai.engine.PromptMessage
 import com.iris.localai.engine.SamplingConfig
 import com.iris.localai.lorebook.LorebookResolver
+import com.iris.localai.motion.MotionBridge
+import com.iris.localai.motion.MotionCategory
 import com.iris.localai.pet.PetChatBus
 import com.iris.localai.pet.PetDestination
 import com.iris.localai.pet.PetNavigator
@@ -55,6 +62,9 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.max
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -179,6 +189,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
 
+    private val _performanceMood = MutableStateFlow("neutral")
+    val performanceMood: StateFlow<String> = _performanceMood.asStateFlow()
+    private val _performanceIntensity = MutableStateFlow(0.85f)
+    val performanceIntensity: StateFlow<Float> = _performanceIntensity.asStateFlow()
+
     private val _submitting = MutableStateFlow(false)
     private val _pluginMenuItems = MutableStateFlow<List<PluginHookDescriptor>>(emptyList())
     val pluginMenuItems: StateFlow<List<PluginHookDescriptor>> = _pluginMenuItems.asStateFlow()
@@ -189,13 +204,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     val engineState: StateFlow<EngineState> = graph.engines.state
     val ttsSpeaking: StateFlow<Boolean> = graph.tts.speaking
+    val ttsAmplitude: StateFlow<Float> = graph.tts.amplitude
     val apiState = graph.api.state
     val permissions = graph.permissions.state
 
     private var job: Job? = null
     private var loadedEngineSignature: String? = null
+    private val roleplayRoles = mutableMapOf<Long, String>()
 
     init {
+        store.bindUnboundLifeConversations(graph.settings.current.characterId)
         // 空间既可能来自侧栏，也可能来自设置页；统一在这里切换到该空间的最近会话。
         viewModelScope.launch {
             graph.settings.settings
@@ -203,7 +221,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 .distinctUntilChanged()
                 .collect { space ->
                     val current = store.find(_currentId.value)
-                    if (current == null || current.space != space) openLatest(space)
+                    if (current == null || current.space != space) openLatest(space, lifeCharacterId())
+                }
+        }
+        // 生活空间切换角色卡时，自动切到该角色最近的会话（设置页与侧栏都会触发）。
+        viewModelScope.launch {
+            graph.settings.settings
+                .map { it.characterId }
+                .distinctUntilChanged()
+                .collect { characterId ->
+                    if (graph.settings.current.space != Space.LIFE) return@collect
+                    val current = store.find(_currentId.value)
+                    if (current == null || current.space != Space.LIFE || current.characterId != characterId) {
+                        openLatest(Space.LIFE, characterId)
+                    }
                 }
         }
         // 当前会话始终跟随全局工作区：设置页或侧栏切换后同步写回会话绑定。
@@ -234,7 +265,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             PetNavigator.events.collect { event ->
                 if (event?.destination == PetDestination.LIFE_CHAT) {
                     graph.settings.update { it.copy(space = Space.LIFE) }
-                    openLatest(Space.LIFE)
+                    openLatest(Space.LIFE, lifeCharacterId())
                 }
             }
         }
@@ -245,11 +276,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
             graph.settings.update { it.copy(space = Space.LIFE) }
-            val conversation = store.conversations.value.firstOrNull { it.space == Space.LIFE }
-                ?: store.create(
-                    space = Space.LIFE,
-                    workspaceId = graph.workspaces.active()?.id.orEmpty(),
-                )
+            val characterId = lifeCharacterId()
+            val conversation = store.conversations.value.firstOrNull {
+                it.space == Space.LIFE && it.characterId == characterId
+            } ?: store.create(
+                space = Space.LIFE,
+                workspaceId = graph.workspaces.active()?.id.orEmpty(),
+                characterId = characterId,
+            )
             _currentId.value = conversation.id
             _input.value = trimmed
             send()
@@ -271,6 +305,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun selectConversation(id: Long) {
         val conversation = store.find(id) ?: return
         _currentId.value = id
+        if (conversation.space == Space.LIFE && conversation.characterId.isNotBlank() &&
+            graph.settings.current.characterId != conversation.characterId
+        ) {
+            graph.settings.update { it.copy(characterId = conversation.characterId) }
+        }
         if (space.value != conversation.space) {
             graph.settings.update { it.copy(space = conversation.space) }
         }
@@ -280,6 +319,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openConversation(conversation: Conversation) {
         _currentId.value = conversation.id
+        if (conversation.space == Space.LIFE && conversation.characterId.isNotBlank() &&
+            graph.settings.current.characterId != conversation.characterId
+        ) {
+            graph.settings.update { it.copy(characterId = conversation.characterId) }
+        }
         if (space.value != conversation.space) {
             graph.settings.update { it.copy(space = conversation.space) }
         }
@@ -288,17 +332,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun newConversation() {
+        val currentSpace = space.value
         val created = store.create(
-            space = space.value,
+            space = currentSpace,
             workspaceId = graph.workspaces.active()?.id.orEmpty(),
+            characterId = if (currentSpace == Space.LIFE) lifeCharacterId() else "",
         )
         _currentId.value = created.id
         resetAttachments()
     }
 
+    fun renameConversation(id: Long, title: String) {
+        val cleaned = title.trim().take(40)
+        if (cleaned.isNotBlank()) store.rename(id, cleaned)
+    }
+
+    fun clearExecutionRecords() {
+        _currentId.value?.let { store.clearSteps(it) }
+    }
+
     fun deleteConversation(id: Long) {
+        val currentSpace = space.value
         store.delete(id)
-        if (_currentId.value == id) openLatest(space.value)
+        if (_currentId.value == id) openLatest(currentSpace, lifeCharacterId())
     }
 
     fun toggleApi() = graph.api.toggle()
@@ -327,6 +383,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ?: store.create(
                         space = space.value,
                         workspaceId = graph.workspaces.active()?.id.orEmpty(),
+                        characterId = if (space.value == Space.LIFE) lifeCharacterId() else "",
                     ).also { _currentId.value = it.id }
                 val decision = try {
                     graph.pluginRuntime.chatInputDecision(conversation.id, text)
@@ -376,7 +433,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         store.appendMessage(conversation.id, userMessage)
         val assistantId = store.newMessageId()
         store.appendMessage(conversation.id, ChatMessage(assistantId, ChatRole.ASSISTANT, ""))
+        val roleplay = RoleplayOverlay.decide(text, roleplayRoles[conversation.id])
+        if (roleplay.changed) {
+            if (roleplay.role == null) roleplayRoles.remove(conversation.id)
+            else roleplayRoles[conversation.id] = roleplay.role
+        }
         _running.value = true
+        _performanceMood.value = "neutral"
+        _performanceIntensity.value = 0.85f
         notifyPluginChatMessage(conversation.id, userMessage, "user")
         notifyPluginChatRuntime(conversation.id, "processing")
 
@@ -485,6 +549,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     ""
                 }
+                val nowBlock = "【时间与情境】\n当前时间：" +
+                    LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm EEEE", Locale.CHINA))
+                val sceneBlock = when {
+                    Regex("跳舞|舞蹈|dance|来一段|跳个舞", RegexOption.IGNORE_CASE).containsMatchIn(text) ->
+                        "【场景包】表演/舞蹈：需要时使用 [dance:] 与 [cam:] 标签。"
+                    Regex("记住|记忆|上次|之前|回忆|还记得", RegexOption.IGNORE_CASE).containsMatchIn(text) ->
+                        "【场景包】回忆/记忆：优先参考长期记忆与日记，不确定时不要编造。"
+                    else -> "【场景包】日常闲聊：自然对话，不必主动表演。"
+                }
+                val roleplayBlock = roleplayRoles[conversation.id]?.let { RoleplayOverlay.systemBlock(it) }.orEmpty()
                 val promptSuffix = buildString {
                     if (userBlock.isNotBlank()) {
                         appendLine("【用户设定】")
@@ -493,20 +567,43 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (characterBlock.isNotBlank()) {
                         appendLine(characterBlock)
                     }
-                    if (workspaceBlock.isNotBlank()) {
-                        appendLine(workspaceBlock)
+                    if (memoryBlock.isNotBlank()) {
+                        appendLine("【长期记忆】")
+                        appendLine(memoryBlock)
+                    }
+                    appendLine(nowBlock)
+                    appendLine(sceneBlock)
+                    if (roleplayBlock.isNotBlank()) {
+                        appendLine(roleplayBlock)
                     }
                     if (loreBlock.isNotBlank()) {
                         appendLine("【世界书】")
                         appendLine(loreBlock)
                     }
-                    if (memoryBlock.isNotBlank()) {
-                        appendLine("【记忆与知识】")
-                        appendLine(memoryBlock)
-                    }
                     if (skillBlock.isNotBlank()) {
                         appendLine("【技能】")
                         appendLine(skillBlock)
+                    }
+                    if (workspaceBlock.isNotBlank()) {
+                        appendLine(workspaceBlock)
+                    }
+                    if (settings.space == Space.LIFE || settings.space == Space.COMPOSITE) {
+                        appendLine("【表演标签】")
+                        appendLine("需要角色表演时，可在回复句首插入标签；标签不会显示也不会被朗读：")
+                        appendLine("[emo:happy:0.8] 表达情绪；[act:wave] 做动作；[dance:舞蹈名] 跳舞；[cam:半身] 切景别或[cam:镜头名] 用镜头素材；[intent:greet] 打招呼。")
+                        appendLine("一次只放 1 到 2 个标签，不要解释标签，也不要每次都加。")
+                        val dances = graph.motionAssets.assets.value
+                            .filter { it.category == MotionCategory.DANCE }
+                            .take(12)
+                        if (dances.isNotEmpty()) {
+                            appendLine("可用舞蹈素材：" + dances.joinToString("、") { it.name })
+                        }
+                        val cameras = graph.motionAssets.assets.value
+                            .filter { it.category == MotionCategory.CAMERA }
+                            .take(8)
+                        if (cameras.isNotEmpty()) {
+                            appendLine("可用镜头素材：" + cameras.joinToString("、") { it.name })
+                        }
                     }
                     if (settings.deepThinking) {
                         append("请先进行必要的思考再回答。")
@@ -541,17 +638,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         presencePenalty = settings.presencePenalty,
                         frequencyPenalty = settings.frequencyPenalty,
                         seed = if (settings.seedEnabled) settings.seedValue else null,
+                        disableThinking = !settings.deepThinking,
                     ),
                     userSystemPrompt = finalPromptSuffix,
                     enabledTools = enabledToolIds(settings),
                     toolPermissions = settings.toolPermissions,
-                    maxStepsOverride = settings.agentMaxSteps,
+                    maxStepsOverride = when (settings.space) {
+                        Space.WORK, Space.COMPOSITE -> 0
+                        else -> settings.agentMaxSteps
+                    },
                     planFirst = settings.planFirst,
                 ).collect { event ->
                     when (event) {
                         is AgentEvent.Delta -> store.updateMessage(conversation.id, assistantId) {
                             it.copy(text = it.text + event.text)
                         }
+                        is AgentEvent.Performance -> applyPerformance(event.tags)
                         is AgentEvent.Reasoning -> store.updateMessage(conversation.id, assistantId) {
                             it.copy(reasoning = it.reasoning + event.text)
                         }
@@ -569,13 +671,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             val finalText = event.text.ifBlank {
                                 store.find(conversation.id)?.messages?.lastOrNull()?.text.orEmpty()
                             }
+                            val spokenText = AssistantMessageParser.mainText(finalText)
+                                .ifBlank { "角色状态已更新" }
                             graph.notifier.notifyReply(
                                 title = conversation.title.ifBlank { "对话" },
-                                body = finalText,
+                                body = spokenText,
                             )
-                            speakIfEnabled(finalText)
+                            speakIfEnabled(spokenText)
                         }
                         is AgentEvent.Failed -> {
+                            store.updateMessage(conversation.id, assistantId) {
+                                it.copy(
+                                    steps = it.steps + AgentStep(
+                                        tool = "对话",
+                                        arguments = "",
+                                        result = event.message,
+                                        status = StepStatus.ERROR,
+                                    ),
+                                )
+                            }
                             appendError(conversation.id, assistantId, event.message)
                             notifyPluginChatRuntime(conversation.id, "error", event.message)
                         }
@@ -592,16 +706,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun openLatest(space: Space) {
-        val target = store.latest(space)
+    private fun openLatest(space: Space, characterId: String? = null) {
+        val target = store.latest(space, characterId)
             ?: store.create(
                 space = space,
                 workspaceId = graph.workspaces.active()?.id.orEmpty(),
+                characterId = if (space == Space.LIFE) characterId.orEmpty() else "",
             )
         _currentId.value = target.id
         syncWorkspace(target)
         resetAttachments()
     }
+
+    private fun lifeCharacterId(): String = graph.settings.current.characterId
 
     private fun syncWorkspace(conversation: Conversation) {
         val workspaces = graph.workspaces.workspaces.value
@@ -985,6 +1102,118 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         role(ModelRole.VISION).modelName,
         provider.capabilities.vision,
     ).joinToString("|")
+
+    private fun applyPerformance(tags: List<PerformanceTag>) {
+        for (tag in tags) {
+            when (tag) {
+                is PerformanceTag.Emotion -> {
+                    _performanceMood.value = normalizeMood(tag.name)
+                    _performanceIntensity.value = tag.intensity
+                }
+                is PerformanceTag.Expression -> {
+                    _performanceMood.value = normalizeMood(tag.name)
+                }
+                is PerformanceTag.Action -> playPerformanceAction(tag.name)
+                is PerformanceTag.Intent -> {
+                    when (tag.name.lowercase()) {
+                        "greet", "wave", "打招呼", "挥手" -> playPerformanceAction("wave")
+                        "nod", "点头" -> playPerformanceAction("nod")
+                        "shake", "摇头" -> playPerformanceAction("shake")
+                        "dance", "跳舞" -> playPerformanceDance("")
+                        else -> Unit
+                    }
+                }
+                is PerformanceTag.Dance -> playPerformanceDance(tag.name)
+                is PerformanceTag.Camera -> playPerformanceCamera(tag.name)
+                is PerformanceTag.Motion,
+                is PerformanceTag.Stand,
+                is PerformanceTag.Outfit,
+                is PerformanceTag.Param,
+                is PerformanceTag.Preset,
+                -> Unit
+            }
+        }
+    }
+
+    private fun normalizeMood(name: String): String = when (name.trim().lowercase()) {
+        "happy", "joy", "smile", "开心", "高兴" -> "happy"
+        "angry", "anger", "生气" -> "angry"
+        "sad", "sorrow", "难过", "伤心" -> "sad"
+        "surprised", "surprise", "惊讶" -> "surprised"
+        "relaxed", "calm", "放松" -> "relaxed"
+        "thinking", "think", "思考" -> "thinking"
+        else -> "neutral"
+    }
+
+    private fun playPerformanceAction(name: String) {
+        val wanted = name.trim()
+        if (wanted.isEmpty()) return
+        val categories = setOf(MotionCategory.GREET, MotionCategory.INTERACT, MotionCategory.IDLE)
+        val asset = graph.motionAssets.findByName(wanted)
+            ?: graph.motionAssets.assets.value.firstOrNull {
+                it.category in categories && it.name.contains(wanted, ignoreCase = true)
+            }
+        if (asset != null) {
+            MotionBridge.playAsset(asset.id, loop = false, bgmPath = asset.bgm?.absolutePath)
+        }
+        if (MotionBridge.hasMotionView()) {
+            val action = when (wanted.lowercase()) {
+                "wave", "挥手", "摆手", "打招呼" -> "wave"
+                "nod", "点头" -> "nod"
+                "shake", "摇头" -> "shake"
+                "dance", "跳舞" -> "dance"
+                "idle", "待机" -> "idle"
+                else -> wanted
+            }
+            MotionBridge.play(action)
+        }
+    }
+
+    private fun playPerformanceDance(name: String) {
+        val pool = graph.motionAssets.assets.value.filter { it.category == MotionCategory.DANCE }
+        val asset = if (name.isBlank()) {
+            pool.randomOrNull()
+        } else {
+            graph.motionAssets.findByName(name)
+                ?: pool.firstOrNull { it.name.contains(name, ignoreCase = true) }
+        }
+        if (asset != null) {
+            MotionBridge.playAsset(asset.id, loop = true, bgmPath = asset.bgm?.absolutePath)
+        }
+        if (MotionBridge.hasMotionView()) {
+            MotionBridge.play("dance")
+        }
+    }
+
+    private fun playPerformanceCamera(name: String) {
+        val shot = cameraShotId(name)
+        if (shot != null) {
+            MotionBridge.playCamera("shot:$shot")
+            return
+        }
+        val pool = graph.motionAssets.assets.value.filter { it.category == MotionCategory.CAMERA }
+        val asset = if (name.isBlank()) {
+            pool.randomOrNull()
+        } else {
+            graph.motionAssets.findByName(name)
+                ?: pool.firstOrNull { it.name.contains(name, ignoreCase = true) }
+        }
+        if (asset != null) {
+            MotionBridge.playCamera(asset.id)
+        } else {
+            MotionBridge.playCamera("shot:half")
+        }
+    }
+
+    private fun cameraShotId(name: String): String? = when (name.trim().lowercase()) {
+        "close", "特写", "ecu" -> "ecu"
+        "bust", "胸", "半身特写" -> "bust"
+        "half", "半身" -> "half"
+        "threeq", "3/4", "七分", "七分身" -> "threeQ"
+        "full", "全身" -> "full"
+        "long", "远景" -> "long"
+        else -> null
+    }
 
     private fun speakIfEnabled(text: String) {
         val settings = graph.settings.current

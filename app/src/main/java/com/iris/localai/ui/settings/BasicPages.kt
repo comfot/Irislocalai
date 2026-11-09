@@ -434,12 +434,17 @@ internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
                 checked = settings.agentMode,
             ) { on -> viewModel.update { it.copy(agentMode = on) } }
             SliderRow(
-                title = "最大工具步数",
+                title = "最大工具步数（生活/操作）",
                 value = settings.agentMaxSteps.toFloat(),
                 range = 1f..20f,
                 steps = 18,
                 format = { "${it.toInt()} 步" },
                 onCommit = { value -> viewModel.update { it.copy(agentMaxSteps = value.toInt()) } },
+            )
+            Text(
+                text = "工作空间与综合空间不限制工具步数；此设置仅作用于生活/操作空间。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             BasicSwitchRow(
                 title = "计划优先",

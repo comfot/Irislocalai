@@ -60,12 +60,18 @@ class ConversationStore(context: Context) {
         }
     }
 
-    fun create(space: Space, title: String = "新对话", workspaceId: String = ""): Conversation {
+    fun create(
+        space: Space,
+        title: String = "新对话",
+        workspaceId: String = "",
+        characterId: String = "",
+    ): Conversation {
         val conversation = Conversation(
             id = synchronized(idLock) { nextConversationId++ },
             title = title,
             space = space,
             workspaceId = workspaceId,
+            characterId = if (space == Space.LIFE) characterId else "",
         )
         _conversations.update { it + conversation }
         schedulePersist(immediate = true)
@@ -97,17 +103,44 @@ class ConversationStore(context: Context) {
         update(conversationId) { it.copy(title = title) }
     }
 
+    fun clearSteps(conversationId: Long) {
+        update(conversationId) { conversation ->
+            conversation.copy(messages = conversation.messages.map { it.copy(steps = emptyList()) })
+        }
+    }
+
+    /** 旧版本的生活空间会话没有角色绑定，升级时归到当前角色卡。 */
+    fun bindUnboundLifeConversations(characterId: String) {
+        if (characterId.isBlank()) return
+        val changed = _conversations.value.any { it.space == Space.LIFE && it.characterId.isBlank() }
+        if (!changed) return
+        _conversations.update { list ->
+            list.map {
+                if (it.space == Space.LIFE && it.characterId.isBlank()) it.copy(characterId = characterId) else it
+            }
+        }
+        schedulePersist(immediate = true)
+    }
+
     fun setWorkspace(conversationId: Long, workspaceId: String) {
         update(conversationId) { it.copy(workspaceId = workspaceId) }
     }
 
     fun find(id: Long?): Conversation? = _conversations.value.firstOrNull { it.id == id }
 
-    fun latest(space: Space): Conversation? = _conversations.value
-        .filter { it.space == space }
+    fun latest(space: Space, characterId: String? = null): Conversation? = _conversations.value
+        .filter { conversation ->
+            conversation.space == space && (
+                space != Space.LIFE || characterId.isNullOrBlank() || conversation.characterId == characterId
+                )
+        }
         .maxByOrNull { it.updatedAt }
 
-    fun count(space: Space): Int = _conversations.value.count { it.space == space }
+    fun count(space: Space, characterId: String? = null): Int = _conversations.value.count {
+        it.space == space && (
+            space != Space.LIFE || characterId.isNullOrBlank() || it.characterId == characterId
+            )
+    }
 
     private fun update(id: Long, transform: (Conversation) -> Conversation) {
         _conversations.update { list ->
@@ -142,6 +175,7 @@ class ConversationStore(context: Context) {
                         put("title", conversation.title)
                         put("space", conversation.space.id)
                         put("workspaceId", conversation.workspaceId)
+                        put("characterId", conversation.characterId)
                         put("updatedAt", conversation.updatedAt)
                         put("messages", buildJsonArray {
                             conversation.messages.forEach { message ->
@@ -201,6 +235,7 @@ class ConversationStore(context: Context) {
                     title = obj.string("title") ?: "新对话",
                     space = Space.of(obj.string("space")),
                     workspaceId = obj.string("workspaceId").orEmpty(),
+                    characterId = obj.string("characterId").orEmpty(),
                     messages = obj.messages(),
                     updatedAt = obj.long("updatedAt") ?: 0L,
                 )

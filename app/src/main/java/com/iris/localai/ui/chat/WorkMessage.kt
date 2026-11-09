@@ -95,6 +95,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.iris.localai.agent.AgentStep
+import com.iris.localai.agent.AssistantMessageParser
 import com.iris.localai.agent.AttachmentKind
 import com.iris.localai.agent.ChatMessage
 import com.iris.localai.agent.ChatRole
@@ -266,6 +267,7 @@ private fun WorkAssistantMessage(
     index: Int,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    val displayText = AssistantMessageParser.mainText(message.text)
     Box {
     Column(
         modifier = if (pluginMenuItems.isNotEmpty()) {
@@ -310,7 +312,7 @@ private fun WorkAssistantMessage(
             Spacer(Modifier.height(8.dp))
             WorkReasoningCard(
                 text = message.reasoning,
-                thinking = streaming && message.text.isBlank(),
+                thinking = streaming && displayText.isBlank(),
             )
         }
 
@@ -321,10 +323,10 @@ private fun WorkAssistantMessage(
             }
         }
 
-        if (message.text.isNotBlank()) {
+        if (displayText.isNotBlank()) {
             Spacer(Modifier.height(9.dp))
             WorkMarkdown(
-                text = message.text,
+                text = displayText,
                 modifier = Modifier.fillMaxWidth(),
                 streaming = streaming,
             )

@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -14,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -46,6 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 /**
  * 桌宠悬浮窗：窗口内是 Compose 树，Live2D / MMD / VRM 走与生活空间相同的渲染器；
@@ -68,6 +71,15 @@ class PetOverlayService : Service() {
     private var settings: AppSettings = AppSettings()
     private var speakingToken = 0
     private var bubbleToken = 0
+    private var lastInteractionAt = 0L
+    private val overlayPrefs by lazy { getSharedPreferences("iris_pet_overlay", Context.MODE_PRIVATE) }
+    private val saveRunnable = Runnable { savePosition() }
+    private val wanderRunnable = object : Runnable {
+        override fun run() {
+            wander()
+            handler.postDelayed(this, 9000L + Random.nextLong(6000L))
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -99,6 +111,7 @@ class PetOverlayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        savePosition()
         uiState.bubble = null
         handler.removeCallbacksAndMessages(null)
         hideConfigMenu()
@@ -153,8 +166,11 @@ class PetOverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (metrics.widthPixels - size.first - dp(8)).coerceAtLeast(0)
-            y = metrics.heightPixels / 4
+            val savedX = overlayPrefs.getInt("x", Int.MIN_VALUE)
+            val savedY = overlayPrefs.getInt("y", Int.MIN_VALUE)
+            x = if (savedX != Int.MIN_VALUE) savedX else (metrics.widthPixels - size.first - dp(8)).coerceAtLeast(0)
+            y = if (savedY != Int.MIN_VALUE) savedY else metrics.heightPixels / 4
+            clampPosition(this)
         }
         val viewOwner = OverlayViewOwner().also { it.create() }
         val container = FrameLayout(this)
@@ -202,6 +218,8 @@ class PetOverlayService : Service() {
         params = layout
         windowManager.addView(container, layout)
         PetOverlayController.setRunning(true)
+        handler.removeCallbacks(wanderRunnable)
+        handler.postDelayed(wanderRunnable, 9000L)
     }
 
     private fun baseFlags(focusable: Boolean): Int = buildFlags(focusable)
@@ -229,6 +247,7 @@ class PetOverlayService : Service() {
         layout.height = size.second
         clampPosition(layout)
         runCatching { windowManager.updateViewLayout(container, layout) }
+        scheduleSave()
     }
 
     private fun clampPosition(layout: WindowManager.LayoutParams) {
@@ -238,15 +257,55 @@ class PetOverlayService : Service() {
     }
 
     private fun handleDrag(dx: Float, dy: Float) {
+        lastInteractionAt = SystemClock.elapsedRealtime()
+        moveBy(dx.toInt(), dy.toInt())
+    }
+
+    private fun moveBy(dx: Int, dy: Int) {
         val layout = params ?: return
         val container = root ?: return
-        layout.x += dx.toInt()
-        layout.y += dy.toInt()
+        if (dx == 0 && dy == 0) return
+        layout.x += dx
+        layout.y += dy
         clampPosition(layout)
         runCatching { windowManager.updateViewLayout(container, layout) }
+        scheduleSave()
+    }
+
+    /** 空闲时小幅移动，模拟宠物在桌面上活动；拖动/打字/菜单期间不走动。 */
+    private fun wander() {
+        if (!settings.petIdleAnimation || !settings.petDraggable) return
+        if (uiState.chatBarVisible || uiState.menuVisible) return
+        if (SystemClock.elapsedRealtime() - lastInteractionAt < 5000) return
+        moveBy(
+            Random.nextInt(-dp(10), dp(11)),
+            Random.nextInt(-dp(6), dp(7)),
+        )
+    }
+
+    private fun scheduleSave() {
+        handler.removeCallbacks(saveRunnable)
+        handler.postDelayed(saveRunnable, 300)
+    }
+
+    private fun savePosition() {
+        val layout = params ?: return
+        overlayPrefs.edit().putInt("x", layout.x).putInt("y", layout.y).apply()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        handler.post {
+            val layout = params ?: return@post
+            val container = root ?: return@post
+            clampPosition(layout)
+            runCatching { windowManager.updateViewLayout(container, layout) }
+            savePosition()
+        }
     }
 
     private fun handleTap() {
+        lastInteractionAt = SystemClock.elapsedRealtime()
         hideConfigMenu()
         if (uiState.chatBarVisible) return
         uiState.menuVisible = false
@@ -258,6 +317,7 @@ class PetOverlayService : Service() {
     }
 
     private fun handleLongPress() {
+        lastInteractionAt = SystemClock.elapsedRealtime()
         hideConfigMenu()
         when (settings.petLongPressAction) {
             PetLongPressAction.MENU -> {
@@ -270,6 +330,7 @@ class PetOverlayService : Service() {
     }
 
     private fun setChatBar(visible: Boolean) {
+        lastInteractionAt = SystemClock.elapsedRealtime()
         if (uiState.chatBarVisible == visible) return
         uiState.chatBarVisible = visible
         uiState.menuVisible = false

@@ -60,6 +60,9 @@ import androidx.compose.ui.window.Dialog
 import com.iris.localai.agent.AgentStep
 import kotlinx.coroutines.launch
 import com.iris.localai.agent.ChatMessage
+import com.iris.localai.agent.AssistantDisplay
+import com.iris.localai.agent.AssistantMessageParser
+import com.iris.localai.agent.StatusCardData
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
 import com.iris.localai.data.Space
@@ -125,13 +128,19 @@ internal fun ChatMessageList(
 @Composable
 internal fun MessageBubble(message: ChatMessage, isGenerating: Boolean) {
     val isUser = message.role == ChatRole.USER
-    val showTyping = !isUser && message.text.isBlank() && message.steps.isEmpty() && isGenerating
+    val display = remember(message.text, isUser) {
+        if (isUser) AssistantDisplay(message.text, null)
+        else AssistantMessageParser.parse(message.text)
+    }
+    val displayText = display.mainText
+    val showTyping = !isUser && displayText.isBlank() && message.steps.isEmpty() && isGenerating
+    val typingLabel = if (message.reasoning.isNotBlank()) "思考中…" else "正在生成…"
 
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
-        if (message.text.isNotBlank() || showTyping) {
+        if (displayText.isNotBlank() || showTyping) {
             Surface(
                 color = if (isUser) {
                     MaterialTheme.colorScheme.primary
@@ -147,13 +156,92 @@ internal fun MessageBubble(message: ChatMessage, isGenerating: Boolean) {
                 modifier = Modifier.widthIn(max = 340.dp),
             ) {
                 Text(
-                    text = if (showTyping) "正在生成…" else message.text,
+                    text = if (showTyping) typingLabel else displayText,
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
             }
         }
+        display.status?.let { status ->
+            AssistantStatusCard(status)
+        }
         message.steps.forEach { step -> AgentStepCard(step) }
+    }
+}
+
+@Composable
+private fun AssistantStatusCard(data: StatusCardData) {
+    var expanded by remember { mutableStateOf(false) }
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(14.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .widthIn(max = 340.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "角色状态",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "收起" else "展开")
+                }
+            }
+            listOfNotNull(
+                data.date?.let { "日期 · $it" },
+                data.time?.let { "时间 · $it" },
+                data.location?.let { "地点 · $it" },
+            ).forEach { line ->
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    data.sections.forEach { section ->
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            if (section.title.isNotBlank()) {
+                                Text(
+                                    text = section.title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            section.items.forEach { item ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = item.label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        text = item.value,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

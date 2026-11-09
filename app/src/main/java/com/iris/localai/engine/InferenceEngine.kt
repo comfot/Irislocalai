@@ -38,6 +38,8 @@ data class SamplingConfig(
     val presencePenalty: Float = 0f,
     val frequencyPenalty: Float = 0f,
     val seed: Int? = null,
+    /** 关闭模型思考块；本地 llama.cpp 通过预填空 think 实现。 */
+    val disableThinking: Boolean = false,
 )
 
 data class ModelDetails(

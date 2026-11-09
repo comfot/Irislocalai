@@ -156,7 +156,7 @@ class LlamaEngine : InferenceEngine {
                 params.repeatLastN,
                 params.maxNewTokens,
                 params.seed ?: -1,
-                0,
+                if (params.disableThinking) 1 else 0,
                 1,
                 0,
                 4,

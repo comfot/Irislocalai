@@ -16,7 +16,7 @@ import kotlinx.serialization.json.contentOrNull
 /**
  * 最小 ReAct 循环：模型要么直接回答，要么调用工具；除约定的
  * `<tool_call>{...}</tool_call>` 外，也兼容部分模型原生的 DSML 工具标签。
- * 工具结果以 tool 消息回填后再问一轮，最多 [maxSteps] 次工具调用。
+ * 工具结果以 tool 消息回填后再问一轮；[maxSteps] 为 0 时不限制步数，否则最多该步数。
  *
  * 提示词与工具清单保持固定顺序，方便后续接入 KV 前缀缓存。
  */
@@ -39,7 +39,8 @@ class AgentLoop(
         planFirst: Boolean = false,
     ): Flow<AgentEvent> = flow flow@ {
         val availableTools = tools.all().filter { enabledTools == null || it.name in enabledTools }
-        val stepLimit = (maxStepsOverride ?: maxSteps).coerceIn(1, 20)
+        val configuredLimit = maxStepsOverride ?: maxSteps
+        val stepLimit = if (configuredLimit <= 0) null else configuredLimit.coerceIn(1, 100)
         val conversation = buildList {
             add(PromptMessage(PromptMessage.SYSTEM, systemPrompt(userSystemPrompt, availableTools, planFirst)))
             addAll(history)
@@ -47,10 +48,29 @@ class AgentLoop(
         }.toMutableList()
 
         val visible = StringBuilder()
+        val tagParser = PerformanceTagParser()
+        val thinkFilter = ThinkTagFilter()
         var step = 0
         var finished = false
 
-        while (step < stepLimit) {
+        suspend fun emitTagged(text: String) {
+            if (text.isEmpty()) return
+            val feed = tagParser.feed(text)
+            if (feed.text.isNotEmpty()) {
+                visible.append(feed.text)
+                this@flow.emit(AgentEvent.Delta(feed.text))
+            }
+            if (feed.tags.isNotEmpty()) {
+                this@flow.emit(AgentEvent.Performance(feed.tags))
+            }
+        }
+
+        suspend fun emitBody(text: String) {
+            if (text.isEmpty()) return
+            emitTagged(text)
+        }
+
+        while (stepLimit == null || step < stepLimit) {
             val output = StringBuilder()
             var emitted = 0
             var showDelta = true
@@ -69,8 +89,13 @@ class AgentLoop(
                             }
                             if (end > emitted) {
                                 val piece = output.substring(emitted, end)
-                                visible.append(piece)
-                                this@flow.emit(AgentEvent.Delta(piece))
+                                val thought = thinkFilter.feed(piece)
+                                if (thought.reasoning.isNotEmpty()) {
+                                    this@flow.emit(AgentEvent.Reasoning(thought.reasoning))
+                                }
+                                if (thought.text.isNotEmpty()) {
+                                    emitBody(thought.text)
+                                }
                                 emitted = end
                             }
                             if (marker >= 0) showDelta = false
@@ -92,8 +117,13 @@ class AgentLoop(
             if (call == null) {
                 if (emitted < output.length) {
                     val tail = output.substring(emitted)
-                    visible.append(tail)
-                    this@flow.emit(AgentEvent.Delta(tail))
+                    val thought = thinkFilter.feed(tail)
+                    if (thought.reasoning.isNotEmpty()) {
+                        this@flow.emit(AgentEvent.Reasoning(thought.reasoning))
+                    }
+                    if (thought.text.isNotEmpty()) {
+                        emitBody(thought.text)
+                    }
                 }
                 finished = true
                 break
@@ -108,6 +138,7 @@ class AgentLoop(
             }
             val blocked = intercept?.blocked == true
             val startedAt = System.nanoTime()
+            var toolFailed = false
             val result = when {
                 tool == null -> "工具 ${call.name} 未启用或不存在"
                 permission == ToolPermission.DENY -> "工具 ${call.name} 的权限为拒绝"
@@ -117,6 +148,7 @@ class AgentLoop(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    toolFailed = true
                     "工具执行失败：${e.message ?: e.javaClass.simpleName}"
                 }
             }
@@ -126,7 +158,7 @@ class AgentLoop(
                 tool = call.name,
                 arguments = call.arguments.toString(),
                 result = result.take(MAX_RESULT_CHARS),
-                status = if (tool == null || permission == ToolPermission.DENY || blocked) {
+                status = if (tool == null || permission == ToolPermission.DENY || blocked || toolFailed) {
                     StepStatus.ERROR
                 } else {
                     StepStatus.OK
@@ -134,6 +166,14 @@ class AgentLoop(
                 durationMs = durationMs,
             )
             this@flow.emit(AgentEvent.StepFinished(agentStep))
+
+            val stepThought = thinkFilter.flush()
+            if (stepThought.reasoning.isNotEmpty()) {
+                this@flow.emit(AgentEvent.Reasoning(stepThought.reasoning))
+            }
+            if (stepThought.text.isNotEmpty()) {
+                emitBody(stepThought.text)
+            }
 
             conversation += PromptMessage(PromptMessage.ASSISTANT, output.toString())
             conversation += PromptMessage(PromptMessage.TOOL, "工具 ${call.name} 返回：\n$result")
@@ -146,12 +186,31 @@ class AgentLoop(
             }
         }
 
-        if (!finished) {
+        if (!finished && stepLimit != null) {
             val note = "\n\n（已达到最多 $stepLimit 步工具调用）"
             visible.append(note)
             this@flow.emit(AgentEvent.Delta(note))
         }
-        this@flow.emit(AgentEvent.Finished(cleanAnswer(visible.toString())))    }
+        val thinkFlush = thinkFilter.flush()
+        if (thinkFlush.reasoning.isNotEmpty()) {
+            this@flow.emit(AgentEvent.Reasoning(thinkFlush.reasoning))
+        }
+        emitTagged(thinkFlush.text)
+        val flushed = tagParser.flush()
+        if (flushed.text.isNotEmpty()) {
+            visible.append(flushed.text)
+            this@flow.emit(AgentEvent.Delta(flushed.text))
+        }
+        if (flushed.tags.isNotEmpty()) {
+            this@flow.emit(AgentEvent.Performance(flushed.tags))
+        }
+        val answer = visible.toString()
+        val finalText = if (answer.isBlank() && thinkFilter.hasThought()) {
+            "（模型只返回了思考过程，没有生成回答。请关闭「深度思考」或增大最大输出后重试。）"
+        } else {
+            cleanAnswer(answer)
+        }
+        this@flow.emit(AgentEvent.Finished(finalText))    }
 
     /** 模型文字与工具调用混在同一轮时，后续回答需要和上文拉开段落。 */
     private fun answerSeparator(visible: StringBuilder): String = when {
@@ -162,7 +221,8 @@ class AgentLoop(
     }
 
     /** 兜底：模型偶尔会把未闭合的工具标签写进正文。 */
-    private fun cleanAnswer(text: String): String = ToolCallParser.stripToolCalls(text)
+    private fun cleanAnswer(text: String): String =
+        ToolCallParser.stripToolCalls(text)
 
     private fun systemPrompt(
         userSystemPrompt: String,
@@ -172,7 +232,9 @@ class AgentLoop(
         appendLine("你是运行在 Android 上的本地 AI 助手。")
         appendLine("需要调用工具时，只输出一个工具调用块，不要附加解释：")
         appendLine("""<tool_call>{"name":"工具名","arguments":{...}}</tool_call>""")
-        appendLine("不要使用 DSML、XML 或 <invoke> 标签。")
+        appendLine("除上述工具调用块外，不要使用 DSML、<invoke> 或其他标签。")
+        appendLine("不要在正文输出 <think>、</think> 或 Thinking Process 等思考标记。")
+        appendLine("如需角色状态卡，可使用 <maintext>正文</maintext> 和 <Status_block>...</Status_block>，状态项写成“- 键：值”；不要使用其他 HTML/XML 标签。")
         appendLine("工具结果会以 tool 消息返回；拿到结果后直接用自然语言回答用户。")
         if (availableTools.isEmpty()) {
             appendLine("当前为对话模式，不要调用工具。")
@@ -181,7 +243,7 @@ class AgentLoop(
             appendLine(availableTools.joinToString("\n") { "- ${it.name}: ${it.description}" })
             if (availableTools.any { it.name == "motion_control" }) {
                 appendLine("当用户要求角色做动作、比手势、跳舞、打招呼时，调用 motion_control，不要声称自己无法控制模型。")
-                appendLine("调用时必须带 arguments.action，例如 {\"action\":\"wave\"}；用户只说“挥手”就传 wave。")
+                appendLine("调用时必须带 arguments.action，例如 {\"action\":\"wave\"}；不确定有哪些动作时先传 action=list 查看完整清单。")
             }
             if (availableTools.any { it.name == "read_file" }) {
                 appendLine("文件操作建议：先用 list_files / search_files 定位，再用 read_file 确认原文；" +

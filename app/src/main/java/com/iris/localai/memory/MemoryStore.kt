@@ -142,13 +142,6 @@ class MemoryStore(context: Context) {
         if (tokens.isEmpty()) return _knowledge.value.filter { it.enabled }
         return _knowledge.value
             .filter { it.enabled }
-            .sortedByDescending { doc ->
-                tokens.count { token ->
-                    doc.title.lowercase().contains(token) ||
-                        doc.content.lowercase().contains(token) ||
-                        doc.tags.any { tag -> tag.lowercase().contains(token) }
-                }
-            }
             .filter { doc ->
                 tokens.any { token ->
                     doc.title.lowercase().contains(token) ||
@@ -156,6 +149,7 @@ class MemoryStore(context: Context) {
                         doc.tags.any { tag -> tag.lowercase().contains(token) }
                 }
             }
+            .sortedByDescending { doc -> scoreKnowledge(doc, tokens) }
     }
 
     fun promptContext(
@@ -177,7 +171,7 @@ class MemoryStore(context: Context) {
 
             val memories = _memories.value
                 .filter { it.enabled && it.content.isNotBlank() }
-                .sortedWith(compareByDescending<MemoryItem> { it.importance }.thenByDescending { it.createdAt })
+                .sortedByDescending { scoreMemory(it, query) }
                 .take(8)
             if (memories.isNotEmpty()) {
                 blocks += "记忆：\n" + memories.joinToString("\n") {
@@ -201,6 +195,46 @@ class MemoryStore(context: Context) {
             budget -= block.length
             true
         }.joinToString("\n\n")
+    }
+
+    private fun scoreMemory(item: MemoryItem, query: String): Float {
+        val tokens = queryTokens(query)
+        val haystack = (item.content + " " + item.tags.joinToString(" ")).lowercase()
+        val relevance = if (tokens.isEmpty()) 0f else {
+            tokens.count { haystack.contains(it) }.toFloat() / tokens.size
+        }
+        val recency = recencyScore(item.createdAt)
+        val importance = (item.importance.coerceIn(1, 5) - 1) / 4f
+        val emotion = emotionScore(item.content)
+        return relevance * 0.45f + recency * 0.25f + importance * 0.2f + emotion * 0.1f
+    }
+
+    private fun scoreKnowledge(doc: KnowledgeDocument, tokens: List<String>): Float {
+        val title = doc.title.lowercase()
+        val content = doc.content.lowercase()
+        val tags = doc.tags.joinToString(" ").lowercase()
+        val hits = tokens.count { token ->
+            title.contains(token) || content.contains(token) || tags.contains(token)
+        }
+        val relevance = hits.toFloat() / tokens.size
+        return relevance * 0.75f + recencyScore(doc.updatedAt) * 0.25f
+    }
+
+    private fun queryTokens(query: String): List<String> =
+        query.lowercase()
+            .split(Regex("[\\s,，。.;；:：!！?？]+"))
+            .filter { it.length >= 2 }
+
+    private fun recencyScore(timestamp: Long): Float {
+        val ageDays = ((System.currentTimeMillis() - timestamp).coerceAtLeast(0L)) / DAY_MS.toFloat()
+        return Math.pow(0.5, (ageDays / HALF_LIFE_DAYS).toDouble()).toFloat().coerceIn(0f, 1f)
+    }
+
+    private fun emotionScore(text: String): Float {
+        if (text.isBlank()) return 0f
+        val hits = EMOTION_WORDS.count { text.contains(it) }
+        val exclamations = text.count { it == '!' || it == '！' }
+        return ((hits * 0.25f) + (exclamations * 0.1f)).coerceIn(0f, 1f)
     }
 
     private fun persistDiary() {
@@ -337,5 +371,11 @@ class MemoryStore(context: Context) {
         const val DIARY = "diary.json"
         const val MEMORIES = "memories.json"
         const val KNOWLEDGE = "knowledge.json"
+        const val DAY_MS = 86_400_000L
+        const val HALF_LIFE_DAYS = 14f
+        val EMOTION_WORDS = listOf(
+            "开心", "高兴", "喜欢", "爱你", "幸福", "惊喜",
+            "难过", "伤心", "生气", "愤怒", "害怕", "焦虑",
+        )
     }
 }

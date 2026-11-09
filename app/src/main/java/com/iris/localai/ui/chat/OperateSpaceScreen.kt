@@ -110,6 +110,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var showVoice by remember { mutableStateOf(false) }
+    var showClearLogs by remember { mutableStateOf(false) }
     var previewFrame by remember { mutableStateOf<ImageBitmap?>(null) }
     var showFullPreview by remember { mutableStateOf(false) }
 
@@ -442,6 +443,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                 ExecutionLogCard(
                     steps = steps,
                     onCopy = { copyLogs(context, steps) },
+                    onClear = { showClearLogs = true },
                 )
             }
             item {
@@ -468,6 +470,25 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
             onInsert = { text ->
                 viewModel.onInputChange(text)
                 showVoice = false
+            },
+        )
+    }
+
+    if (showClearLogs) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showClearLogs = false },
+            title = { Text("清空执行记录？") },
+            text = { Text("当前会话的工具执行记录会被清空，聊天消息本身保留。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clearExecutionRecords()
+                        showClearLogs = false
+                    },
+                ) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearLogs = false }) { Text("取消") }
             },
         )
     }
@@ -769,7 +790,7 @@ private fun WarningRow(text: String) {
 }
 
 @Composable
-private fun ExecutionLogCard(steps: List<AgentStep>, onCopy: () -> Unit) {
+private fun ExecutionLogCard(steps: List<AgentStep>, onCopy: () -> Unit, onClear: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -791,6 +812,9 @@ private fun ExecutionLogCard(steps: List<AgentStep>, onCopy: () -> Unit) {
                     )
                     Spacer(Modifier.width(4.dp))
                     Text("复制")
+                }
+                TextButton(onClick = onClear, enabled = steps.isNotEmpty()) {
+                    Text("清空")
                 }
             }
             if (steps.isEmpty()) {

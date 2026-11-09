@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.AppGraph
+import com.iris.localai.agent.AssistantMessageParser
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.character.CharacterEntry
 import com.iris.localai.character.CharacterModelEntry
@@ -125,7 +126,8 @@ internal fun PetOverlayContent(
     val lastReply = lifeConversation?.messages?.lastOrNull { it.role == ChatRole.ASSISTANT }
     var replyBubble by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(lastReply?.id, lastReply?.text) {
-        val text = lastReply?.text?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val raw = lastReply?.text?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+        val text = AssistantMessageParser.mainText(raw).ifBlank { return@LaunchedEffect }
         replyBubble = text.take(120)
         delay(6000)
         replyBubble = null

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.AlertDialog
@@ -36,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -51,6 +53,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.iris.localai.agent.AssistantMessageParser
+import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.Conversation
 import com.iris.localai.character.CharacterEntry
 import com.iris.localai.data.Space
@@ -71,6 +75,7 @@ fun Sidebar(
     onSelectCharacter: (String) -> Unit,
     onNewConversation: () -> Unit,
     onDeleteConversation: (Long) -> Unit,
+    onRenameConversation: (Long, String) -> Unit,
     onOpenSettings: () -> Unit,
     pinned: Boolean,
     onTogglePinned: () -> Unit,
@@ -78,10 +83,18 @@ fun Sidebar(
     onPluginEntry: (PluginHookDescriptor) -> Unit = {},
 ) {
     var pendingDelete by remember { mutableStateOf<Conversation?>(null) }
+    var pendingRename by remember { mutableStateOf<Conversation?>(null) }
+    var renameText by remember { mutableStateOf("") }
     var workspaceExpanded by rememberSaveable { mutableStateOf(false) }
     val activeWorkspace = workspaces.firstOrNull { it.id == workspaceId }
+    val activeCharacterName = characters.firstOrNull { it.id == characterId }?.card?.charName.orEmpty()
+    val spaceLabel = if (space == Space.LIFE && activeCharacterName.isNotBlank()) {
+        "${space.label} · $activeCharacterName"
+    } else {
+        space.label
+    }
     val inSpace = conversations
-        .filter { it.space == space }
+        .filter { it.space == space && (space != Space.LIFE || it.characterId == characterId) }
         .sortedByDescending { it.updatedAt }
 
     ModalDrawerSheet(
@@ -100,7 +113,7 @@ fun Sidebar(
                 Column(modifier = Modifier.weight(1f)) {
                     Text("IRIS LocalAI", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = "${space.label} · ${inSpace.size} 个会话",
+                        text = "$spaceLabel · ${inSpace.size} 个会话",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 2.dp),
@@ -249,6 +262,10 @@ fun Sidebar(
                         conversation = conversation,
                         selected = conversation.id == currentId,
                         onClick = { onSelectConversation(conversation.id) },
+                        onRename = {
+                            pendingRename = conversation
+                            renameText = conversation.title
+                        },
                         onDelete = { pendingDelete = conversation },
                     )
                 }
@@ -288,6 +305,33 @@ fun Sidebar(
             },
             dismissButton = {
                 TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            },
+        )
+    }
+
+    pendingRename?.let { conversation ->
+        AlertDialog(
+            onDismissRequest = { pendingRename = null },
+            title = { Text("重命名会话") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it.take(40) },
+                    singleLine = true,
+                    label = { Text("会话名称") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = renameText.isNotBlank(),
+                    onClick = {
+                        onRenameConversation(conversation.id, renameText)
+                        pendingRename = null
+                    },
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRename = null }) { Text("取消") }
             },
         )
     }
@@ -391,9 +435,16 @@ private fun ConversationRow(
     conversation: Conversation,
     selected: Boolean,
     onClick: () -> Unit,
+    onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val subtitle = conversation.messages.lastOrNull()?.text
+    val last = conversation.messages.lastOrNull()
+    val subtitleSource = if (last?.role == ChatRole.ASSISTANT) {
+        AssistantMessageParser.mainText(last.text)
+    } else {
+        last?.text
+    }
+    val subtitle = subtitleSource
         ?.replace("\n", " ")
         ?.take(28)
         ?.ifBlank { null }
@@ -429,6 +480,13 @@ private fun ConversationRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            IconButton(onClick = onRename) {
+                Icon(
+                    imageVector = Icons.Outlined.Edit,
+                    contentDescription = "重命名会话",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             IconButton(onClick = onDelete) {

@@ -123,6 +123,7 @@ fun ChatScreen(
                     scope.launch { drawerState.close() }
                 },
                 onDeleteConversation = viewModel::deleteConversation,
+                onRenameConversation = viewModel::renameConversation,
                 onOpenSettings = {
                     scope.launch { drawerState.close() }
                     onOpenSettings()
