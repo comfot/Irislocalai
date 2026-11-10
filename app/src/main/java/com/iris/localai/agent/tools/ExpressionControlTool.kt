@@ -3,6 +3,7 @@ package com.iris.localai.agent.tools
 import com.iris.localai.agent.Tool
 import com.iris.localai.character.CharacterModelStore
 import com.iris.localai.character.CharacterModelType
+import com.iris.localai.data.SettingsRepository
 import com.iris.localai.motion.ExpressionBindingStore
 import com.iris.localai.motion.MotionBridge
 import com.iris.localai.motion.Model3DKind
@@ -16,6 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 class ExpressionControlTool(
     private val bindings: ExpressionBindingStore,
     private val characters: CharacterModelStore,
+    private val settings: SettingsRepository,
 ) : Tool {
 
     override val name: String = "expression_control"
@@ -56,9 +58,16 @@ class ExpressionControlTool(
         return "已发送表情：$expression$hint"
     }
 
-    private fun currentKind(): Model3DKind = when (characters.active()?.type) {
+    /** 与生活空间一致：角色卡绑定的模型优先，其次全局激活项，最后看舞台上注册的视图。 */
+    private fun currentKind(): Model3DKind =
+        characters.boundModel(settings.current.characterId)?.type.toKind()
+            ?: characters.active()?.type.toKind()
+            ?: MotionBridge.activeKind()
+            ?: Model3DKind.VRM
+
+    private fun CharacterModelType?.toKind(): Model3DKind? = when (this) {
         CharacterModelType.MMD -> Model3DKind.MMD
         CharacterModelType.VRM, CharacterModelType.GLB -> Model3DKind.VRM
-        else -> MotionBridge.activeKind() ?: Model3DKind.VRM
+        else -> null
     }
 }

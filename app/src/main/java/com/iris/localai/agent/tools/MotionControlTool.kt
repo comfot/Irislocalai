@@ -56,10 +56,17 @@ class MotionControlTool(
         }
     }
 
-    private fun currentKind(): Model3DKind = when (characters.active()?.type) {
+    /** 与生活空间一致：角色卡绑定的模型优先，其次全局激活项，最后看舞台上注册的视图。 */
+    private fun currentKind(): Model3DKind =
+        characters.boundModel(settings.current.characterId)?.type.toKind()
+            ?: characters.active()?.type.toKind()
+            ?: MotionBridge.activeKind()
+            ?: Model3DKind.VRM
+
+    private fun CharacterModelType?.toKind(): Model3DKind? = when (this) {
         CharacterModelType.MMD -> Model3DKind.MMD
         CharacterModelType.VRM, CharacterModelType.GLB -> Model3DKind.VRM
-        else -> MotionBridge.activeKind() ?: Model3DKind.VRM
+        else -> null
     }
 
     private fun playMmd(requested: String): String {
@@ -75,7 +82,9 @@ class MotionControlTool(
             } else {
                 "；请在「设置 › 3D 控制 › 绑定配置 › MMD」添加该 VMD 动作并绑定"
             }
-            return "MMD 动作未找到：$resolved$hint"
+            val names = assets.assets.value.take(8).joinToString("、") { it.name }
+            val available = if (names.isBlank()) "" else "；可用动作：$names"
+            return "MMD 动作未找到：$resolved$hint$available"
         }
         MotionBridge.playAsset(
             path = asset.id,

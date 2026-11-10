@@ -12,6 +12,7 @@ data class MotionAssetCommand(
     val path: String,
     val loop: Boolean,
     val bgmPath: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 data class CameraCommand(val seq: Long, val path: String, val loop: Boolean)

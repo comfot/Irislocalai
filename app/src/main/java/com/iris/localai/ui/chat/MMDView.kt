@@ -54,6 +54,7 @@ internal fun MMDView(
     val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot|$idleMotionAsset"
     var webView by remember { mutableStateOf<WebView?>(null) }
     var bgmPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    val sentAssetSeq = remember { mutableStateOf(0L) }
     val assetCommand by MotionBridge.assetCommand.collectAsStateWithLifecycle()
     val cameraCommand by MotionBridge.cameraCommand.collectAsStateWithLifecycle()
     val motionCommand by MotionBridge.command.collectAsStateWithLifecycle()
@@ -68,16 +69,22 @@ internal fun MMDView(
     }
     LaunchedEffect(assetCommand?.seq) {
         val command = assetCommand ?: return@LaunchedEffect
+        webView?.let { view ->
+            if (command.path.isBlank()) {
+                view.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
+            } else {
+                view.evaluateJavascript(
+                    "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop})",
+                    null,
+                )
+            }
+            sentAssetSeq.value = command.seq
+        }
         if (command.path.isBlank()) {
-            webView?.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
             bgmPlayer?.release()
             bgmPlayer = null
             return@LaunchedEffect
         }
-        webView?.evaluateJavascript(
-            "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop})",
-            null,
-        )
         bgmPlayer?.release()
         bgmPlayer = null
         val bgm = command.bgmPath
@@ -158,6 +165,25 @@ internal fun MMDView(
                         view: WebView,
                         request: WebResourceRequest,
                     ): WebResourceResponse? = interceptCharacterModel(context, request)
+
+                    /** 页面或模型晚于动作指令就绪时，补发最近一次动作（超时则丢弃）。 */
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        val command = MotionBridge.assetCommand.value ?: return
+                        if (command.seq == sentAssetSeq.value) return
+                        if (System.currentTimeMillis() - command.createdAt > 15_000) {
+                            sentAssetSeq.value = command.seq
+                            return
+                        }
+                        if (command.path.isBlank()) {
+                            view.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
+                        } else {
+                            view.evaluateJavascript(
+                                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop})",
+                                null,
+                            )
+                        }
+                        sentAssetSeq.value = command.seq
+                    }
 
                     override fun onRenderProcessGone(
                         view: WebView,
@@ -280,9 +306,13 @@ private fun findMmdMotion(modelFile: File, context: Context, modelRoot: String):
     return "https://iris.local$prefix${relative.split('/').joinToString("/") { Uri.encode(it) }}"
 }
 
-private fun motionAssetUrl(relative: String): String =
-    "https://iris.local/motionassets/" +
-        relative.split('/').joinToString("/") { Uri.encode(it) }
+private fun motionAssetUrl(relative: String): String {
+    val normalized = relative.replace('\\', '/').substringAfterLast("motion_assets/", relative)
+    val parts = normalized.split('/').filter { it.isNotBlank() && it != "." && it != ".." }
+    if (parts.isEmpty()) return ""
+    return "https://iris.local/motionassets/" +
+        parts.joinToString("/") { Uri.encode(it) }
+}
 
 private var cachedMmdTemplate: String? = null
 

@@ -13,6 +13,8 @@
   const idleUrl = config.idle || 'assets/model/mmd-idle.vmd'
   const idleMotionUrl = config.idleMotion || ''
   const motionAssetBase = 'https://iris.local/motionassets/'
+  // 模型加载完成前的动作请求先缓存，就绪后再执行。
+  let pendingAsset = null
 
   window.addEventListener('error', (event) => {
     console.error('[mmd] window error', event.message, event.filename, event.lineno)
@@ -216,10 +218,14 @@
     },
     playAsset(path, loop) {
       if (!path) return Promise.resolve(false)
-      const url = motionAssetBase + path.split('/').map(encodeURIComponent).join('/')
-      return playMotion(url, { loop: !!loop, restart: true })
+      if (!model || !window.__irisMmdReady) {
+        pendingAsset = { path: String(path), loop: !!loop }
+        return Promise.resolve(true)
+      }
+      return playAssetNow(path, loop)
     },
     stop() {
+      pendingAsset = null
       stopMotion(false, false)
     },
     playCamera(path, loop) {
@@ -363,6 +369,11 @@
     }
   }
 
+  function playAssetNow(path, loop) {
+    const url = motionAssetBase + String(path).split('/').map(encodeURIComponent).join('/')
+    return playMotion(url, { loop: !!loop, restart: true })
+  }
+
   async function loadMotion(url) {
     return playMotion(url, { loop: true, restart: true })
   }
@@ -475,6 +486,8 @@
     const from = capturePose()
     try {
       model.setRuntimeAnimation(model.createRuntimeAnimation(clip))
+      // babylon-mmd 要求在设置新动画后重新启动时间轴，否则帧时间不推进。
+      if (runtime && typeof runtime.playAnimation === 'function') runtime.playAnimation()
     } catch (error) {
       console.warn('mmd motion attach failed', url, error)
       return false
@@ -875,6 +888,11 @@
       if (config.mood) window.irisMmd.setMood(config.mood)
       if (config.speaking) window.irisMmd.setMouthOpen(0.28)
       window.__irisMmdReady = true
+      if (pendingAsset) {
+        const pending = pendingAsset
+        pendingAsset = null
+        await playAssetNow(pending.path, pending.loop)
+      }
     } catch (error) {
       console.error('mmd load error', error)
       showStatus('MMD 模型加载失败：' + (error && error.message ? error.message : '文件无法读取'))

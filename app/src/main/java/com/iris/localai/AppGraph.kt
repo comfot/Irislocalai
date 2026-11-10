@@ -167,7 +167,7 @@ class AppGraph(
         register(FetchUrlTool())
         register(MemoryTool(memory))
         register(MotionControlTool(toolClips, motionAssets, motionBindings, characterModels, vrmaMotions, settings))
-        register(ExpressionControlTool(expressionBindings, characterModels))
+        register(ExpressionControlTool(expressionBindings, characterModels, settings))
         register(ShellTool(code, workspaces, context))
         register(DeviceOpenAppTool(deviceActions))
         register(DeviceTapTool(deviceActions))
