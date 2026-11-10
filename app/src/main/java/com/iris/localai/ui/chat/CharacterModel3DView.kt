@@ -161,7 +161,9 @@ private fun loadCharacter(
     motionAxisFix: Int,
     vrmaEnabled: Boolean,
 ) {
-    val root = File(context.filesDir, modelRoot).canonicalFile
+    val storage = (context.applicationContext as IrisApp).graph.storage
+    val root = storage.containingRoot(modelRoot, modelFile)
+        ?: File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
         modelFile.canonicalFile.relativeTo(root).invariantSeparatorsPath
     }.getOrNull()
@@ -233,17 +235,21 @@ internal fun interceptCharacterModel(context: Context, request: WebResourceReque
             },
         ),
     ).replace('\\', '/')
-    val root = File(
-        context.filesDir,
-        when {
-            scene -> "scenes"
-            motionAssets -> "motion_assets"
-            petModels -> "pet_models"
-            else -> "character_models"
-        },
-    ).canonicalFile
-    val file = resolveModelFile(root, relative, scene || motionAssets) ?: return notFound()
-    if (!file.path.startsWith(root.path + File.separator) || !file.isFile) return notFound()
+    val rootFolder = when {
+        scene -> "scenes"
+        motionAssets -> "motion_assets"
+        petModels -> "pet_models"
+        else -> "character_models"
+    }
+    val storage = (context.applicationContext as IrisApp).graph.storage
+    val file = storage.readDirs(rootFolder).asSequence()
+        .mapNotNull { root ->
+            val canonical = runCatching { root.canonicalFile }.getOrNull() ?: return@mapNotNull null
+            resolveModelFile(canonical, relative, scene || motionAssets)
+                ?.takeIf { it.isFile && it.path.startsWith(canonical.path + File.separator) }
+        }
+        .firstOrNull()
+        ?: return notFound()
     if (!scene && !motionAssets) {
         optimizedTexture(context, file)?.let { return it }
     }

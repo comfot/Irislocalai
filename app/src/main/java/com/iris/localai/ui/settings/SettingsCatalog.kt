@@ -9,6 +9,7 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Gesture
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
@@ -53,12 +54,12 @@ object SettingsCatalog {
         SettingsSection(
             title = "基础功能",
             entries = listOf(
-                SettingsEntry("model", "模型", "本地模型路径与当前加载状态", Icons.Outlined.Memory),
-                SettingsEntry("backend", "后端", "CPU / GPU / NPU 推理后端", Icons.Outlined.Speed),
-                SettingsEntry("generation", "生成", "温度、Top-P 与最大输出长度", Icons.Outlined.AutoAwesome),
-                SettingsEntry("performance", "性能与资源", "上下文长度与线程数", Icons.Outlined.Bolt),
-                SettingsEntry("agent", "智能体", "工具清单与 ReAct 循环", Icons.Outlined.SmartToy),
-                SettingsEntry("context", "上下文推理", "系统提示词与上下文策略", Icons.Outlined.Psychology),
+                SettingsEntry("model", "模型", "模型档案、提供商与加载参数", Icons.Outlined.Memory),
+                SettingsEntry("backend", "后端", "CPU / GPU 推理后端", Icons.Outlined.Speed),
+                SettingsEntry("generation", "生成", "提示词、输出与高级采样", Icons.Outlined.AutoAwesome),
+                SettingsEntry("performance", "性能与资源", "线程数与屏幕常亮", Icons.Outlined.Bolt),
+                SettingsEntry("agent", "智能体", "工具、步数与计划优先", Icons.Outlined.SmartToy),
+                SettingsEntry("context", "上下文推理", "上下文窗口、压缩与记忆", Icons.Outlined.Psychology),
             ),
         ),
         SettingsSection(
@@ -70,7 +71,7 @@ object SettingsCatalog {
                 SettingsEntry("memory", "记忆", "长期记忆与检索策略", Icons.Outlined.History),
                 SettingsEntry("character-model", "角色模型", "为角色绑定模型与参数", Icons.Outlined.SmartToy),
                 SettingsEntry("voice", "语音", "离线识别、合成与音色", Icons.Outlined.RecordVoiceOver),
-                SettingsEntry("scene", "场景", "场景模板、开场白与背景/舞台下载", Icons.Outlined.TheaterComedy),
+                SettingsEntry("scene", "场景", "场景预设、开场白与背景/舞台下载", Icons.Outlined.TheaterComedy),
             ),
         ),
         SettingsSection(
@@ -96,6 +97,7 @@ object SettingsCatalog {
             title = "系统管理",
             entries = listOf(
                 SettingsEntry("permission", "权限", "已声明与已授予的权限", Icons.Outlined.Security),
+                SettingsEntry("storage", "存储与外置文件", "模型、素材、角色卡与设置镜像", Icons.Outlined.Folder),
                 SettingsEntry("notification", "通知", "生成完成与后台提醒", Icons.Outlined.Notifications),
                 SettingsEntry("interaction", "交互", "发送方式与手势", Icons.Outlined.Gesture),
                 SettingsEntry("network", "网络", "代理、超时与下载源", Icons.Outlined.Wifi),

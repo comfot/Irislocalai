@@ -37,6 +37,7 @@ class AgentLoop(
         toolPermissions: Map<String, ToolPermission> = emptyMap(),
         maxStepsOverride: Int? = null,
         planFirst: Boolean = false,
+        startInThink: Boolean = false,
     ): Flow<AgentEvent> = flow flow@ {
         val availableTools = tools.all().filter { enabledTools == null || it.name in enabledTools }
         val configuredLimit = maxStepsOverride ?: maxSteps
@@ -49,7 +50,7 @@ class AgentLoop(
 
         val visible = StringBuilder()
         val tagParser = PerformanceTagParser()
-        val thinkFilter = ThinkTagFilter()
+        val thinkFilter = ThinkTagFilter(startInThink)
         var step = 0
         var finished = false
 
@@ -71,6 +72,7 @@ class AgentLoop(
         }
 
         while (stepLimit == null || step < stepLimit) {
+            thinkFilter.beginTurn(startInThink)
             val output = StringBuilder()
             var emitted = 0
             var showDelta = true
@@ -244,6 +246,9 @@ class AgentLoop(
             if (availableTools.any { it.name == "motion_control" }) {
                 appendLine("当用户要求角色做动作、比手势、跳舞、打招呼时，调用 motion_control，不要声称自己无法控制模型。")
                 appendLine("调用时必须带 arguments.action，例如 {\"action\":\"wave\"}；不确定有哪些动作时先传 action=list 查看完整清单。")
+            }
+            if (availableTools.any { it.name == "memory" }) {
+                appendLine("用户提到“回忆”“上次”“之前”“曾经”等需要精确回忆的内容时，调用 memory 工具 op=recall；常规对话已经带有记忆摘要，不要主动展开所有记忆。")
             }
             if (availableTools.any { it.name == "read_file" }) {
                 appendLine("文件操作建议：先用 list_files / search_files 定位，再用 read_file 确认原文；" +

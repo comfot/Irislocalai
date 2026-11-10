@@ -76,10 +76,10 @@ internal fun ScenePage(viewModel: SceneViewModel = viewModel()) {
     val tasks by downloads.tasks.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val backgroundDir = remember(context) {
-        File(context.filesDir, "stage_assets/backgrounds").apply { mkdirs() }
+        File(graph.storage.stageAssets, "backgrounds").apply { mkdirs() }
     }
     val textureDir = remember(context) {
-        File(context.filesDir, "stage_assets/textures").apply { mkdirs() }
+        File(graph.storage.stageAssets, "textures").apply { mkdirs() }
     }
     val activeScene = scenes.firstOrNull { it.id == activeId }
 

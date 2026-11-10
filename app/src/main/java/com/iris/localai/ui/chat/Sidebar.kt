@@ -2,10 +2,10 @@ package com.iris.localai.ui.chat
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -15,8 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -24,14 +24,15 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.PushPin
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -76,6 +77,8 @@ fun Sidebar(
     onNewConversation: () -> Unit,
     onDeleteConversation: (Long) -> Unit,
     onRenameConversation: (Long, String) -> Unit,
+    onArchiveConversation: (Long) -> Unit,
+    onRestoreConversation: (Long) -> Unit,
     onOpenSettings: () -> Unit,
     pinned: Boolean,
     onTogglePinned: () -> Unit,
@@ -94,10 +97,20 @@ fun Sidebar(
         space.label
     }
     val inSpace = conversations
-        .filter { it.space == space && (space != Space.LIFE || it.characterId == characterId) }
+        .filter {
+            it.archivedAt == 0L &&
+                it.space == space && (space != Space.LIFE || it.characterId == characterId)
+        }
         .sortedByDescending { it.updatedAt }
+    val archivedInSpace = conversations
+        .filter {
+            it.archivedAt > 0L &&
+                it.space == space && (space != Space.LIFE || it.characterId == characterId)
+        }
+        .sortedByDescending { it.archivedAt }
 
     ModalDrawerSheet(
+        modifier = Modifier.width(240.dp),
         drawerContainerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(
@@ -182,13 +195,12 @@ fun Sidebar(
 
             Spacer(Modifier.height(12.dp))
             SidebarLabel("角色卡")
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(end = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                characters.forEach { entry ->
+                items(characters, key = { it.id }) { entry ->
                     CharacterChip(
                         entry = entry,
                         selected = entry.id == characterId,
@@ -261,13 +273,45 @@ fun Sidebar(
                     ConversationRow(
                         conversation = conversation,
                         selected = conversation.id == currentId,
+                        archived = false,
                         onClick = { onSelectConversation(conversation.id) },
                         onRename = {
                             pendingRename = conversation
                             renameText = conversation.title
                         },
+                        onArchive = { onArchiveConversation(conversation.id) },
+                        onRestore = {},
                         onDelete = { pendingDelete = conversation },
                     )
+                }
+                if (archivedInSpace.isNotEmpty()) {
+                    item(key = "archived-header") {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        )
+                        Text(
+                            text = "已归档（${archivedInSpace.size}）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                    items(archivedInSpace, key = { "archived-${it.id}" }) { conversation ->
+                        ConversationRow(
+                            conversation = conversation,
+                            selected = false,
+                            archived = true,
+                            onClick = { onRestoreConversation(conversation.id) },
+                            onRename = {
+                                pendingRename = conversation
+                                renameText = conversation.title
+                            },
+                            onArchive = {},
+                            onRestore = { onRestoreConversation(conversation.id) },
+                            onDelete = { pendingDelete = conversation },
+                        )
+                    }
                 }
             }
 
@@ -434,10 +478,14 @@ private fun CharacterChip(
 private fun ConversationRow(
     conversation: Conversation,
     selected: Boolean,
+    archived: Boolean,
     onClick: () -> Unit,
     onRename: () -> Unit,
+    onArchive: () -> Unit,
+    onRestore: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    var menu by remember { mutableStateOf(false) }
     val last = conversation.messages.lastOrNull()
     val subtitleSource = if (last?.role == ChatRole.ASSISTANT) {
         AssistantMessageParser.mainText(last.text)
@@ -474,7 +522,7 @@ private fun ConversationRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = subtitle,
+                    text = if (archived) "已归档 · $subtitle" else subtitle,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -482,19 +530,47 @@ private fun ConversationRow(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
-            IconButton(onClick = onRename) {
-                Icon(
-                    imageVector = Icons.Outlined.Edit,
-                    contentDescription = "重命名会话",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            IconButton(onClick = onDelete) {
-                Icon(
-                    imageVector = Icons.Outlined.Delete,
-                    contentDescription = "删除会话",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Box {
+                IconButton(onClick = { menu = true }) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "会话操作",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("重命名") },
+                        onClick = {
+                            menu = false
+                            onRename()
+                        },
+                    )
+                    if (archived) {
+                        DropdownMenuItem(
+                            text = { Text("恢复") },
+                            onClick = {
+                                menu = false
+                                onRestore()
+                            },
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("归档") },
+                            onClick = {
+                                menu = false
+                                onArchive()
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("删除") },
+                        onClick = {
+                            menu = false
+                            onDelete()
+                        },
+                    )
+                }
             }
         }
     }

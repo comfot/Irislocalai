@@ -10,11 +10,17 @@ data class ThinkFeed(
  * 流式剥离 `<think>...</think>` 等思考块。模型把思考写进 content 时，
  * 思考内容转入 reasoning 事件，正文只保留真正回答；未闭合的思考块在结束时不展示。
  */
-class ThinkTagFilter {
+class ThinkTagFilter(startInThink: Boolean = false) {
 
     private val pending = StringBuilder()
-    private var inThink = false
-    private var sawThink = false
+    private var inThink = startInThink
+    private var sawThink = startInThink
+
+    /** 工具循环会有多轮生成，每轮开始前按模板是否预填思考块重置状态。 */
+    fun beginTurn(startInThink: Boolean) {
+        inThink = startInThink
+        if (startInThink) sawThink = true
+    }
 
     fun feed(chunk: String): ThinkFeed {
         if (chunk.isEmpty() && pending.isEmpty()) return ThinkFeed("", "", sawThink)
@@ -24,6 +30,18 @@ class ThinkTagFilter {
         while (pending.isNotEmpty()) {
             if (!inThink) {
                 val opening = findOpeningTag(pending)
+                val closing = findClosingTag(pending)
+                // 模板预填了 <think> 时，模型往往只输出 </think> 收尾；
+                // 首个标签是关闭标签时，它前面的内容全部按思考处理。
+                val bareClose = closing?.takeIf { close ->
+                    !sawThink && (opening == null || close.first < opening.first)
+                }
+                if (bareClose != null) {
+                    reasoning.append(pending, 0, bareClose.first)
+                    pending.delete(0, bareClose.first + bareClose.second)
+                    sawThink = true
+                    continue
+                }
                 if (opening == null) {
                     val hold = partialTagSuffix(pending, OPEN_TAGS)
                     if (hold > 0) {
@@ -66,6 +84,7 @@ class ThinkTagFilter {
         pending.clear()
         return if (inThink) {
             inThink = false
+            if (body.isNotBlank()) sawThink = true
             ThinkFeed("", body, sawThink)
         } else {
             ThinkFeed(body, "", sawThink)

@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.localai.mcp.McpServerConfig
 import com.iris.localai.mcp.McpState
+import com.iris.localai.mcp.McpTransportKind
 import com.iris.localai.server.ApiAuth
 import java.util.UUID
 
@@ -365,7 +366,11 @@ private fun McpClientRow(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(server.name, style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        text = server.url,
+                        text = if (server.isStdio) {
+                            "${server.transport.label} · ${server.command} ${server.args.joinToString(" ")}".trim()
+                        } else {
+                            "${server.transport.label} · ${server.url}"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -401,9 +406,22 @@ private fun McpServerDialog(
     onSave: (McpServerConfig) -> Unit,
 ) {
     var name by remember(existing?.id) { mutableStateOf(existing?.name ?: "MCP 服务") }
+    var transport by remember(existing?.id) {
+        mutableStateOf(existing?.transport ?: McpTransportKind.STREAMABLE_HTTP)
+    }
     var url by remember(existing?.id) { mutableStateOf(existing?.url.orEmpty()) }
     var headers by remember(existing?.id) { mutableStateOf(existing?.headers.orEmpty()) }
+    var command by remember(existing?.id) { mutableStateOf(existing?.command.orEmpty()) }
+    var argsText by remember(existing?.id) { mutableStateOf(existing?.args?.joinToString("\n").orEmpty()) }
+    var envText by remember(existing?.id) { mutableStateOf(existing?.env.orEmpty()) }
+    var tokenUrl by remember(existing?.id) { mutableStateOf(existing?.tokenUrl.orEmpty()) }
+    var clientId by remember(existing?.id) { mutableStateOf(existing?.clientId.orEmpty()) }
+    var clientSecret by remember(existing?.id) { mutableStateOf(existing?.clientSecret.orEmpty()) }
+    var scopes by remember(existing?.id) { mutableStateOf(existing?.scopes.orEmpty()) }
+    var accessToken by remember(existing?.id) { mutableStateOf(existing?.accessToken.orEmpty()) }
+    var refreshToken by remember(existing?.id) { mutableStateOf(existing?.refreshToken.orEmpty()) }
     var enabled by remember(existing?.id) { mutableStateOf(existing?.enabled ?: true) }
+    var showSecrets by remember(existing?.id) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -414,7 +432,7 @@ private fun McpServerDialog(
         ) {
             Column(
                 modifier = Modifier
-                    .heightIn(max = 560.dp)
+                    .heightIn(max = 620.dp)
                     .verticalScroll(rememberScrollState())
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -430,22 +448,132 @@ private fun McpServerDialog(
                     label = { Text("名称") },
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("MCP HTTP URL") },
-                    placeholder = { Text("https://example.com/mcp") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = headers,
-                    onValueChange = { headers = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("自定义请求头（每行 Key: Value）") },
-                    minLines = 2,
-                    maxLines = 4,
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    McpTransportKind.entries.forEach { kind ->
+                        FilterChip(
+                            selected = transport == kind,
+                            onClick = { transport = kind },
+                            label = { Text(kind.label) },
+                        )
+                    }
+                }
+                if (transport == McpTransportKind.STDIO) {
+                    OutlinedTextField(
+                        value = command,
+                        onValueChange = { command = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("命令（在 PRoot 容器内执行）") },
+                        placeholder = { Text("npx") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = argsText,
+                        onValueChange = { argsText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("参数（每行一个）") },
+                        minLines = 2,
+                        maxLines = 5,
+                    )
+                    OutlinedTextField(
+                        value = envText,
+                        onValueChange = { envText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("环境变量（每行 KEY=VALUE）") },
+                        minLines = 2,
+                        maxLines = 5,
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = {
+                            Text(if (transport == McpTransportKind.SSE) "MCP SSE URL" else "MCP Streamable HTTP URL")
+                        },
+                        placeholder = {
+                            Text(
+                                if (transport == McpTransportKind.SSE) "https://example.com/sse"
+                                else "https://example.com/mcp",
+                            )
+                        },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = headers,
+                        onValueChange = { headers = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("自定义请求头（每行 Key: Value）") },
+                        minLines = 2,
+                        maxLines = 4,
+                    )
+                }
+
+                if (transport != McpTransportKind.STDIO) {
+                    Text("OAuth（可选）", style = MaterialTheme.typography.labelLarge)
+                    OutlinedTextField(
+                        value = tokenUrl,
+                        onValueChange = { tokenUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Token URL") },
+                        singleLine = true,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = clientId,
+                            onValueChange = { clientId = it },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Client ID") },
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            value = scopes,
+                            onValueChange = { scopes = it },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Scopes") },
+                            singleLine = true,
+                        )
+                    }
+                    OutlinedTextField(
+                        value = accessToken,
+                        onValueChange = { accessToken = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Access Token") },
+                        singleLine = true,
+                        visualTransformation = if (showSecrets) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                    )
+                    OutlinedTextField(
+                        value = refreshToken,
+                        onValueChange = { refreshToken = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Refresh Token") },
+                        singleLine = true,
+                        visualTransformation = if (showSecrets) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                    )
+                    OutlinedTextField(
+                        value = clientSecret,
+                        onValueChange = { clientSecret = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Client Secret") },
+                        singleLine = true,
+                        visualTransformation = if (showSecrets) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                    )
+                    TextButton(onClick = { showSecrets = !showSecrets }) {
+                        Text(if (showSecrets) "隐藏密钥" else "显示密钥")
+                    }
+                }
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("启用", modifier = Modifier.weight(1f))
                     Switch(checked = enabled, onCheckedChange = { enabled = it })
@@ -461,13 +589,27 @@ private fun McpServerDialog(
                             onSave(
                                 (existing ?: McpServerConfig()).copy(
                                     name = name.trim().ifBlank { "MCP 服务" },
+                                    transport = transport,
                                     url = url.trim(),
                                     headers = headers,
+                                    command = command.trim(),
+                                    args = argsText.lines().map { it.trim() }.filter { it.isNotBlank() },
+                                    env = envText,
                                     enabled = enabled,
+                                    tokenUrl = tokenUrl.trim(),
+                                    clientId = clientId.trim(),
+                                    clientSecret = clientSecret.trim(),
+                                    scopes = scopes.trim(),
+                                    accessToken = accessToken.trim(),
+                                    refreshToken = refreshToken.trim(),
                                 ),
                             )
                         },
-                        enabled = url.isNotBlank(),
+                        enabled = if (transport == McpTransportKind.STDIO) {
+                            command.isNotBlank()
+                        } else {
+                            url.isNotBlank()
+                        },
                     ) { Text("保存") }
                 }
             }

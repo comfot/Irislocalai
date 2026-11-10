@@ -23,7 +23,9 @@ data class ChatMessage(
     val text: String,
     val attachments: List<ChatAttachment> = emptyList(),
     val reasoning: String = "",
+    val reasoningMs: Long = 0L,
     val steps: List<AgentStep> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 data class Conversation(
@@ -35,4 +37,6 @@ data class Conversation(
     val characterId: String = "",
     val messages: List<ChatMessage> = emptyList(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** 0 表示未归档；大于 0 表示归档时间。 */
+    val archivedAt: Long = 0L,
 )

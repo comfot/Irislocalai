@@ -203,7 +203,9 @@ private fun loadMmd(
     modelRoot: String,
     idleMotionAsset: String,
 ) {
-    val root = File(context.filesDir, modelRoot).canonicalFile
+    val storage = (context.applicationContext as IrisApp).graph.storage
+    val root = storage.containingRoot(modelRoot, modelFile)
+        ?: File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
         modelFile.canonicalFile.relativeTo(root).invariantSeparatorsPath
     }.getOrNull()
@@ -263,7 +265,9 @@ private fun applyMmdState(
 }
 
 private fun findMmdMotion(modelFile: File, context: Context, modelRoot: String): String? {
-    val root = File(context.filesDir, modelRoot).canonicalFile
+    val storage = (context.applicationContext as IrisApp).graph.storage
+    val root = storage.containingRoot(modelRoot, modelFile)
+        ?: File(context.filesDir, modelRoot).canonicalFile
     val motions = modelFile.parentFile?.listFiles()
         ?.filter { it.isFile && it.extension.equals("vmd", ignoreCase = true) }
         ?.sortedBy { it.name.lowercase() }

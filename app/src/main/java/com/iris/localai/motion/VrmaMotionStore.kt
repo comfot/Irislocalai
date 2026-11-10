@@ -3,6 +3,7 @@ package com.iris.localai.motion
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.iris.localai.storage.AppStorage
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,12 +16,16 @@ data class VrmaAsset(
 )
 
 /**
- * 本地 VRMA 动作库。文件放在 motion_assets/vrma，WebView 通过 /motionassets/ 读取。
+ * 本地 VRMA 动作库。新文件写入外置 `IRIS/motion_assets/vrma`，
+ * 旧 `filesDir/motion_assets/vrma` 继续读取；WebView 通过 /motionassets/ 读取。
  */
-class VrmaMotionStore(context: Context) {
+class VrmaMotionStore(
+    context: Context,
+    private val storage: AppStorage,
+) {
 
     private val resolver = context.applicationContext.contentResolver
-    private val root = File(context.applicationContext.filesDir, "motion_assets/vrma").apply { mkdirs() }
+    private val root = storage.writeDir("motion_assets/vrma")
     private val _assets = MutableStateFlow<List<VrmaAsset>>(emptyList())
     val assets: StateFlow<List<VrmaAsset>> = _assets.asStateFlow()
 
@@ -31,11 +36,26 @@ class VrmaMotionStore(context: Context) {
     fun storageRoot(): File = root
 
     fun refresh() {
-        _assets.value = root.walkTopDown()
-            .filter { it.isFile && it.extension.equals("vrma", ignoreCase = true) }
-            .map { file ->
+        val seen = mutableSetOf<String>()
+        _assets.value = storage.readDirs("motion_assets/vrma")
+            .asSequence()
+            .flatMap { dirRoot ->
+                val base = runCatching { dirRoot.canonicalFile }.getOrNull()
+                    ?: return@flatMap emptySequence()
+                dirRoot.walkTopDown()
+                    .filter { it.isFile && it.extension.equals("vrma", ignoreCase = true) }
+                    .map { file ->
+                        val relative = runCatching {
+                            file.canonicalFile.relativeTo(base).invariantSeparatorsPath
+                        }.getOrNull()
+                        relative?.let { it to file }
+                    }
+                    .filterNotNull()
+            }
+            .filter { (relative, _) -> seen.add(relative) }
+            .map { (relative, file) ->
                 VrmaAsset(
-                    id = file.relativeTo(root).invariantSeparatorsPath.let { "vrma/$it" },
+                    id = "vrma/$relative",
                     name = file.nameWithoutExtension,
                     sizeBytes = file.length(),
                 )
@@ -73,8 +93,12 @@ class VrmaMotionStore(context: Context) {
     }
 
     fun delete(asset: VrmaAsset): Boolean {
-        val file = File(root, asset.id.removePrefix("vrma/"))
-        val removed = file.isFile && file.delete()
+        val relative = asset.id.removePrefix("vrma/")
+        val removed = storage.readDirs("motion_assets/vrma").fold(false) { acc, dirRoot ->
+            val file = File(dirRoot, relative)
+            val deleted = file.isFile && file.delete()
+            acc || deleted
+        }
         if (removed) refresh()
         return removed
     }

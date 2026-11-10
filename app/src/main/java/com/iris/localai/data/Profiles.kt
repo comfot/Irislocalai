@@ -23,7 +23,7 @@ data class CharacterCard(
     val accent: Long,
 )
 
-/** 模板内置的可选档案；接入真实数据源时替换为仓库/配置读取即可。 */
+/** 内置的可选档案；接入真实数据源时替换为仓库/配置读取即可。 */
 object ProfileCatalog {
 
     val skills = listOf(

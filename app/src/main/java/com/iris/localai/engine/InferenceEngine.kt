@@ -47,6 +47,9 @@ data class ModelDetails(
     val contextLength: Int,
     val backend: Backend,
     val parameterCount: Long = 0,
+    val supportsThinking: Boolean = false,
+    /** 对话模板已在提示词末尾预填 `<think>`，模型回复会从思考块内部开始。 */
+    val thinkingPrefilled: Boolean = false,
 )
 
 sealed interface GenEvent {

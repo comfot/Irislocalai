@@ -1,6 +1,7 @@
 package com.iris.localai.data
 
 import android.content.Context
+import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,10 +44,11 @@ class ModelDownloadManager(
     context: Context,
     private val scope: CoroutineScope,
     private val client: HuggingFaceClient,
+    private val storage: AppStorage,
     private val modelScope: ModelScopeClient = ModelScopeClient(),
 ) {
 
-    private val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
+    private val modelsDir = storage.models
 
     private val _tasks = MutableStateFlow<List<DownloadTask>>(emptyList())
     val tasks: StateFlow<List<DownloadTask>> = _tasks.asStateFlow()
@@ -54,6 +56,8 @@ class ModelDownloadManager(
     private val jobs = mutableMapOf<String, Job>()
 
     fun modelsDir(): File = modelsDir
+
+    fun modelsDirs(): List<File> = storage.readDirs("models")
 
     fun enqueue(
         repoId: String,

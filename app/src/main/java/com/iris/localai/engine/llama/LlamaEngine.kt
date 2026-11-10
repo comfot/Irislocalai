@@ -127,6 +127,8 @@ class LlamaEngine : InferenceEngine {
                 contextLength = meta.nCtx.takeIf { it > 0 } ?: config.contextLength,
                 backend = activeBackend,
                 parameterCount = meta.nParams,
+                supportsThinking = meta.supportsThinking,
+                thinkingPrefilled = meta.thinkingPrefilled,
             )
         }
         throw IllegalStateException(lastError ?: "llama.cpp 模型加载失败")

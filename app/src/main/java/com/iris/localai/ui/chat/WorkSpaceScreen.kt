@@ -32,7 +32,6 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
@@ -65,8 +64,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.data.AppSettings
 import com.iris.localai.data.ModelProfile
-import com.iris.localai.data.PermissionMode
-import com.iris.localai.data.ProfileCatalog
 import com.iris.localai.data.ProviderKind
 import com.iris.localai.agent.AttachmentKind
 import com.iris.localai.skill.Skill
@@ -310,19 +307,6 @@ private fun WorkComposer(
                     },
                     onSelect = viewModel::setActiveModelProfile,
                 )
-                SelectorChip(
-                    icon = Icons.Outlined.Shield,
-                    label = settings.permissionMode.label,
-                    options = PermissionMode.entries.map {
-                        ChipOption(it.name, it.label, it.description)
-                    },
-                    onSelect = { id ->
-                        val mode = PermissionMode.entries.firstOrNull { it.name == id }
-                        if (mode != null) {
-                            viewModel.updateSettings { it.copy(permissionMode = mode) }
-                        }
-                    },
-                )
                 AssistChip(
                     onClick = {
                         viewModel.updateSettings { it.copy(agentMode = !it.agentMode) }
@@ -346,7 +330,6 @@ private fun WorkComposer(
                         Text(
                             "配置 " + (
                                 skills.count { it.enabled } +
-                                    settings.enabledMcpIds.size +
                                     tools.count { it.name in settings.enabledToolIds }
                                 ),
                         )
@@ -498,11 +481,6 @@ private fun WorkComposer(
                     )
                 }
             },
-            onToggleMcp = { id ->
-                viewModel.updateSettings {
-                    it.copy(enabledMcpIds = toggle(it.enabledMcpIds, id))
-                }
-            },
             onDismiss = { showConfig = false },
         )
     }
@@ -534,7 +512,6 @@ private fun OperationConfigDialog(
     tools: List<Tool>,
     onToggleSkill: (String, Boolean) -> Unit,
     onToggleTool: (String, Boolean) -> Unit,
-    onToggleMcp: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -574,20 +551,6 @@ private fun OperationConfigDialog(
                         onToggle = { onToggleSkill(skill.id, !skill.enabled) },
                     )
                 }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = "MCP",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                ProfileCatalog.mcpServers.forEach { server ->
-                    CheckRow(
-                        title = server.label,
-                        summary = server.description,
-                        checked = server.id in settings.enabledMcpIds,
-                        onToggle = { onToggleMcp(server.id) },
-                    )
-                }
             }
         },
         confirmButton = {
@@ -623,9 +586,6 @@ private fun CheckRow(
         }
     }
 }
-
-private fun toggle(set: Set<String>, id: String): Set<String> =
-    if (id in set) set - id else set + id
 
 private fun ModelProfile.providerSummary(): String = when (provider.kind) {
     ProviderKind.LOCAL -> "本地 · ${provider.modelName.ifBlank { "未选择模型" }}"

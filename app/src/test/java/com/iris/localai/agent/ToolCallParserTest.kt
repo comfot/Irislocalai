@@ -62,6 +62,27 @@ class ToolCallParserTest {
     }
 
     @Test
+    fun `parses tool call with hybrid dsml closing tag`() {
+        val text = """<tool_call>{"name":"shell","arguments":{"command":"cat /proc/mounts | grep -E 'data|workspace|sdcard' | head -20; echo ---; ls / | head -30; echo ---; apk search chromium 2>&1 | head"}}</｜｜DSML｜｜_call>"""
+
+        val call = ToolCallParser.parse(text)
+
+        assertEquals("shell", call?.name)
+        assertEquals(
+            "cat /proc/mounts | grep -E 'data|workspace|sdcard' | head -20; echo ---; ls / | head -30; echo ---; apk search chromium 2>&1 | head",
+            call?.arguments?.get("command")?.jsonPrimitive?.content,
+        )
+        assertEquals("先检查环境。", ToolCallParser.stripToolCalls("先检查环境。\n$text"))
+    }
+
+    @Test
+    fun `parses tool call without closing tag`() {
+        val call = ToolCallParser.parse("""<tool_call>{"name":"shell","arguments":{"command":"pwd"}}""")
+        assertEquals("shell", call?.name)
+        assertEquals("pwd", call?.arguments?.get("command")?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun `plain answer is untouched`() {
         val text = "当前目录是 /workspace，运行正常。"
         assertNull(ToolCallParser.earliestStart(text).takeIf { it >= 0 })

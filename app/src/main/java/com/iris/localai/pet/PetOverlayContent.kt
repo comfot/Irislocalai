@@ -114,10 +114,7 @@ internal fun PetOverlayContent(
     val modelRoot = if (usingPetModel) "pet_models" else "character_models"
     val modelFile = remember(model?.id, modelRoot) {
         model?.let { item ->
-            File(
-                context.filesDir,
-                "$modelRoot/${item.directory}/${item.entryFile}",
-            ).takeIf { it.isFile }
+            graph.storage.modelFile(modelRoot, item.directory, item.entryFile)
         }
     }
     val accentHex = String.format("#%06X", (entry?.card?.accent ?: 0xFF7DB3FFL) and 0xFFFFFFL)

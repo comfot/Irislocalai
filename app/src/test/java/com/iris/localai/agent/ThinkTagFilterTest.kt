@@ -48,6 +48,34 @@ class ThinkTagFilterTest {
     }
 
     @Test
+    fun startsInsidePrefilledThinkBlock() {
+        val filter = ThinkTagFilter(startInThink = true)
+        val feed = filter.feed("分析一下</think>你好")
+        assertEquals("你好", feed.text)
+        assertEquals("分析一下", feed.reasoning)
+        assertTrue(feed.sawThink)
+    }
+
+    @Test
+    fun bareClosingTagSeparatesLeadingReasoning() {
+        val filter = ThinkTagFilter()
+        val feed = filter.feed("分析一下</think>你好")
+        assertEquals("你好", feed.text)
+        assertEquals("分析一下", feed.reasoning)
+    }
+
+    @Test
+    fun beginTurnResetsPrefilledThinking() {
+        val filter = ThinkTagFilter()
+        filter.feed("<think>第一轮</think>结果")
+        filter.flush()
+        filter.beginTurn(startInThink = true)
+        val feed = filter.feed("第二轮</think>回答")
+        assertEquals("回答", feed.text)
+        assertEquals("第二轮", feed.reasoning)
+    }
+
+    @Test
     fun handlesMultipleBlocks() {
         val filter = ThinkTagFilter()
         val feed = filter.feed("<think>a</think>中间<think>b</think>结尾")

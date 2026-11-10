@@ -24,6 +24,9 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 sealed interface McpState {
     data object Stopped : McpState
@@ -38,9 +41,11 @@ sealed interface McpState {
 
 /**
  * 把内置工具以 MCP Streamable HTTP 暴露给本机其它 AI 客户端。
- * 支持 initialize / tools/list / tools/call / ping；可选 API Key 与 LAN。
+ * 支持 initialize / tools/list / tools/call / ping；POST 可按 Accept 返回 SSE，GET 可建立事件流。
  */
 private val LOCAL_ONLY_TOOLS = setOf("shell", "workspace")
+private const val LATEST_PROTOCOL = "2025-06-18"
+private val SUPPORTED_PROTOCOLS = setOf("2024-11-05", "2025-03-26", LATEST_PROTOCOL)
 
 class McpServerService(
     private val store: McpStore,
@@ -95,15 +100,22 @@ class McpServerService(
             response.empty(204)
             return
         }
-        if (request.method != "POST") {
-            response.empty(405)
-            return
-        }
         val settings = store.settings.value
         val authCode = ApiAuth.check(settings.apiKey, request.headers)
         if (authCode != null) {
             response.json(authCode, errorJson(null, -32600, "unauthorized"))
             return
+        }
+        when (request.method) {
+            "GET" -> {
+                streamSse(response)
+                return
+            }
+            "POST" -> Unit
+            else -> {
+                response.empty(405)
+                return
+            }
         }
         val body = runCatching { Json.parseToJsonElement(request.body).jsonObject }.getOrNull()
         if (body == null) {
@@ -118,14 +130,18 @@ class McpServerService(
         }
 
         val result: JsonObject? = when (method) {
-            "initialize" -> buildJsonObject {
-                put("protocolVersion", "2024-11-05")
-                putJsonObject("capabilities") {
-                    putJsonObject("tools") { put("listChanged", false) }
-                }
-                putJsonObject("serverInfo") {
-                    put("name", "IRIS LocalAI")
-                    put("version", "0.1.0")
+            "initialize" -> {
+                val requested = (body["params"] as? JsonObject)
+                    ?.get("protocolVersion")?.jsonPrimitive?.contentOrNull
+                buildJsonObject {
+                    put("protocolVersion", requested?.takeIf { it in SUPPORTED_PROTOCOLS } ?: LATEST_PROTOCOL)
+                    putJsonObject("capabilities") {
+                        putJsonObject("tools") { put("listChanged", false) }
+                    }
+                    putJsonObject("serverInfo") {
+                        put("name", "IRIS LocalAI")
+                        put("version", "0.1.0")
+                    }
                 }
             }
             "ping" -> buildJsonObject { }
@@ -148,10 +164,27 @@ class McpServerService(
             else -> null
         }
 
-        if (result == null) {
-            response.json(200, errorJson(id, -32601, "method not found: $method"))
+        val payload = if (result == null) {
+            errorJson(id, -32601, "method not found: $method")
         } else {
-            response.json(200, resultJson(id, result))
+            resultJson(id, result)
+        }
+        val accept = request.headers["accept"].orEmpty()
+        if (accept.contains("text/event-stream", ignoreCase = true)) {
+            response.beginSse()
+            response.event("message", payload)
+        } else {
+            response.json(200, payload)
+        }
+    }
+
+    /** Streamable HTTP 允许 GET 建立服务端推送流；当前只发 ping/注释保活。 */
+    private suspend fun streamSse(response: HttpResponse) {
+        response.beginSse()
+        response.comment("IRIS MCP stream ready")
+        while (currentCoroutineContext().isActive) {
+            delay(15_000)
+            response.comment("ping")
         }
     }
 

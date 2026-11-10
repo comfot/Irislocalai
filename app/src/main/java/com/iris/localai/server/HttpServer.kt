@@ -170,9 +170,21 @@ class HttpResponse(out: OutputStream) {
         streaming = true
     }
 
-    fun event(data: String) {
+    fun event(data: String) = event(null, data)
+
+    fun event(name: String?, data: String) {
         check(streaming) { "SSE 响应尚未开始" }
-        out.write("data: $data\n\n".toByteArray(Charsets.UTF_8))
+        if (name != null) out.write("event: $name\n".toByteArray(Charsets.UTF_8))
+        data.lineSequence().forEach { line ->
+            out.write("data: $line\n".toByteArray(Charsets.UTF_8))
+        }
+        out.write("\n".toByteArray(Charsets.UTF_8))
+        out.flush()
+    }
+
+    fun comment(text: String) {
+        check(streaming) { "SSE 响应尚未开始" }
+        out.write(": $text\n\n".toByteArray(Charsets.UTF_8))
         out.flush()
     }
 
@@ -180,7 +192,7 @@ class HttpResponse(out: OutputStream) {
         runCatching { out.flush() }
     }
 
-    private fun sendHead(status: Int, contentType: String, length: Int) {
+    private fun sendHead(status: Int, contentType: String, length: Int, keepAlive: Boolean = false) {
         if (headSent) return
         headSent = true
         val head = buildString {
@@ -190,7 +202,13 @@ class HttpResponse(out: OutputStream) {
             append("Access-Control-Allow-Origin: *\r\n")
             append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
             append("Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
-            append("Connection: close\r\n")
+            if (keepAlive) {
+                append("Cache-Control: no-cache\r\n")
+                append("Connection: keep-alive\r\n")
+            } else {
+                if (contentType.startsWith("text/event-stream")) append("Cache-Control: no-cache\r\n")
+                append("Connection: close\r\n")
+            }
             append("\r\n")
         }
         out.write(head.toByteArray(Charsets.ISO_8859_1))

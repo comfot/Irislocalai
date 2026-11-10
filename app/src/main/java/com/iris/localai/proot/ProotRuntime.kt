@@ -78,7 +78,20 @@ class ProotRuntime(
         return session
     }
 
-    private fun launch(imageId: String, workspaceDir: File, command: String): Process {
+    /** 启动可双向通信的进程（stdio MCP 等），调用方负责读写与销毁。 */
+    fun openProcess(
+        imageId: String,
+        workspaceDir: File,
+        command: String,
+        extraEnv: Map<String, String> = emptyMap(),
+    ): Process = launch(imageId, workspaceDir, command, extraEnv)
+
+    private fun launch(
+        imageId: String,
+        workspaceDir: File,
+        command: String,
+        extraEnv: Map<String, String> = emptyMap(),
+    ): Process {
         val rootfs = paths.rootfsDir(imageId)
         require(ProotPaths.isUsableRootfs(rootfs)) {
             "PRoot 镜像未安装：请先在「编程管理 › 容器与镜像」安装 rootfs"
@@ -94,7 +107,7 @@ class ProotRuntime(
         val tempDir = paths.tempDir(imageId).apply { mkdirs() }
         patcher.patch(rootfs)
 
-        return ProcessBuilder(buildCommand(imageId, command, proot, rootfs, workspaceDir))
+        return ProcessBuilder(buildCommand(imageId, command, proot, rootfs, workspaceDir, extraEnv))
             .directory(context.filesDir)
             .redirectErrorStream(false)
             .apply {
@@ -113,6 +126,7 @@ class ProotRuntime(
         proot: File,
         rootfs: File,
         workspaceDir: File,
+        extraEnv: Map<String, String>,
     ): List<String> = buildList {
         add(proot.absolutePath)
         add("--root-id")
@@ -141,6 +155,7 @@ class ProotRuntime(
         add("DEBIAN_FRONTEND=noninteractive")
         add("NO_COLOR=1")
         add("PAGER=cat")
+        extraEnv.forEach { (key, value) -> add("$key=$value") }
         add(ProotPaths.rootfsShell(rootfs))
         add("-l")
         add("-c")

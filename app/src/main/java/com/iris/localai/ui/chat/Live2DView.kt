@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.IrisApp
 import com.iris.localai.motion.MotionBridge
 import org.json.JSONObject
 import java.io.File
@@ -198,7 +199,9 @@ private fun loadLive2d(
     tapMotionEnabled: Boolean,
     mouthSyncEnabled: Boolean,
 ) {
-    val root = File(context.filesDir, modelRoot).canonicalFile
+    val storage = (context.applicationContext as IrisApp).graph.storage
+    val root = storage.containingRoot(modelRoot, modelFile)
+        ?: File(context.filesDir, modelRoot).canonicalFile
     val relative = runCatching {
         modelFile.canonicalFile.relativeTo(root).invariantSeparatorsPath
     }.getOrNull()

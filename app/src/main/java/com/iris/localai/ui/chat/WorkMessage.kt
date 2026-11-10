@@ -87,6 +87,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -101,6 +102,7 @@ import com.iris.localai.agent.ChatMessage
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
 import com.iris.localai.plugin.PluginHookDescriptor
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -308,19 +310,29 @@ private fun WorkAssistantMessage(
             }
         }
 
+        if (message.steps.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                message.steps.forEach { step ->
+                    if (step.reasoning.isNotBlank()) {
+                        WorkReasoningCard(
+                            text = step.reasoning,
+                            durationMs = step.reasoningMs,
+                            thinking = false,
+                        )
+                    }
+                    WorkStepCard(step)
+                }
+            }
+        }
+
         if (message.reasoning.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             WorkReasoningCard(
                 text = message.reasoning,
+                durationMs = message.reasoningMs,
                 thinking = streaming && displayText.isBlank(),
             )
-        }
-
-        if (message.steps.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                message.steps.forEach { step -> WorkStepCard(step) }
-            }
         }
 
         if (displayText.isNotBlank()) {
@@ -365,70 +377,80 @@ private fun PluginMessageMenu(
 }
 
 @Composable
-private fun WorkReasoningCard(text: String, thinking: Boolean) {
-    var expanded by remember(thinking) { mutableStateOf(thinking) }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+private fun WorkReasoningCard(text: String, durationMs: Long, thinking: Boolean) {
+    var expanded by remember { mutableStateOf(false) }
+    var elapsedMillis by remember { mutableStateOf(0L) }
+    LaunchedEffect(thinking) {
+        if (!thinking) return@LaunchedEffect
+        val startedAt = System.currentTimeMillis()
+        while (true) {
+            elapsedMillis = System.currentTimeMillis() - startedAt
+            delay(100)
+        }
+    }
+    val title = when {
+        thinking -> "正在思考（耗时 ${reasoningSeconds(elapsedMillis)} 秒）"
+        durationMs > 0L -> "思考完成（耗时 ${reasoningSeconds(durationMs)} 秒）"
+        else -> "思考完成"
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp)),
     ) {
-        Column {
-            Row(
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Psychology,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "收起思考" else "展开思考",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expanded = !expanded }
-                    .padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .heightIn(max = 300.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 34.dp, end = 12.dp, bottom = 10.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Psychology,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(15.dp),
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    text = if (thinking) "思考中…" else "思考过程",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = "${text.length} 字",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                )
-                Icon(
-                    imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (expanded) "收起思考" else "展开思考",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            AnimatedVisibility(
-                visible = expanded,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 220.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
-                ) {
-                    SelectionContainer {
-                        Text(
-                            text = text.trim(),
-                            style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                SelectionContainer {
+                    Text(
+                        text = text.trim(),
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
     }
 }
+
+private fun reasoningSeconds(ms: Long): String =
+    String.format(Locale.US, "%.1f", (ms / 1000.0).coerceAtLeast(0.1))
 
 @Composable
 private fun TypingDots() {

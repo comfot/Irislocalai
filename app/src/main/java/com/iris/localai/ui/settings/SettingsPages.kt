@@ -10,8 +10,11 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,13 +47,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.R
 import com.iris.localai.agent.Conversation
 import com.iris.localai.agent.tools.DeviceToolNames
 import com.iris.localai.data.AppSettings
@@ -558,11 +566,12 @@ internal fun AboutPage() {
     val uriHandler = LocalUriHandler.current
 
     SettingsPage {
+        AppIconHeader()
         SettingsCard("应用") {
             InfoRow("名称", "IRIS LocalAI")
             InfoRow("版本", "0.1.0")
             InfoRow("包名", "com.iris.localai")
-            InfoRow("形态", "单模块模板")
+            InfoRow("形态", "单模块应用")
         }
         SettingsCard("技术栈") {
             Text(
@@ -580,6 +589,24 @@ internal fun AboutPage() {
                 Text("查看 IRIDIS 源码")
             }
         }
+    }
+}
+
+@Composable
+private fun AppIconHeader() {
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_app_logo),
+            contentDescription = "IRIS LocalAI 图标",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(88.dp)
+                .clip(CircleShape)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+        )
     }
 }
 
@@ -693,7 +720,7 @@ private fun planFor(id: String): String = when (id) {
     "memory" -> "长期记忆分层、向量检索与滚动压缩。"
     "character-model" -> "按角色覆盖模型、采样参数与专属系统提示词。"
     "voice" -> "sherpa-onnx 离线识别与合成、音色切换与免提对话。"
-    "scene" -> "场景模板、开场白与多角色编排。"
+    "scene" -> "场景预设、开场白与多角色编排。"
     "mcp" -> "MCP 客户端（HTTP / WebSocket）与工具注入。"
     "plugin" -> "插件清单、权限声明与启用状态。"
     "market" -> "模型与扩展的下载源、校验与更新。"

@@ -67,8 +67,8 @@ internal fun StageAssetPage(settings: AppSettings, viewModel: SettingsViewModel)
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable { mutableIntStateOf(0) }
 
-    val backgroundDir = remember(context) { File(context.filesDir, "stage_assets/backgrounds").apply { mkdirs() } }
-    val textureDir = remember(context) { File(context.filesDir, "stage_assets/textures").apply { mkdirs() } }
+    val backgroundDir = remember(context) { File(graph.storage.stageAssets, "backgrounds").apply { mkdirs() } }
+    val textureDir = remember(context) { File(graph.storage.stageAssets, "textures").apply { mkdirs() } }
     val activeScene = scenes.firstOrNull { it.id == activeSceneId }
 
     var remotePath by remember { mutableStateOf("motions") }

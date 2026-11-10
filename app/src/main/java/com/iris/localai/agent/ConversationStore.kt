@@ -83,6 +83,18 @@ class ConversationStore(context: Context) {
         schedulePersist(immediate = true)
     }
 
+    fun archive(id: Long): Boolean {
+        if (_conversations.value.none { it.id == id }) return false
+        update(id) { it.copy(archivedAt = System.currentTimeMillis()) }
+        return true
+    }
+
+    fun restore(id: Long): Boolean {
+        if (_conversations.value.none { it.id == id }) return false
+        update(id) { it.copy(archivedAt = 0L) }
+        return true
+    }
+
     fun newMessageId(): Long = synchronized(idLock) { nextMessageId++ }
 
     fun appendMessage(conversationId: Long, message: ChatMessage) {
@@ -130,14 +142,16 @@ class ConversationStore(context: Context) {
 
     fun latest(space: Space, characterId: String? = null): Conversation? = _conversations.value
         .filter { conversation ->
-            conversation.space == space && (
+            conversation.archivedAt == 0L &&
+                conversation.space == space && (
                 space != Space.LIFE || characterId.isNullOrBlank() || conversation.characterId == characterId
                 )
         }
         .maxByOrNull { it.updatedAt }
 
     fun count(space: Space, characterId: String? = null): Int = _conversations.value.count {
-        it.space == space && (
+        it.archivedAt == 0L &&
+            it.space == space && (
             space != Space.LIFE || characterId.isNullOrBlank() || it.characterId == characterId
             )
     }
@@ -177,6 +191,7 @@ class ConversationStore(context: Context) {
                         put("workspaceId", conversation.workspaceId)
                         put("characterId", conversation.characterId)
                         put("updatedAt", conversation.updatedAt)
+                        put("archivedAt", conversation.archivedAt)
                         put("messages", buildJsonArray {
                             conversation.messages.forEach { message ->
                                 addJsonObject {
@@ -184,6 +199,8 @@ class ConversationStore(context: Context) {
                                     put("role", message.role.name)
                                     put("text", message.text)
                                     put("reasoning", message.reasoning)
+                                    put("reasoningMs", message.reasoningMs)
+                                    put("createdAt", message.createdAt)
                                     put("attachments", buildJsonArray {
                                         message.attachments.forEach { attachment ->
                                             addJsonObject {
@@ -205,6 +222,8 @@ class ConversationStore(context: Context) {
                                                 put("result", step.result)
                                                 put("status", step.status.name)
                                                 put("durationMs", step.durationMs)
+                                                put("reasoning", step.reasoning)
+                                                put("reasoningMs", step.reasoningMs)
                                             }
                                         }
                                     })
@@ -230,6 +249,7 @@ class ConversationStore(context: Context) {
         return runCatching {
             Json.parseToJsonElement(file.readText()).jsonArray.mapNotNull { element ->
                 val obj = element as? JsonObject ?: return@mapNotNull null
+                val updatedAt = obj.long("updatedAt") ?: 0L
                 Conversation(
                     id = obj.long("id") ?: return@mapNotNull null,
                     title = obj.string("title") ?: "新对话",
@@ -237,7 +257,8 @@ class ConversationStore(context: Context) {
                     workspaceId = obj.string("workspaceId").orEmpty(),
                     characterId = obj.string("characterId").orEmpty(),
                     messages = obj.messages(),
-                    updatedAt = obj.long("updatedAt") ?: 0L,
+                    updatedAt = updatedAt,
+                    archivedAt = obj.long("archivedAt") ?: 0L,
                 )
             }
         }.getOrElse { emptyList() }
@@ -255,7 +276,9 @@ class ConversationStore(context: Context) {
                 text = obj.string("text").orEmpty(),
                 attachments = obj.attachments(),
                 reasoning = obj.string("reasoning").orEmpty(),
+                reasoningMs = obj.long("reasoningMs") ?: 0L,
                 steps = obj.steps(),
+                createdAt = obj.long("createdAt") ?: 0L,
             )
         }
     }
@@ -290,6 +313,8 @@ class ConversationStore(context: Context) {
                     StepStatus.valueOf(obj.string("status").orEmpty())
                 }.getOrDefault(StepStatus.OK),
                 durationMs = obj.long("durationMs") ?: 0L,
+                reasoning = obj.string("reasoning").orEmpty(),
+                reasoningMs = obj.long("reasoningMs") ?: 0L,
             )
         }
     }

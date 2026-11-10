@@ -33,10 +33,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val engineState = graph.engines.state
     val apiState = graph.api.state
     val conversations = graph.conversations.conversations
-    val tools: List<Tool> = graph.tools.all()
+    val tools: List<Tool> get() = graph.tools.all()
     val skills = graph.skills.skills
     val workspaces = graph.workspaces.workspaces
     val activeWorkspaceId = graph.workspaces.activeId
+    val storage = graph.storage
 
     val modelProfiles = graph.models.profiles
     val activeModelId = graph.models.activeId
@@ -47,6 +48,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val connectionTest: StateFlow<ConnectionTestState> = _connectionTest.asStateFlow()
 
     fun update(transform: (AppSettings) -> AppSettings) = graph.settings.update(transform)
+
+    fun exportSettingsMirror(): Result<String> = graph.settings.exportSettingsMirror()
+
+    fun reloadSettingsFromMirror(): Result<String> = graph.settings.reloadSettingsFromMirror()
 
     fun refreshPermissions() = graph.permissions.refresh()
 
@@ -269,6 +274,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 put("memoryInjectChat", settings.memoryInjectChat)
                 put("memoryInjectAgent", settings.memoryInjectAgent)
                 put("memorySuggest", settings.memorySuggest)
+                put("memoryAutoDiary", settings.memoryAutoDiary)
+                put("memoryAutoSave", settings.memoryAutoSave)
                 put("ttsEngine", settings.ttsEngine.name)
                 put("ttsLocalModelId", settings.ttsLocalModelId)
                 put("ttsSpeed", settings.ttsSpeed)

@@ -105,7 +105,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val scenes = graph.scenes.scenes
     val activeSceneId = graph.scenes.activeId
     val skills = graph.skills.skills
-    val tools = graph.tools.all()
+    val tools get() = graph.tools.all()
     val diary = graph.memory.diary
     val memories = graph.memory.memories
     val knowledge = graph.memory.knowledge
@@ -357,6 +357,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_currentId.value == id) openLatest(currentSpace, lifeCharacterId())
     }
 
+    fun archiveConversation(id: Long) {
+        val conversation = store.find(id) ?: return
+        if (!store.archive(id)) return
+        if (graph.settings.current.memoryAutoSave) {
+            graph.memoryAutoCapture.captureAsync(
+                conversationId = id,
+                force = true,
+                snapshot = conversation,
+            )
+        }
+        if (_currentId.value == id) openLatest(conversation.space, lifeCharacterId())
+    }
+
+    fun restoreConversation(id: Long) {
+        store.restore(id)
+    }
+
     fun toggleApi() = graph.api.toggle()
 
     fun stop() {
@@ -523,12 +540,40 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         ),
                     )
                 }
-                val skillBlock = graph.skills.promptBlock(text)
-                val memoryBlock = graph.memory.promptContext(
+                val skillBlock = graph.skills.promptBlock(
                     query = text,
-                    includeMemory = settings.memoryEnabled && settings.memoryInjectChat,
-                    includeKnowledge = settings.knowledgeInChat,
+                    forAgent = settings.space == Space.WORK || settings.space == Space.COMPOSITE,
                 )
+                val injectMemory = if (settings.space == Space.WORK || settings.space == Space.COMPOSITE) {
+                    settings.memoryInjectAgent
+                } else {
+                    settings.memoryInjectChat
+                }
+                val memoryBlock = if (settings.memoryEnabled) {
+                    buildString {
+                        if (injectMemory) {
+                            append(graph.memory.briefContext(
+                                includeMemory = true,
+                                includeKnowledge = settings.knowledgeInChat,
+                                maxChars = 420,
+                            ))
+                        }
+                        if (graph.memory.looksLikeRecall(text)) {
+                            val recall = graph.memory.recall(
+                                query = text,
+                                limit = 6,
+                                includeDiary = true,
+                                includeKnowledge = settings.knowledgeInChat,
+                            )
+                            if (recall.hits.isNotEmpty()) {
+                                if (isNotEmpty()) appendLine()
+                                appendLine(graph.memory.formatRecall(recall))
+                            }
+                        }
+                    }.trim()
+                } else {
+                    ""
+                }
                 val workspaceBlock = if (settings.space == Space.WORK) {
                     graph.workspaces.active()?.let { workspace ->
                         buildString {
@@ -619,6 +664,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 val finalPromptSuffix = graph.pluginRuntime.transformSystemPrompt(conversation.id, promptSuffix)
+                val startInThink = settings.deepThinking &&
+                    (engineState.value as? EngineState.Ready)?.details?.thinkingPrefilled == true
+                val pendingReasoning = StringBuilder()
+                var reasoningStartedAt = 0L
+                var reasoningLastAt = 0L
                 graph.agent.run(
                     userInput = userInput,
                     userImages = userImages,
@@ -648,21 +698,54 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         else -> settings.agentMaxSteps
                     },
                     planFirst = settings.planFirst,
+                    startInThink = startInThink,
                 ).collect { event ->
                     when (event) {
                         is AgentEvent.Delta -> store.updateMessage(conversation.id, assistantId) {
                             it.copy(text = it.text + event.text)
                         }
                         is AgentEvent.Performance -> applyPerformance(event.tags)
-                        is AgentEvent.Reasoning -> store.updateMessage(conversation.id, assistantId) {
-                            it.copy(reasoning = it.reasoning + event.text)
+                        is AgentEvent.Reasoning -> {
+                            val now = System.currentTimeMillis()
+                            if (pendingReasoning.isEmpty()) {
+                                reasoningStartedAt = now
+                            }
+                            reasoningLastAt = now
+                            pendingReasoning.append(event.text)
+                            store.updateMessage(conversation.id, assistantId) {
+                                it.copy(reasoning = it.reasoning + event.text)
+                            }
                         }
-                        is AgentEvent.StepFinished -> store.updateMessage(conversation.id, assistantId) {
-                            it.copy(steps = it.steps + event.step)
+                        is AgentEvent.StepFinished -> {
+                            val stepReasoning = pendingReasoning.toString()
+                            val stepReasoningMs = if (reasoningStartedAt > 0L) {
+                                (reasoningLastAt - reasoningStartedAt).coerceAtLeast(0L)
+                            } else {
+                                0L
+                            }
+                            pendingReasoning.setLength(0)
+                            reasoningStartedAt = 0L
+                            store.updateMessage(conversation.id, assistantId) {
+                                it.copy(
+                                    reasoning = "",
+                                    steps = it.steps + event.step.copy(
+                                        reasoning = stepReasoning,
+                                        reasoningMs = stepReasoningMs,
+                                    ),
+                                )
+                            }
                         }
                         is AgentEvent.Finished -> {
+                            val finalReasoningMs = if (pendingReasoning.isNotEmpty() && reasoningStartedAt > 0L) {
+                                (reasoningLastAt - reasoningStartedAt).coerceAtLeast(0L)
+                            } else {
+                                null
+                            }
                             store.updateMessage(conversation.id, assistantId) {
-                                it.copy(text = event.text.ifBlank { it.text })
+                                it.copy(
+                                    text = event.text.ifBlank { it.text },
+                                    reasoningMs = finalReasoningMs ?: it.reasoningMs,
+                                )
                             }
                             store.find(conversation.id)?.messages
                                 ?.firstOrNull { it.id == assistantId }

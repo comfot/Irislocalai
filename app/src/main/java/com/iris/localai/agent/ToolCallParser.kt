@@ -21,9 +21,7 @@ data class ParsedToolCall(val name: String, val arguments: JsonObject)
 object ToolCallParser {
 
     fun parse(text: String): ParsedToolCall? {
-        TOOL_CALL_JSON.find(text)?.let { match ->
-            parseJson(match.groupValues[1])?.let { return it }
-        }
+        parseToolCallJsonBlock(text)?.let { return it }
         val invoke = DSML_INVOKE.find(text) ?: return null
         val name = invoke.groupValues[1].trim()
         if (name.isEmpty()) return null
@@ -64,7 +62,7 @@ object ToolCallParser {
 
     /** 结束生成时兜底清理残留标签。 */
     fun stripToolCalls(text: String): String {
-        var result = TOOL_CALL_JSON.replace(text, "")
+        var result = removeToolCallBlocks(text)
         result = DSML_INVOKE.replace(result, "")
         result = DSML_TAG.replace(result, "")
         val dangling = listOf(TOOL_CALL_START) + STREAM_PREFIXES
@@ -73,6 +71,82 @@ object ToolCallParser {
         }.minOrNull()
         if (cut != null) result = result.substring(0, cut)
         return result.trim()
+    }
+
+    /**
+     * `<tool_call>` 的关闭标签并不总是标准形式（实际输出里出现过 `</｜｜DSML｜｜_call>`），
+     * 因此这里不依赖关闭标签，直接从 `{` 开始做括号配对，取完整 JSON。
+     */
+    private fun parseToolCallJsonBlock(text: String): ParsedToolCall? {
+        var from = 0
+        while (true) {
+            val start = text.indexOf(TOOL_CALL_START, from, ignoreCase = true)
+            if (start < 0) return null
+            val brace = text.indexOf('{', start + TOOL_CALL_START.length)
+            if (brace >= 0) {
+                val end = jsonObjectEnd(text, brace)
+                if (end > brace) {
+                    parseJson(text.substring(brace, end + 1))?.let { return it }
+                }
+            }
+            from = start + TOOL_CALL_START.length
+        }
+    }
+
+    private fun removeToolCallBlocks(text: String): String {
+        val out = StringBuilder()
+        var cursor = 0
+        while (true) {
+            val start = text.indexOf(TOOL_CALL_START, cursor, ignoreCase = true)
+            if (start < 0) {
+                out.append(text, cursor, text.length)
+                break
+            }
+            out.append(text, cursor, start)
+            val brace = text.indexOf('{', start + TOOL_CALL_START.length)
+            val end = if (brace >= 0) jsonObjectEnd(text, brace) else -1
+            if (end > brace) {
+                var next = end + 1
+                var probe = next
+                while (probe < text.length && text[probe].isWhitespace()) probe++
+                if (probe < text.length && text.startsWith("</", probe)) {
+                    val gt = text.indexOf('>', probe)
+                    if (gt >= 0) next = gt + 1
+                }
+                cursor = next
+            } else {
+                val close = text.indexOf("</", start + TOOL_CALL_START.length)
+                val gt = if (close >= 0) text.indexOf('>', close) else -1
+                cursor = if (gt >= 0) gt + 1 else text.length
+            }
+        }
+        return out.toString()
+    }
+
+    private fun jsonObjectEnd(text: String, start: Int): Int {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in start until text.length) {
+            val char = text[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == '"' -> inString = false
+                }
+            } else {
+                when (char) {
+                    '"' -> inString = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) return index
+                    }
+                }
+            }
+        }
+        return -1
     }
 
     private fun parseJson(raw: String): ParsedToolCall? = try {
@@ -94,11 +168,6 @@ object ToolCallParser {
     private const val DSML_BARS = "[|｜]{1,2}"
     private const val DSML_NAME = "$DSML_BARS\\s*DSML\\s*$DSML_BARS"
     private const val DSML_OPEN = "<$DSML_NAME"
-
-    private val TOOL_CALL_JSON = Regex(
-        pattern = """<tool_call>\s*(\{.*?\})\s*</tool_call>""",
-        options = setOf(RegexOption.DOT_MATCHES_ALL),
-    )
 
     private val DSML_INVOKE = Regex(
         pattern = "$DSML_OPEN\\s*invoke\\s+name\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>(.*?)" +

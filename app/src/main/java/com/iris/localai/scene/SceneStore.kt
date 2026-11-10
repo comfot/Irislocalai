@@ -2,6 +2,7 @@ package com.iris.localai.scene
 
 import android.content.Context
 import android.net.Uri
+import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,11 +45,14 @@ data class SceneConfig(
 )
 
 /** 生活空间场景：名称、介绍、背景图/视频与 3D 底座样式。 */
-class SceneStore(context: Context) {
+class SceneStore(
+    context: Context,
+    storage: AppStorage,
+) {
 
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private val dir = File(context.filesDir, "scenes").apply { mkdirs() }
+    private val dir = storage.scenes
 
     private val _scenes = MutableStateFlow(load())
     val scenes: StateFlow<List<SceneConfig>> = _scenes.asStateFlow()

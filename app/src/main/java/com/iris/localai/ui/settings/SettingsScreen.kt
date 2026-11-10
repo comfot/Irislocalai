@@ -181,7 +181,7 @@ private fun SettingsHome(
         }
         item {
             Text(
-                text = "IRIS LocalAI 0.1.0 · 界面模板",
+                text = "IRIS LocalAI 0.1.0 · 本地 AI 工作台",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -352,6 +352,7 @@ private fun SettingsDetail(
         "theme" -> ThemePage(settings, viewModel)
         "space" -> SpacePage(settings, conversations, viewModel)
         "permission" -> PermissionPage(viewModel)
+        "storage" -> StoragePage(viewModel)
         "about" -> AboutPage()
         "backup" -> BackupPage(settings, viewModel)
         "restore" -> RestorePage(viewModel)

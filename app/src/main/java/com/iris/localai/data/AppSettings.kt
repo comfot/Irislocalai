@@ -131,6 +131,8 @@ data class AppSettings(
     val memoryInjectChat: Boolean = true,
     val memoryInjectAgent: Boolean = true,
     val memorySuggest: Boolean = true,
+    val memoryAutoDiary: Boolean = true,
+    val memoryAutoSave: Boolean = true,
 
     // 语音
     val ttsEngine: VoiceEngineType = VoiceEngineType.SYSTEM,

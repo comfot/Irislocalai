@@ -1,6 +1,5 @@
 package com.iris.localai.ui.settings
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,12 +7,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -33,10 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.agent.Tool
 import com.iris.localai.data.AppSettings
 import com.iris.localai.data.ContextStrategy
-import com.iris.localai.data.PermissionMode
-import com.iris.localai.data.ProfileCatalog
 import com.iris.localai.data.ToolPermission
-import com.iris.localai.data.WorkspaceLocation
 import com.iris.localai.engine.Backend
 import com.iris.localai.engine.llama.LlamaNative
 import java.io.File
@@ -54,56 +48,35 @@ internal fun BackendPage(settings: AppSettings, viewModel: SettingsViewModel) {
         ).any { File(it).exists() }
     }
     SettingsPage {
-        SettingsCard("自动选择") {
+        SettingsCard("推理后端") {
+            Backend.entries
+                .filter { it != Backend.NPU || settings.backend == Backend.NPU }
+                .forEach { backend ->
+                    OptionRow(
+                        selected = settings.backend == backend,
+                        title = backend.name,
+                        summary = backendSummary(backend),
+                        onClick = { viewModel.update { it.copy(backend = backend) } },
+                    )
+                }
+            if (settings.backend == Backend.NPU) {
+                Text(
+                    text = "当前预编译运行库不支持 NPU，请改选 CPU 或 GPU。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             BasicSwitchRow(
-                title = "自动选择后端",
-                summary = "当前按首选后端加载；GPU 失败时可回退 CPU",
-                checked = settings.backendAuto,
-            ) { on -> viewModel.update { it.copy(backendAuto = on) } }
-            BasicSwitchRow(
-                title = "失败回退 CPU",
-                summary = "GPU 加载失败时自动降级到 CPU",
+                title = "GPU 失败时回退 CPU",
+                summary = "GPU 加载失败时自动降级，避免模型无法使用",
                 checked = settings.backendFallback,
             ) { on -> viewModel.update { it.copy(backendFallback = on) } }
         }
 
-        SettingsCard("首选后端") {
-            Backend.entries.forEach { backend ->
-                OptionRow(
-                    selected = settings.backend == backend,
-                    title = backend.name,
-                    summary = backendSummary(backend),
-                    onClick = { viewModel.update { it.copy(backend = backend) } },
-                )
-            }
-            if (settings.backendAuto) {
-                Text(
-                    text = "自动选择暂未在 CPU/GPU 之间测速；当前仍以首选后端为准，GPU 失败时回退 CPU。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
-        SettingsCard("运行库状态") {
+        SettingsCard("运行状态") {
             InfoRow("GGUF / llama.cpp", runtimeStatus)
-            InfoRow("OpenCL GPU", if (gpuAvailable) "检测到驱动（可选 GPU 加速）" else "未检测到，仅 CPU")
+            InfoRow("OpenCL GPU", if (gpuAvailable) "已检测到驱动" else "未检测到，仅 CPU")
             InfoRow("当前本地模型", settings.modelPath.ifBlank { "未选择" })
-            Text(
-                text = "预编译运行库随 APK 提供，无需单独下载；仅支持 arm64 GGUF。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        SettingsCard("格式支持") {
-            InfoRow("GGUF", "llama.cpp（已接入）")
-            InfoRow("MNN", "MNN-LLM（未接入）")
-            InfoRow("LiteRT", "LiteRT-LM（未接入）")
-            Text(
-                text = "当前本地运行库只支持 GGUF；MNN/LiteRT/NPU 需要额外的原生库与模型目录支持。",
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
     }
 }
@@ -182,6 +155,12 @@ internal fun GenerationPage(settings: AppSettings, viewModel: SettingsViewModel)
                     viewModel.update { it.copy(temperature = (value * 20).toInt() / 20f) }
                 },
             )
+        }
+
+        ExpandableSettingsCard(
+            title = "高级采样",
+            summary = "Top-P、Top-K、重复惩罚与随机种子",
+        ) {
             SliderRow(
                 title = "Top-P",
                 value = settings.topP,
@@ -192,9 +171,6 @@ internal fun GenerationPage(settings: AppSettings, viewModel: SettingsViewModel)
                     viewModel.update { it.copy(topP = (value * 20).toInt() / 20f) }
                 },
             )
-        }
-
-        SettingsCard("高级采样") {
             SliderRow(
                 title = "Top-K",
                 value = settings.topK.toFloat(),
@@ -300,30 +276,8 @@ internal fun GenerationPage(settings: AppSettings, viewModel: SettingsViewModel)
 
 @Composable
 internal fun PerformancePage(settings: AppSettings, viewModel: SettingsViewModel) {
-    var showBenchmark by remember { mutableStateOf(false) }
-    val tierLabels = listOf("省电", "均衡", "极速")
-
     SettingsPage {
-        SettingsCard("资源档位") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                tierLabels.forEachIndexed { index, label ->
-                    FilterChip(
-                        selected = settings.resourceTier == index,
-                        onClick = { viewModel.update { it.copy(resourceTier = index) } },
-                        label = { Text(label) },
-                    )
-                }
-            }
-            Text(
-                text = "档位影响线程与批量的建议值；本地引擎接入后生效。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        SettingsCard("运行") {
             SliderRow(
                 title = "线程数",
                 value = settings.threads.toFloat(),
@@ -332,96 +286,20 @@ internal fun PerformancePage(settings: AppSettings, viewModel: SettingsViewModel
                 format = { if (it <= 0f) "自动" else it.toInt().toString() },
                 onCommit = { value -> viewModel.update { it.copy(threads = value.toInt()) } },
             )
-            SliderRow(
-                title = "空闲卸载",
-                value = settings.idleUnloadMinutes.toFloat(),
-                range = 0f..60f,
-                steps = 11,
-                format = { if (it <= 0f) "从不" else "${it.toInt()} 分钟" },
-                onCommit = { value ->
-                    viewModel.update { it.copy(idleUnloadMinutes = (value / 5).toInt() * 5) }
-                },
+            Text(
+                text = "线程数在下次加载模型时生效。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-
-        SettingsCard("后台与温控") {
-            BasicSwitchRow(
-                title = "后台生成",
-                summary = "切到后台后继续生成（需要保活）",
-                checked = settings.backgroundGeneration,
-            ) { on -> viewModel.update { it.copy(backgroundGeneration = on) } }
-
-            BasicSwitchRow(
-                title = "温度限制",
-                summary = "接近阈值时降低生成速度",
-                checked = settings.thermalLimitC > 0,
-            ) { on -> viewModel.update { it.copy(thermalLimitC = if (on) 42 else 0) } }
-            if (settings.thermalLimitC > 0) {
-                SliderRow(
-                    title = "温度阈值",
-                    value = settings.thermalLimitC.toFloat(),
-                    range = 35f..50f,
-                    steps = 14,
-                    format = { "${it.toInt()}°C" },
-                    onCommit = { value ->
-                        viewModel.update { it.copy(thermalLimitC = value.toInt().coerceIn(35, 50)) }
-                    },
-                )
-            }
-
-            BasicSwitchRow(
-                title = "终止温度",
-                summary = "达到阈值后强制卸载模型",
-                checked = settings.thermalCutoffC > 0,
-            ) { on -> viewModel.update { it.copy(thermalCutoffC = if (on) 48 else 0) } }
-            if (settings.thermalCutoffC > 0) {
-                SliderRow(
-                    title = "终止阈值",
-                    value = settings.thermalCutoffC.toFloat(),
-                    range = 45f..60f,
-                    steps = 14,
-                    format = { "${it.toInt()}°C" },
-                    onCommit = { value ->
-                        viewModel.update { it.copy(thermalCutoffC = value.toInt().coerceIn(45, 60)) }
-                    },
-                )
-            }
-        }
-
-        SettingsCard("显示与诊断") {
             BasicSwitchRow(
                 title = "屏幕常亮",
-                summary = "生成期间不自动息屏",
+                summary = "应用在前台时不自动息屏",
                 checked = settings.keepScreenOn,
             ) { on -> viewModel.update { it.copy(keepScreenOn = on) } }
-            BasicSwitchRow(
-                title = "性能悬浮窗",
-                summary = "显示 tokens/s 与内存占用（待接入）",
-                checked = settings.perfOverlay,
-            ) { on -> viewModel.update { it.copy(perfOverlay = on) } }
-            TextButton(onClick = { showBenchmark = true }) { Text("运行基准测试") }
         }
     }
-
-    if (showBenchmark) {
-        AlertDialog(
-            onDismissRequest = { showBenchmark = false },
-            title = { Text("基准测试") },
-            text = { Text("基准测试需要本地推理引擎；当前会重新加载一次引擎作为占位验证。") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.reloadEngine()
-                        showBenchmark = false
-                    },
-                ) { Text("重载引擎") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBenchmark = false }) { Text("取消") }
-            },
-        )
-    }
 }
+
 
 @Composable
 internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
@@ -451,25 +329,12 @@ internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
                 summary = "调用工具前先说明计划",
                 checked = settings.planFirst,
             ) { on -> viewModel.update { it.copy(planFirst = on) } }
-            BasicSwitchRow(
-                title = "按需载入工具",
-                summary = "工具较多时按需加载（配置项）",
-                checked = settings.lazyTools,
-            ) { on -> viewModel.update { it.copy(lazyTools = on) } }
         }
 
-        SettingsCard("权限模式") {
-            PermissionMode.entries.forEach { mode ->
-                OptionRow(
-                    selected = settings.permissionMode == mode,
-                    title = mode.label,
-                    summary = mode.description,
-                    onClick = { viewModel.update { it.copy(permissionMode = mode) } },
-                )
-            }
-        }
-
-        SettingsCard("工具（${viewModel.tools.size}）") {
+        ExpandableSettingsCard(
+            title = "工具（${viewModel.tools.size}）",
+            summary = "开关与每个工具的权限",
+        ) {
             viewModel.tools.forEach { tool ->
                 ToolSettingRow(
                     tool = tool,
@@ -508,64 +373,16 @@ internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
             }
         }
 
-        SettingsCard("MCP（${settings.enabledMcpIds.size}）") {
-            ProfileCatalog.mcpServers.forEach { server ->
-                BasicSwitchRow(
-                    title = server.label,
-                    summary = server.description,
-                    checked = server.id in settings.enabledMcpIds,
-                ) { enabled ->
-                    viewModel.update {
-                        it.copy(
-                            enabledMcpIds = if (enabled) {
-                                it.enabledMcpIds + server.id
-                            } else {
-                                it.enabledMcpIds - server.id
-                            },
-                        )
-                    }
-                }
-            }
-        }
-
-        SettingsCard("工作区") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                WorkspaceLocation.entries.forEach { location ->
-                    FilterChip(
-                        selected = settings.workspaceLocation == location,
-                        onClick = { viewModel.update { it.copy(workspaceLocation = location) } },
-                        label = { Text(location.label) },
-                    )
-                }
-            }
-            InfoRow("当前路径", workspacePath(settings))
-            if (settings.workspaceLocation == WorkspaceLocation.CUSTOM) {
-                OutlinedTextField(
-                    value = settings.customWorkspacePath,
-                    onValueChange = { path ->
-                        viewModel.update { it.copy(customWorkspacePath = path) }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("自定义工作区路径") },
-                    singleLine = true,
-                )
-            }
-            Text(
-                text = "工作区用于文件工具与编程管理；当前模板尚未接入真实文件工具。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }
 
 @Composable
 internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
+    val displayedStrategy = if (settings.contextStrategy == ContextStrategy.TOKEN_BUDGET) {
+        ContextStrategy.TOKEN_BUDGET
+    } else {
+        ContextStrategy.SLIDING_WINDOW
+    }
     SettingsPage {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -577,9 +394,9 @@ internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
         SettingsCard("上下文窗口") {
             SliderRow(
                 title = "上下文长度",
-                value = settings.contextLength.toFloat(),
-                range = 1024f..32768f,
-                steps = 30,
+                value = settings.contextLength.coerceIn(1024, 131072).toFloat(),
+                range = 1024f..131072f,
+                steps = 126,
                 format = { "${it.toInt()} tokens" },
                 onCommit = { value ->
                     viewModel.update { it.copy(contextLength = (value / 1024).toInt() * 1024) }
@@ -593,35 +410,40 @@ internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
         }
 
         SettingsCard("上下文策略") {
-            ContextStrategy.entries.forEach { strategy ->
-                OptionRow(
-                    selected = settings.contextStrategy == strategy,
-                    title = strategy.label,
-                    summary = strategy.hint,
-                    onClick = { viewModel.update { it.copy(contextStrategy = strategy) } },
+            ContextStrategy.entries
+                .filter { it == ContextStrategy.SLIDING_WINDOW || it == ContextStrategy.TOKEN_BUDGET }
+                .forEach { strategy ->
+                    OptionRow(
+                        selected = displayedStrategy == strategy,
+                        title = strategy.label,
+                        summary = strategy.hint,
+                        onClick = { viewModel.update { it.copy(contextStrategy = strategy) } },
+                    )
+                }
+            if (displayedStrategy == ContextStrategy.TOKEN_BUDGET) {
+                SliderRow(
+                    title = "预算占比",
+                    value = settings.summaryTriggerPercent.toFloat(),
+                    range = 40f..95f,
+                    steps = 54,
+                    format = { "上下文窗口的 ${it.toInt()}%" },
+                    onCommit = { value ->
+                        viewModel.update { it.copy(summaryTriggerPercent = value.toInt()) }
+                    },
+                )
+            } else {
+                SliderRow(
+                    title = "保留轮数",
+                    value = settings.contextKeepTurns.toFloat(),
+                    range = 1f..32f,
+                    steps = 30,
+                    format = { "${it.toInt()} 轮" },
+                    onCommit = { value -> viewModel.update { it.copy(contextKeepTurns = value.toInt()) } },
                 )
             }
-            SliderRow(
-                title = "保留轮数",
-                value = settings.contextKeepTurns.toFloat(),
-                range = 1f..32f,
-                steps = 30,
-                format = { "${it.toInt()} 轮" },
-                onCommit = { value -> viewModel.update { it.copy(contextKeepTurns = value.toInt()) } },
-            )
-            SliderRow(
-                title = "摘要触发",
-                value = settings.summaryTriggerPercent.toFloat(),
-                range = 40f..95f,
-                steps = 54,
-                format = { "${it.toInt()}%" },
-                onCommit = { value ->
-                    viewModel.update { it.copy(summaryTriggerPercent = value.toInt()) }
-                },
-            )
             BasicSwitchRow(
-                title = "自动压缩",
-                summary = "按策略裁剪较早的历史消息",
+                title = "自动压缩历史",
+                summary = "超出策略限制时裁剪较早的消息",
                 checked = settings.autoCompact,
             ) { on -> viewModel.update { it.copy(autoCompact = on) } }
         }
@@ -645,18 +467,24 @@ internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
                 enabled = settings.memoryEnabled,
             ) { on -> viewModel.update { it.copy(memoryInjectAgent = on) } }
             BasicSwitchRow(
-                title = "主动建议",
-                summary = "根据记忆提示下一步",
-                checked = settings.memorySuggest,
+                title = "自动生成日记",
+                summary = "按打开应用的日期整理当天对话，未打开的日子跳过",
+                checked = settings.memoryAutoDiary,
                 enabled = settings.memoryEnabled,
-            ) { on -> viewModel.update { it.copy(memorySuggest = on) } }
+            ) { on -> viewModel.update { it.copy(memoryAutoDiary = on) } }
+            BasicSwitchRow(
+                title = "归档时自动沉淀记忆",
+                summary = "归档会话时提取稳定事实、偏好与事件；模型不可用时回退规则提取",
+                checked = settings.memoryAutoSave,
+                enabled = settings.memoryEnabled,
+            ) { on -> viewModel.update { it.copy(memoryAutoSave = on) } }
             BasicSwitchRow(
                 title = "对话中检索知识库",
                 summary = "回答前检索本地文档",
                 checked = settings.knowledgeInChat,
             ) { on -> viewModel.update { it.copy(knowledgeInChat = on) } }
             Text(
-                text = "记忆与知识库检索尚未实现；开关会持久化，接入检索链路后生效。",
+                text = "常驻对话只注入记忆摘要；需要详细回忆时由 memory 工具检索。日记不进入常规提示词。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -768,10 +596,4 @@ private fun backendSummary(backend: Backend): String = when (backend) {
     Backend.CPU -> "兼容性最好，速度取决于线程数"
     Backend.GPU -> "OpenCL / Vulkan 加速，需要驱动支持"
     Backend.NPU -> "需要 Hexagon/NPU 运行库，当前预编译版未接入"
-}
-
-private fun workspacePath(settings: AppSettings): String = when (settings.workspaceLocation) {
-    WorkspaceLocation.APP_PRIVATE -> "应用私有 files/workspace"
-    WorkspaceLocation.DOWNLOADS -> "/sdcard/Download/IRISLocalAI"
-    WorkspaceLocation.CUSTOM -> settings.customWorkspacePath.ifBlank { "未设置" }
 }

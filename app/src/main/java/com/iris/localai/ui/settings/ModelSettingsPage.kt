@@ -202,12 +202,6 @@ internal fun ModelSettingsPage(
         }
 
         SettingsCard("加载选项") {
-            CapabilitySwitch(
-                title = "自动加载上次模型",
-                summary = "启动后首次对话时自动加载",
-                checked = settings.autoLoadLastModel,
-            ) { on -> viewModel.update { it.copy(autoLoadLastModel = on) } }
-
             Text("视觉质量（图片最长边）", style = MaterialTheme.typography.bodyMedium)
             Row(
                 modifier = Modifier
@@ -240,6 +234,12 @@ internal fun ModelSettingsPage(
                 }
             }
 
+        }
+
+        ExpandableSettingsCard(
+            title = "高级加载参数",
+            summary = "Flash Attention、KV 缓存、批大小与 mmap",
+        ) {
             CapabilitySwitch(
                 title = "Flash Attention",
                 summary = "降低长上下文显存/内存占用",
@@ -278,14 +278,9 @@ internal fun ModelSettingsPage(
                 summary = "按需映射模型文件，降低常驻内存",
                 checked = settings.useMmap,
             ) { on -> viewModel.update { it.copy(useMmap = on) } }
-            CapabilitySwitch(
-                title = "加载预热",
-                summary = "加载后执行一次空推理",
-                checked = settings.warmup,
-            ) { on -> viewModel.update { it.copy(warmup = on) } }
 
             Text(
-                text = "以上参数会传入本地 llama.cpp 引擎；FlashAttention/KV/Batch/mmap 对 GGUF 生效，MNN/LiteRT 尚未接入。下载源会立即影响市场页。",
+                text = "这些参数在下次加载模型时生效。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

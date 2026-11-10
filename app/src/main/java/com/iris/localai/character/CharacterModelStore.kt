@@ -2,6 +2,7 @@ package com.iris.localai.character
 
 import android.content.Context
 import android.net.Uri
+import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,18 +50,20 @@ data class CharacterModelEntry(
 
 /**
  * 角色模型资产管理：Live2D（ZIP/model3.json）与 3D（VRM / GLB / MMD）。
- * 模型文件存放在 `filesDir/character_models/<id>/`，并尽量抽取缩略图。
- * 实际渲染参考 AIRI：WebView + Three.js / Live2D；本模板先完成导入、管理与预览图。
+ * 新模型写入外置 `IRIS/<modelsDir>/<id>/`，旧 `filesDir/<modelsDir>` 继续读取；
+ * 实际渲染参考 AIRI：WebView + Three.js / Live2D。
  */
 class CharacterModelStore(
     private val context: Context,
+    private val storage: AppStorage,
     modelsDir: String = MODELS_DIR,
     prefsName: String = PREFS,
 ) {
 
     private val prefs = context.applicationContext
         .getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-    private val root = File(context.filesDir, modelsDir).apply { mkdirs() }
+    private val modelsDirName = modelsDir
+    private val root = storage.writeDir(modelsDir)
 
     private val _models = MutableStateFlow(loadModels())
     val models: StateFlow<List<CharacterModelEntry>> = _models.asStateFlow()
@@ -179,8 +182,11 @@ class CharacterModelStore(
     fun delete(id: String): Boolean {
         val model = _models.value.firstOrNull { it.id == id } ?: return false
         if (model.directory.contains("..") || model.directory.contains('/')) return false
-        val dir = File(root, model.directory)
-        val deleted = dir.deleteRecursively()
+        val deleted = storage.readDirs(modelsDirName).fold(false) { acc, dirRoot ->
+            val candidate = File(dirRoot, model.directory)
+            val removed = candidate.isDirectory && candidate.deleteRecursively()
+            acc || removed
+        }
         _models.update { list -> list.filterNot { it.id == id } }
         val removedBindings = _bindings.value.filterValues { it == id }
         if (removedBindings.isNotEmpty()) {
@@ -279,7 +285,7 @@ class CharacterModelStore(
                 val obj = element as? JsonObject ?: return@mapNotNull null
                 val id = obj.string("id") ?: return@mapNotNull null
                 val directory = obj.string("directory") ?: return@mapNotNull null
-                if (!File(root, directory).isDirectory) return@mapNotNull null
+                if (storage.findRootFor(modelsDirName, directory) == null) return@mapNotNull null
                 // FBX 支持已移除；旧数据直接跳过，避免出现无法渲染的条目。
                 if ((obj.string("type") ?: "").equals("FBX", ignoreCase = true)) return@mapNotNull null
                 CharacterModelEntry(

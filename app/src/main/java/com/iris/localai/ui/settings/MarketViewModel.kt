@@ -255,10 +255,14 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
     fun cancelDownload(id: String) = downloads.cancel(id)
 
     fun refreshDownloaded() {
-        val files = downloads.modelsDir().listFiles { file ->
-            file.isFile && file.extension.equals("gguf", ignoreCase = true) &&
-                !file.name.contains("mmproj", ignoreCase = true)
-        } ?: emptyArray()
+        val files = downloads.modelsDirs()
+            .flatMap { dir ->
+                dir.listFiles { file ->
+                    file.isFile && file.extension.equals("gguf", ignoreCase = true) &&
+                        !file.name.contains("mmproj", ignoreCase = true)
+                }?.toList().orEmpty()
+            }
+            .distinctBy { it.name }
         _downloaded.value = files.sortedBy { it.name }
     }
 

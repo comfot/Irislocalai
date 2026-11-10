@@ -2,27 +2,55 @@ package com.iris.localai.data
 
 import android.content.Context
 import com.iris.localai.engine.Backend
+import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * SharedPreferences 持久化 + StateFlow 暴露。模板不引入 DI 框架，由 AppGraph 手动装配，
+ * SharedPreferences 持久化 + StateFlow 暴露。项目不引入 DI 框架，由 AppGraph 手动装配，
  * 与 IRIDIS 的 SettingsRepository 用法一致。
  */
-class SettingsRepository(context: Context) {
+class SettingsRepository(
+    context: Context,
+    storage: AppStorage? = null,
+) {
 
     private val prefs = context.applicationContext
         .getSharedPreferences(FILE, Context.MODE_PRIVATE)
+    private val mirror = storage?.let { SettingsMirror(it, prefs, context.applicationContext) }
 
-    private val _settings = MutableStateFlow(read())
-    val settings: StateFlow<AppSettings> = _settings.asStateFlow()
-
+    private val _settings: MutableStateFlow<AppSettings>
+    val settings: StateFlow<AppSettings>
     val current: AppSettings get() = _settings.value
+
+    init {
+        mirror?.importIfNewer()
+        _settings = MutableStateFlow(read())
+        settings = _settings.asStateFlow()
+        persist(_settings.value)
+        mirror?.export()
+    }
 
     fun update(transform: (AppSettings) -> AppSettings) {
         val next = transform(current)
         _settings.value = next
+        persist(next)
+        mirror?.export()
+    }
+
+    fun exportSettingsMirror(): Result<String> =
+        mirror?.export() ?: Result.failure(IllegalStateException("设置镜像未启用"))
+
+    fun reloadSettingsFromMirror(): Result<String> = runCatching {
+        val active = mirror ?: error("设置镜像未启用")
+        active.import(force = true).getOrThrow()
+        _settings.value = read()
+        persist(_settings.value)
+        active.export().getOrThrow()
+    }
+
+    private fun persist(next: AppSettings) {
         prefs.edit()
             .putString(KEY_MODEL_PATH, next.modelPath)
             .putString(KEY_BACKEND, next.backend.name)
@@ -129,6 +157,8 @@ class SettingsRepository(context: Context) {
             .putBoolean(KEY_MEMORY_INJECT_CHAT, next.memoryInjectChat)
             .putBoolean(KEY_MEMORY_INJECT_AGENT, next.memoryInjectAgent)
             .putBoolean(KEY_MEMORY_SUGGEST, next.memorySuggest)
+            .putBoolean(KEY_MEMORY_AUTO_DIARY, next.memoryAutoDiary)
+            .putBoolean(KEY_MEMORY_AUTO_SAVE, next.memoryAutoSave)
             .putString(KEY_TTS_ENGINE, next.ttsEngine.name)
             .putString(KEY_TTS_LOCAL_MODEL, next.ttsLocalModelId)
             .putFloat(KEY_TTS_SPEED, next.ttsSpeed)
@@ -152,6 +182,8 @@ class SettingsRepository(context: Context) {
     fun reset() {
         prefs.edit().clear().apply()
         _settings.value = AppSettings()
+        persist(_settings.value)
+        mirror?.export()
     }
 
     private fun read(): AppSettings = AppSettings(
@@ -266,6 +298,8 @@ class SettingsRepository(context: Context) {
         memoryInjectChat = prefs.getBoolean(KEY_MEMORY_INJECT_CHAT, true),
         memoryInjectAgent = prefs.getBoolean(KEY_MEMORY_INJECT_AGENT, true),
         memorySuggest = prefs.getBoolean(KEY_MEMORY_SUGGEST, true),
+        memoryAutoDiary = prefs.getBoolean(KEY_MEMORY_AUTO_DIARY, true),
+        memoryAutoSave = prefs.getBoolean(KEY_MEMORY_AUTO_SAVE, true),
         ttsEngine = enumOf(prefs.getString(KEY_TTS_ENGINE, null), VoiceEngineType.SYSTEM),
         ttsLocalModelId = prefs.getString(KEY_TTS_LOCAL_MODEL, "") ?: "",
         ttsSpeed = prefs.getFloat(KEY_TTS_SPEED, 1.0f),
@@ -321,6 +355,7 @@ class SettingsRepository(context: Context) {
             .putString(KEY_ENABLED_TOOLS, enabled.joinToString(","))
             .putString(KEY_TOOL_CATALOG_NAMES, available.joinToString(","))
             .apply()
+        mirror?.export()
     }
 
     private fun decodeSet(value: String): Set<String> =
@@ -450,6 +485,8 @@ class SettingsRepository(context: Context) {
         const val KEY_MEMORY_INJECT_CHAT = "memory_inject_chat"
         const val KEY_MEMORY_INJECT_AGENT = "memory_inject_agent"
         const val KEY_MEMORY_SUGGEST = "memory_suggest"
+        const val KEY_MEMORY_AUTO_DIARY = "memory_auto_diary"
+        const val KEY_MEMORY_AUTO_SAVE = "memory_auto_save"
         const val KEY_TTS_ENGINE = "tts_engine"
         const val KEY_TTS_LOCAL_MODEL = "tts_local_model"
         const val KEY_TTS_SPEED = "tts_speed"

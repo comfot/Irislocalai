@@ -1,6 +1,7 @@
 package com.iris.localai.character
 
 import android.content.Context
+import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,15 +19,18 @@ data class CharacterEntry(
 )
 
 /**
- * 角色卡存储：`filesDir/characters/<id>/card.json` + `avatar.png`。
- * 首次启动会种入三张内置卡（小满/岚/阿澈），收藏状态存 SharedPreferences。
+ * 角色卡存储：新卡写入外置 `IRIS/characters/<id>`，旧 `filesDir/characters` 继续读取；
+ * 首次启动会在两个目录都为空时种入三张内置卡，收藏状态存 SharedPreferences。
  */
-class CharacterCardStore(context: Context) {
+class CharacterCardStore(
+    context: Context,
+    private val storage: AppStorage,
+) {
 
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private val root = File(context.filesDir, "characters").apply { mkdirs() }
+    private val root = storage.characters
 
     private val _cards = MutableStateFlow<List<CharacterEntry>>(emptyList())
     val cards: StateFlow<List<CharacterEntry>> = _cards.asStateFlow()
@@ -41,20 +45,26 @@ class CharacterCardStore(context: Context) {
 
     fun refresh() {
         val favorites = favoriteIds()
-        _cards.value = root.listFiles { file -> file.isDirectory && File(file, CARD).isFile }
-            .orEmpty()
-            .mapNotNull { dir ->
-                val card = runCatching { CardSpec.parse(File(dir, CARD).readText()) }.getOrNull()
-                    ?: return@mapNotNull null
-                CharacterEntry(
-                    id = dir.name,
-                    card = card,
-                    avatar = dir.listFiles { file -> file.isFile && file.name.startsWith("avatar.") }
-                        ?.maxByOrNull { it.lastModified() },
-                    favorite = dir.name in favorites,
-                )
-            }
-            .sortedBy { it.card.name }
+        val entries = mutableListOf<CharacterEntry>()
+        val seen = mutableSetOf<String>()
+        storage.readDirs("characters").forEach { dirRoot ->
+            dirRoot.listFiles { file -> file.isDirectory && File(file, CARD).isFile }
+                .orEmpty()
+                .forEach { dir ->
+                    if (!seen.add(dir.name)) return@forEach
+                    val card = runCatching { CardSpec.parse(File(dir, CARD).readText()) }.getOrNull()
+                        ?: return@forEach
+                    entries += CharacterEntry(
+                        id = dir.name,
+                        card = card,
+                        avatar = dir.listFiles { file ->
+                            file.isFile && file.name.startsWith("avatar.")
+                        }?.maxByOrNull { it.lastModified() },
+                        favorite = dir.name in favorites,
+                    )
+                }
+        }
+        _cards.value = entries.sortedBy { it.card.name }
     }
 
     fun save(
@@ -97,13 +107,16 @@ class CharacterCardStore(context: Context) {
 
     fun delete(id: String): Boolean {
         if (!isSafeId(id)) return false
-        val dir = File(root, id)
-        if (!dir.isDirectory) return false
-        val ok = dir.deleteRecursively()
+        val removed = storage.readDirs("characters").fold(false) { acc, dirRoot ->
+            val dir = File(dirRoot, id)
+            val deleted = dir.isDirectory && dir.deleteRecursively()
+            acc || deleted
+        }
+        if (!removed) return false
         val favorites = favoriteIds().also { it.remove(id) }
         prefs.edit().putStringSet(KEY_FAVORITES, favorites).apply()
         refresh()
-        return ok
+        return removed
     }
 
     fun exportJson(id: String): String? = get(id)?.card?.toJson(pretty = true)
@@ -117,7 +130,10 @@ class CharacterCardStore(context: Context) {
     }
 
     private fun seedBuiltIns() {
-        if (root.listFiles { file -> file.isDirectory }?.isNotEmpty() == true) return
+        val hasCards = storage.readDirs("characters").any { dirRoot ->
+            dirRoot.listFiles { file -> file.isDirectory }?.isNotEmpty() == true
+        }
+        if (hasCards) return
         data class Seed(
             val id: String,
             val name: String,
@@ -151,7 +167,7 @@ class CharacterCardStore(context: Context) {
         var index = 0
         while (true) {
             val id = if (index == 0) base else "$base-$index"
-            if (!File(root, id).exists()) return id
+            if (storage.readDirs("characters").none { File(it, id).exists() }) return id
             index++
         }
     }

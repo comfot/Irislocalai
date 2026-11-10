@@ -44,7 +44,7 @@ class StubEngine : InferenceEngine {
                 """<tool_call>{"name":"current_time","arguments":{}}</tool_call>"""
             else ->
                 "（示例引擎）收到：$userText\n\n" +
-                    "当前是模板内置的回声引擎，没有加载任何模型。" +
+                    "当前是未加载模型时的回声引擎，没有加载任何模型。" +
                     "把 AppGraph 里的 engineFactory 换成 llama.cpp / MNN 实现后，这里就是真实推理结果。"
         }
         for (chunk in reply.chunked(8)) {

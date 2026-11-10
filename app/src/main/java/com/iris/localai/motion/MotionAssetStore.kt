@@ -2,6 +2,7 @@ package com.iris.localai.motion
 
 import android.content.Context
 import android.net.Uri
+import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,13 +38,13 @@ data class MotionAsset(
 }
 
 /**
- * 本地动作素材：VMD 动作与镜头、配乐都放在 filesDir/motion_assets 下，
- * 分类规则沿用 xiaoke.ai 的文件名关键词约定，默认不把未知动作当作舞蹈。
+ * 本地动作素材：VMD 动作与镜头、配乐。新文件写入外置 `IRIS/motion_assets`，
+ * 旧 `filesDir/motion_assets` 继续扫描；分类规则沿用 xiaoke.ai 的文件名关键词约定。
  */
-class MotionAssetStore(context: Context) {
+class MotionAssetStore(context: Context, private val storage: AppStorage) {
 
     private val appContext = context.applicationContext
-    private val root = File(appContext.filesDir, "motion_assets").apply { mkdirs() }
+    private val root = storage.motionAssets
     private val motionsDir = File(root, "motions").apply { mkdirs() }
     private val camerasDir = File(root, "cameras").apply { mkdirs() }
     private val bgmDir = File(root, "bgm").apply { mkdirs() }
@@ -125,26 +126,39 @@ class MotionAssetStore(context: Context) {
     }
 
     private fun scan(): List<MotionAsset> {
-        val bgmFiles = bgmDir.listFiles()
-            ?.filter { it.isFile && it.extension.lowercase() in AUDIO_EXTENSIONS }
-            .orEmpty()
+        val roots = storage.readDirs("motion_assets")
+        val bgmFiles = roots.flatMap { dirRoot ->
+            File(dirRoot, "bgm").listFiles()
+                ?.filter { it.isFile && it.extension.lowercase() in AUDIO_EXTENSIONS }
+                .orEmpty()
+        }
         val list = mutableListOf<MotionAsset>()
-        for (dir in listOf(motionsDir, camerasDir)) {
-            dir.walkTopDown()
-                .filter { it.isFile && it.extension.equals("vmd", ignoreCase = true) }
-                .forEach { file ->
-                    val relative = runCatching {
-                        file.canonicalFile.relativeTo(root).invariantSeparatorsPath
-                    }.getOrNull() ?: return@forEach
-                    val camera = dir == camerasDir || looksLikeCamera(relative)
-                    val category = if (camera) MotionCategory.CAMERA else classify(file.name)
-                    list += MotionAsset(
-                        id = relative,
-                        name = displayName(file.nameWithoutExtension),
-                        category = category,
-                        file = file,
-                        bgm = if (category == MotionCategory.DANCE) pairBgm(file.nameWithoutExtension, bgmFiles) else null,
-                    )
+        val seen = mutableSetOf<String>()
+        roots.forEach { dirRoot ->
+            val canonicalRoot = runCatching { dirRoot.canonicalFile }.getOrNull() ?: return@forEach
+            listOf(File(dirRoot, "motions") to false, File(dirRoot, "cameras") to true)
+                .forEach { (dir, cameraDir) ->
+                    dir.walkTopDown()
+                        .filter { it.isFile && it.extension.equals("vmd", ignoreCase = true) }
+                        .forEach { file ->
+                            val relative = runCatching {
+                                file.canonicalFile.relativeTo(canonicalRoot).invariantSeparatorsPath
+                            }.getOrNull() ?: return@forEach
+                            if (!seen.add(relative)) return@forEach
+                            val camera = cameraDir || looksLikeCamera(relative)
+                            val category = if (camera) MotionCategory.CAMERA else classify(file.name)
+                            list += MotionAsset(
+                                id = relative,
+                                name = displayName(file.nameWithoutExtension),
+                                category = category,
+                                file = file,
+                                bgm = if (category == MotionCategory.DANCE) {
+                                    pairBgm(file.nameWithoutExtension, bgmFiles)
+                                } else {
+                                    null
+                                },
+                            )
+                        }
                 }
         }
         return list.sortedWith(compareBy({ it.category.ordinal }, { it.name.lowercase() }))

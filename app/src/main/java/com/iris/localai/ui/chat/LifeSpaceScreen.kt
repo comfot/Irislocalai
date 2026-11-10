@@ -87,6 +87,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.IrisApp
 import com.iris.localai.agent.AssistantMessageParser
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.character.CharacterCardData
@@ -120,15 +121,13 @@ fun LifeSpaceScreen(
     val scene by viewModel.activeScene.collectAsStateWithLifecycle()
     val entry = activeCharacter
     val context = LocalContext.current
+    val storage = remember(context) { (context.applicationContext as IrisApp).graph.storage }
     val boundModelId = entry?.let { bindings[it.id] }
     val activeModel = characterModels.firstOrNull { it.id == boundModelId }
         ?: characterModels.firstOrNull { it.id == activeModelId }
     val activeModelFile = remember(activeModel?.id) {
         activeModel?.let {
-            File(
-                context.filesDir,
-                "character_models/${it.directory}/${it.entryFile}",
-            ).takeIf { file -> file.isFile }
+            storage.modelFile("character_models", it.directory, it.entryFile)
         }
     }
     val modelFile = if (settings.characterModel == CharacterModel.THREE_D &&

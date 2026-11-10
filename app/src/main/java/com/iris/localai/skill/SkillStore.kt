@@ -49,6 +49,21 @@ class SkillStore(context: Context) {
     init {
         if (root.listFiles { file -> file.isDirectory }?.isEmpty() != false) seed()
         refresh()
+        upgradeKnowledgeSkill()
+    }
+
+    private fun upgradeKnowledgeSkill() {
+        val skill = _skills.value.firstOrNull { it.id == "knowledge" } ?: return
+        if (!skill.instructions.startsWith("## 知识库") || skill.instructions.contains("memory 工具")) return
+        save(
+            skill.copy(
+                triggers = listOf("知识库", "记忆", "回忆", "上次", "之前"),
+                instructions = "## 知识库与记忆\n\n" +
+                    "常规对话只携带记忆摘要。需要确认用户过去说过的事、偏好或历史细节时，" +
+                    "调用 memory 工具：{\"op\":\"recall\",\"query\":\"要回忆的内容\"}。\n\n" +
+                    "规则：先检索再回答；检索不到就说明不确定，不要编造；只有用户明确要求记住时才调用 op=save。",
+            ),
+        )
     }
 
     fun updateSettings(transform: (SkillSettings) -> SkillSettings) {
@@ -145,9 +160,10 @@ class SkillStore(context: Context) {
         }
     }
 
-    fun activeFor(query: String): List<Skill> {
+    fun activeFor(query: String, forAgent: Boolean): List<Skill> {
         val config = _settings.value
-        if (!config.injectToChat && !config.injectToAgent) return emptyList()
+        if (forAgent && !config.injectToAgent) return emptyList()
+        if (!forAgent && !config.injectToChat) return emptyList()
         return _skills.value
             .filter { it.enabled }
             .filter { skill ->
@@ -158,11 +174,12 @@ class SkillStore(context: Context) {
             }
     }
 
-    fun promptBlock(query: String): String {
+    fun promptBlock(query: String, forAgent: Boolean): String {
         val config = _settings.value
-        if (!config.injectToChat && !config.injectToAgent) return ""
+        if (forAgent && !config.injectToAgent) return ""
+        if (!forAgent && !config.injectToChat) return ""
         var budget = config.maxChars
-        return activeFor(query)
+        return activeFor(query, forAgent)
             .sortedByDescending { it.alwaysOn }
             .takeWhile { skill ->
                 if (budget <= 0) return@takeWhile false
@@ -205,13 +222,26 @@ class SkillStore(context: Context) {
 
     private fun seed() {
         ProfileCatalog.skills.forEach { profile ->
+            val triggers = if (profile.id == "knowledge") {
+                listOf("知识库", "记忆", "回忆", "上次", "之前")
+            } else {
+                listOf(profile.label)
+            }
+            val instructions = if (profile.id == "knowledge") {
+                "## 知识库与记忆\n\n" +
+                    "常规对话只携带记忆摘要。需要确认用户过去说过的事、偏好或历史细节时，" +
+                    "调用 memory 工具：{\"op\":\"recall\",\"query\":\"要回忆的内容\"}。\n\n" +
+                    "规则：先检索再回答；检索不到就说明不确定，不要编造；只有用户明确要求记住时才调用 op=save。"
+            } else {
+                "## ${profile.label}\n\n${profile.description}。\n\n" +
+                    "在任务需要该能力时使用它，先确认输入与目标，再执行并汇报结果。"
+            }
             val skill = Skill(
                 id = profile.id,
                 name = profile.label,
                 description = profile.description,
-                instructions = "## ${profile.label}\n\n${profile.description}。\n\n" +
-                    "在任务需要该能力时使用它，先确认输入与目标，再执行并汇报结果。",
-                triggers = listOf(profile.label),
+                instructions = instructions,
+                triggers = triggers,
                 enabled = true,
             )
             save(skill)

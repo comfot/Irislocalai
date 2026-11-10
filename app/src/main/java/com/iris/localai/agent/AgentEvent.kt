@@ -9,6 +9,9 @@ data class AgentStep(
     val result: String,
     val status: StepStatus,
     val durationMs: Long = 0L,
+    /** 本轮工具调用前的思考内容，按轮次展示在步骤卡片上方。 */
+    val reasoning: String = "",
+    val reasoningMs: Long = 0L,
 )
 
 sealed interface AgentEvent {

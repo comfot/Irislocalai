@@ -2,14 +2,18 @@ package com.iris.localai.voice
 
 import android.content.Context
 import com.iris.localai.data.VoiceModelPack
+import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 
-class VoiceModelStore(context: Context) {
+class VoiceModelStore(
+    context: Context,
+    private val storage: AppStorage,
+) {
 
-    private val root = File(context.filesDir, "voice_models").apply { mkdirs() }
+    private val root = storage.voiceModels
 
     private val _installedIds = MutableStateFlow(scan())
     val installedIds: StateFlow<Set<String>> = _installedIds.asStateFlow()
@@ -27,14 +31,21 @@ class VoiceModelStore(context: Context) {
 
     fun delete(id: String): Boolean {
         if (id.contains('/') || id.contains("..")) return false
-        val deleted = File(root, id).deleteRecursively()
+        val deleted = storage.readDirs("voice_models").fold(false) { acc, dirRoot ->
+            val dir = File(dirRoot, id)
+            val removed = dir.isDirectory && dir.deleteRecursively()
+            acc || removed
+        }
         refresh()
         return deleted
     }
 
     fun bytesOf(id: String): Long {
-        val dir = File(root, id)
-        if (!dir.isDirectory) return 0L
+        val dir = storage.readDirs("voice_models")
+            .asSequence()
+            .map { File(it, id) }
+            .firstOrNull { it.isDirectory }
+            ?: return 0L
         return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
 
@@ -42,11 +53,15 @@ class VoiceModelStore(context: Context) {
         _installedIds.value = scan()
     }
 
-    private fun scan(): Set<String> =
-        root.listFiles { file -> file.isDirectory && File(file, MARKER).isFile }
-            ?.map { it.name }
-            ?.toSet()
-            ?: emptySet()
+    private fun scan(): Set<String> = storage.readDirs("voice_models")
+        .asSequence()
+        .flatMap { dirRoot ->
+            dirRoot.listFiles { file -> file.isDirectory && File(file, MARKER).isFile }
+                ?.asSequence()
+                ?: emptySequence()
+        }
+        .map { it.name }
+        .toSet()
 
     private companion object {
         const val MARKER = ".installed"
