@@ -55,7 +55,7 @@ object SettingsCatalog {
             title = "基础功能",
             entries = listOf(
                 SettingsEntry("model", "模型", "模型档案、提供商与加载参数", Icons.Outlined.Memory),
-                SettingsEntry("backend", "后端", "CPU / GPU 推理后端", Icons.Outlined.Speed),
+                SettingsEntry("backend", "后端", "CPU / GPU 后端与本地推理引擎", Icons.Outlined.Speed),
                 SettingsEntry("generation", "生成", "提示词、输出与高级采样", Icons.Outlined.AutoAwesome),
                 SettingsEntry("performance", "性能与资源", "线程数与屏幕常亮", Icons.Outlined.Bolt),
                 SettingsEntry("agent", "智能体", "工具、步数与计划优先", Icons.Outlined.SmartToy),

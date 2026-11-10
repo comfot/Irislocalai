@@ -147,6 +147,8 @@ data class AppSettings(
     val ttsCloudKey: String = "",
     val ttsCloudModel: String = "",
     val ttsCloudVoice: String = "",
+    val ttsCloudStyle: String = "",
+    val ttsCloudVoiceSample: String = "",
     val sttCloudProvider: CloudVoiceProvider = CloudVoiceProvider.OPENAI,
     val sttCloudEndpoint: String = "",
     val sttCloudKey: String = "",

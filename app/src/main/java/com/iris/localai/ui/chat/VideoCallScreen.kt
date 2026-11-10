@@ -3,8 +3,11 @@ package com.iris.localai.ui.chat
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.graphics.SurfaceTexture
+import java.io.ByteArrayOutputStream
+import android.util.Base64
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -68,12 +71,15 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.character.CharacterCardData
 import com.iris.localai.character.CharacterModelEntry
 import com.iris.localai.data.CharacterModel
 import com.iris.localai.scene.SceneConfig
+import com.iris.localai.voice.VoiceRecorder
 import java.io.File
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 /**
  * 视频通话里角色形象的运行时控制接口。
@@ -97,6 +103,7 @@ class VideoCallAvatarControl {
 
 @Composable
 internal fun VideoCallScreen(
+    viewModel: ChatViewModel,
     character: CharacterCardData,
     activeModel: CharacterModelEntry?,
     modelFile: File?,
@@ -121,6 +128,73 @@ internal fun VideoCallScreen(
     var speakerOn by remember { mutableStateOf(true) }
     var seconds by remember { mutableIntStateOf(0) }
     val avatarControl = remember { VideoCallAvatarControl() }
+    val callReply by viewModel.callReply.collectAsStateWithLifecycle()
+    val ttsSpeaking by viewModel.ttsSpeaking.collectAsStateWithLifecycle()
+    val running by viewModel.running.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val recorder = remember { VoiceRecorder() }
+    val cameraController = remember { CameraPreviewController() }
+    var audioGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    var listenStatus by remember { mutableStateOf("正在接通…") }
+    val audioPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        audioGranted = granted
+        if (!granted) listenStatus = "未授予录音权限，通话只能播放不能收音"
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.beginVideoCall()
+        if (!audioGranted) audioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        viewModel.sendCallTurn("（视频通话已接通，请自然地跟我打个招呼）")
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.endVideoCall()
+            cameraController.release()
+        }
+    }
+    LaunchedEffect(ttsSpeaking) {
+        avatarControl.updateSpeaking(ttsSpeaking)
+    }
+
+    LaunchedEffect(muted, audioGranted, running) {
+        if (muted || !audioGranted) {
+            if (muted) listenStatus = "麦克风已静音"
+            return@LaunchedEffect
+        }
+        while (isActive) {
+            if (running || viewModel.ttsSpeaking.value) {
+                listenStatus = if (viewModel.ttsSpeaking.value) "正在说话…" else "正在思考…"
+                delay(300)
+                continue
+            }
+            listenStatus = "正在聆听…"
+            val file = recorder.record(maxMillis = 5_000)
+            if (file == null) {
+                listenStatus = "没有听清，请再说一次"
+                continue
+            }
+            listenStatus = "正在识别…"
+            val result = viewModel.transcribeVoice(file)
+            file.delete()
+            result.onSuccess { text ->
+                if (text.isNotBlank()) {
+                    listenStatus = "你说：$text"
+                    val frame = if (cameraOn) cameraController.captureJpeg() else null
+                    viewModel.sendCallTurn(text, frame)
+                }
+            }.onFailure {
+                listenStatus = "识别失败：${it.message ?: "未知错误"}"
+                delay(800)
+            }
+        }
+    }
 
     LaunchedEffect(model, activeModel?.id, mmdFile, live2dFile, modelFile) {
         android.util.Log.d(
@@ -279,6 +353,7 @@ internal fun VideoCallScreen(
             ) {
                 CameraPreviewPane(
                     enabled = cameraOn,
+                    controller = cameraController,
                     modifier = Modifier
                         .width(104.dp)
                         .height(150.dp)
@@ -307,10 +382,19 @@ internal fun VideoCallScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text(
-                    text = "AI 控制接口已预留：表情、口型与动作可由对话事件驱动",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.50f),
+                    text = callReply.takeLast(120).ifBlank { listenStatus },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.92f),
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 24.dp),
                 )
+                if (callReply.isNotBlank()) {
+                    Text(
+                        text = listenStatus,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.55f),
+                    )
+                }
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(30.dp))
@@ -467,7 +551,11 @@ private fun CallControl(
 }
 
 @Composable
-private fun CameraPreviewPane(enabled: Boolean, modifier: Modifier = Modifier) {
+private fun CameraPreviewPane(
+    enabled: Boolean,
+    controller: CameraPreviewController,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     var granted by remember {
         mutableStateOf(
@@ -481,21 +569,18 @@ private fun CameraPreviewPane(enabled: Boolean, modifier: Modifier = Modifier) {
 
     LaunchedEffect(enabled) {
         if (enabled && !granted) launcher.launch(Manifest.permission.CAMERA)
+        if (!enabled) controller.release()
     }
 
     if (enabled && granted) {
-        val camera = remember { CameraPreviewController() }
-        DisposableEffect(camera) {
-            onDispose { camera.release() }
-        }
         AndroidView(
             modifier = modifier,
             factory = { ctx ->
                 TextureView(ctx).apply {
-                    camera.attach(this)
+                    controller.attach(this)
                 }
             },
-            onRelease = { camera.release() },
+            onRelease = { controller.release() },
         )
     } else {
         Box(
@@ -610,6 +695,32 @@ private class CameraPreviewController {
         thread?.quitSafely()
         thread = null
         handler = null
+    }
+
+    fun captureJpeg(): String? {
+        val bitmap = textureView?.bitmap ?: return null
+        return runCatching {
+            val largest = maxOf(bitmap.width, bitmap.height)
+            val scaled = if (largest > 1024) {
+                val ratio = 1024f / largest
+                Bitmap.createScaledBitmap(
+                    bitmap,
+                    (bitmap.width * ratio).toInt().coerceAtLeast(1),
+                    (bitmap.height * ratio).toInt().coerceAtLeast(1),
+                    true,
+                )
+            } else {
+                bitmap
+            }
+            try {
+                val output = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 82, output)
+                "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+            } finally {
+                if (scaled !== bitmap) scaled.recycle()
+                bitmap.recycle()
+            }
+        }.getOrNull()
     }
 }
 

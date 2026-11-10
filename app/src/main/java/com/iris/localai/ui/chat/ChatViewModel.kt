@@ -104,6 +104,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val activeCharacterModelId = graph.characterModels.activeId
     val scenes = graph.scenes.scenes
     val activeSceneId = graph.scenes.activeId
+
+    private val _callReply = MutableStateFlow("")
+    val callReply: StateFlow<String> = _callReply.asStateFlow()
+    private var callMode = false
     val skills = graph.skills.skills
     val tools get() = graph.tools.all()
     val diary = graph.memory.diary
@@ -142,13 +146,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         graph.models.setActive(id)
     }
 
+    fun modelProfileSummary(id: String): String {
+        val profile = graph.models.profiles.value.firstOrNull { it.id == id } ?: return "默认配置"
+        val provider = graph.models.providerFor(profile, ModelRole.LANGUAGE)
+        return "${provider.name} · ${graph.models.modelNameFor(profile, ModelRole.LANGUAGE)}"
+    }
+
+    fun activeLanguageProviderKind(): ProviderKind =
+        graph.models.providerFor(graph.models.active(), ModelRole.LANGUAGE).kind
+
     fun enableVisionForActiveProfile() {
-        graph.models.updateActive { profile ->
-            profile.copy(
-                provider = profile.provider.copy(
-                    capabilities = profile.provider.capabilities.copy(vision = true),
-                ),
-            )
+        val profile = graph.models.active()
+        val role = if (profile.role(ModelRole.VISION).enabled) ModelRole.VISION else ModelRole.LANGUAGE
+        val provider = graph.models.providerFor(profile, role)
+        val modelName = graph.models.modelNameFor(profile, role)
+        graph.models.updateModelCapabilities(provider.id, modelName) {
+            it.copy(vision = true)
         }
         _attachmentError.value = null
     }
@@ -287,6 +300,52 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _currentId.value = conversation.id
             _input.value = trimmed
             send()
+        }
+    }
+
+    fun beginVideoCall() {
+        callMode = true
+        _callReply.value = ""
+        graph.tts.stop()
+    }
+
+    fun endVideoCall() {
+        callMode = false
+        graph.tts.stop()
+    }
+
+    fun sendCallTurn(text: String, jpegBase64: String? = null) {
+        if (_running.value) return
+        val conversation = store.find(_currentId.value) ?: store.create(
+            space = Space.LIFE,
+            workspaceId = graph.workspaces.active()?.id.orEmpty(),
+            characterId = lifeCharacterId(),
+        ).also { _currentId.value = it.id }
+        val attachment = jpegBase64?.let { data ->
+            runCatching {
+                val bytes = Base64.decode(data.substringAfter("base64,"), Base64.DEFAULT)
+                val file = File(attachmentsDir, "call-${UUID.randomUUID()}.jpg")
+                file.writeBytes(bytes)
+                ChatAttachment(
+                    name = "视频通话画面.jpg",
+                    path = file.absolutePath,
+                    kind = AttachmentKind.IMAGE,
+                    mimeType = "image/jpeg",
+                    imagePath = file.absolutePath,
+                )
+            }.getOrNull()
+        }
+        val prompt = text.trim().ifBlank { "看看我现在的画面，自然地回应我。" }
+        sendNow(conversation, prompt, listOfNotNull(attachment))
+    }
+
+    private fun speakCallReply(text: String) {
+        if (text.isBlank()) return
+        val settings = graph.settings.current
+        when (settings.ttsEngine) {
+            VoiceEngineType.CLOUD -> graph.tts.speakCloud(text, settings)
+            VoiceEngineType.SYSTEM -> graph.tts.speak(text, settings.ttsSpeed)
+            VoiceEngineType.LOCAL -> graph.tts.speakLocal(text, settings)
         }
     }
 
@@ -463,7 +522,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         job = viewModelScope.launch {
             try {
-                val profile = graph.models.active()
+                val profile = graph.models.resolve(
+                    space = conversation.space,
+                    characterId = conversation.characterId,
+                    workspaceId = conversation.workspaceId,
+                )
                 val settings = graph.settings.current
                 val signature = profile.engineSignature() + listOf(
                     settings.backend.name,
@@ -479,15 +542,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     graph.engines.unload()
                     loadedEngineSignature = signature
                 }
-                if (!graph.engines.ensureLoaded()) {
+                if (!graph.engines.ensureLoaded(profile)) {
                     val reason = (engineState.value as? EngineState.Failed)?.message ?: "引擎加载失败"
                     appendError(conversation.id, assistantId, reason)
                     return@launch
                 }
                 val language = profile.role(ModelRole.LANGUAGE)
-                val cloud = profile.provider.kind == ProviderKind.CLOUD
+                val languageProvider = graph.models.providerFor(profile, ModelRole.LANGUAGE)
+                val cloud = languageProvider.kind == ProviderKind.CLOUD
                 val useProfileParams = cloud && settings.useProfileGenerationParams
-                val visionEnabled = profile.provider.capabilities.vision
+                val visionEnabled = isVisionEnabled(profile)
                 val (history, userImages) = buildPromptHistory(
                     messages = conversation.messages,
                     currentAttachments = pendingAttachments,
@@ -760,7 +824,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 title = conversation.title.ifBlank { "对话" },
                                 body = spokenText,
                             )
-                            speakIfEnabled(spokenText)
+                            if (callMode) {
+                                _callReply.value = spokenText
+                                speakCallReply(spokenText)
+                            } else {
+                                speakIfEnabled(spokenText)
+                            }
                         }
                         is AgentEvent.Failed -> {
                             store.updateMessage(conversation.id, assistantId) {
@@ -774,6 +843,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 )
                             }
                             appendError(conversation.id, assistantId, event.message)
+                            if (callMode) _callReply.value = "[通话出错] ${event.message}"
                             notifyPluginChatRuntime(conversation.id, "error", event.message)
                         }
                     }
@@ -916,7 +986,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _attachmentError.value = "最多附加 $MAX_ATTACHMENTS 个文件"
             return
         }
-        _attachmentError.value = if (graph.models.active().provider.capabilities.vision) {
+        _attachmentError.value = if (isVisionEnabled(graph.models.active())) {
             null
         } else {
             "图片已附加，但当前模型未开启「支持识图」，发送时不会带上图片；请在模型设置开启"
@@ -1173,18 +1243,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun ModelProfile.engineSignature(): String = listOf(
-        id,
-        provider.kind.name,
-        provider.vendor.name,
-        provider.endpoint,
-        provider.modelName,
-        provider.localModelPath,
-        provider.apiKey.hashCode().toString(),
-        role(ModelRole.LANGUAGE).modelName,
-        role(ModelRole.VISION).modelName,
-        provider.capabilities.vision,
-    ).joinToString("|")
+    private fun isVisionEnabled(profile: ModelProfile): Boolean {
+        val languageCaps = graph.models.modelFor(profile, ModelRole.LANGUAGE)?.capabilities
+        val visionCaps = graph.models.modelFor(profile, ModelRole.VISION)?.capabilities
+        return languageCaps?.vision == true ||
+            (profile.role(ModelRole.VISION).enabled && visionCaps?.vision == true)
+    }
+
+    private fun ModelProfile.engineSignature(): String {
+        val languageProvider = graph.models.providerFor(this, ModelRole.LANGUAGE)
+        val visionProvider = graph.models.providerFor(this, ModelRole.VISION)
+        return listOf(
+            id,
+            languageProvider.id,
+            languageProvider.kind.name,
+            languageProvider.vendor.name,
+            languageProvider.endpoint,
+            graph.models.modelNameFor(this, ModelRole.LANGUAGE),
+            languageProvider.localModelPath,
+            languageProvider.apiKey.hashCode().toString(),
+            visionProvider.id,
+            visionProvider.endpoint,
+            graph.models.modelNameFor(this, ModelRole.VISION),
+            isVisionEnabled(this).toString(),
+        ).joinToString("|")
+    }
 
     private fun applyPerformance(tags: List<PerformanceTag>) {
         for (tag in tags) {
@@ -1300,8 +1383,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun speakIfEnabled(text: String) {
         val settings = graph.settings.current
-        if (settings.autoSpeak && settings.ttsEngine == VoiceEngineType.SYSTEM && text.isNotBlank()) {
-            graph.tts.speak(text, settings.ttsSpeed)
+        if (!settings.autoSpeak || text.isBlank()) return
+        when (settings.ttsEngine) {
+            VoiceEngineType.SYSTEM -> graph.tts.speak(text, settings.ttsSpeed)
+            VoiceEngineType.CLOUD -> graph.tts.speakCloud(text, settings)
+            VoiceEngineType.LOCAL -> graph.tts.speakLocal(text, settings)
+        }
+    }
+
+    suspend fun transcribeVoice(file: File): Result<String> {
+        val settings = graph.settings.current
+        return when (settings.sttEngine) {
+            VoiceEngineType.CLOUD -> graph.cloudVoice.transcribe(settings, file)
+            VoiceEngineType.LOCAL -> runCatching { graph.localVoice.transcribe(file) }
+            VoiceEngineType.SYSTEM -> Result.failure(
+                IllegalStateException("系统语音识别不支持录音文件，请选择本地或云端识别"),
+            )
         }
     }
 
@@ -1320,8 +1417,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 put("roleName", if (sender == "user") graph.settings.current.userName else "IRIS")
                 put("content", message.text)
                 put("completedAt", now)
-                put("provider", graph.models.active().provider.modelName)
-                put("modelName", graph.models.active().provider.modelName)
+                put("provider", graph.models.modelNameFor(graph.models.active(), ModelRole.LANGUAGE))
+                put("modelName", graph.models.modelNameFor(graph.models.active(), ModelRole.LANGUAGE))
                 put("inputTokens", 0)
                 put("outputTokens", 0)
                 put("cachedInputTokens", 0)
@@ -1513,8 +1610,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         put("content", message.text)
                         put("timestamp", System.currentTimeMillis())
                         put("completedAt", System.currentTimeMillis())
-                        put("provider", graph.models.active().provider.modelName)
-                        put("modelName", graph.models.active().provider.modelName)
+                        put("provider", graph.models.modelNameFor(graph.models.active(), ModelRole.LANGUAGE))
+                        put("modelName", graph.models.modelNameFor(graph.models.active(), ModelRole.LANGUAGE))
                         put("isFavorite", false)
                         put("variantCount", 1)
                     }

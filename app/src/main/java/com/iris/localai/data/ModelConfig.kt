@@ -25,17 +25,38 @@ data class ModelCapabilities(
     val webSearch: Boolean = false,
 )
 
-data class ProviderConfig(
+/** 提供商下拉中的一个模型；能力与启用状态按模型单独保存。 */
+data class ProviderModel(
+    val name: String,
+    val enabled: Boolean = true,
+    val capabilities: ModelCapabilities = ModelCapabilities(),
+)
+
+/**
+ * 模型提供商独立于配置档案：切换档案只改变角色选用的提供商/模型，提供商本身不随档案切换。
+ * [roles] 表示该提供商可承担的模型类型，用于模型配置里过滤可选提供商。
+ */
+data class ModelProvider(
+    val id: String,
+    val name: String,
     val kind: ProviderKind = ProviderKind.CLOUD,
     val vendor: CloudVendor = CloudVendor.OPENAI,
     val apiKey: String = "",
     val endpoint: String = CloudVendor.OPENAI.defaultEndpoint,
-    val modelName: String = CloudVendor.OPENAI.defaultModel,
     val localModelPath: String = "",
-    val capabilities: ModelCapabilities = ModelCapabilities(),
-)
+    val roles: Set<ModelRole> = ModelRole.entries.toSet(),
+    val models: List<ProviderModel> = emptyList(),
+) {
+    fun supports(role: ModelRole): Boolean = role in roles
+
+    fun model(name: String): ProviderModel? =
+        models.firstOrNull { it.name == name }
+
+    fun firstModel(): ProviderModel? = models.firstOrNull { it.enabled }
+}
 
 data class RoleConfig(
+    val providerId: String = "",
     val enabled: Boolean = true,
     val modelName: String = "",
     val contextLength: Int = 8192,
@@ -102,19 +123,41 @@ fun defaultRoleConfig(role: ModelRole): RoleConfig = when (role) {
     )
 }
 
-fun defaultRoles(): Map<ModelRole, RoleConfig> =
-    ModelRole.entries.associateWith { defaultRoleConfig(it) }
+fun defaultRoles(providerId: String = DEFAULT_PROVIDER_ID): Map<ModelRole, RoleConfig> =
+    ModelRole.entries.associateWith { role ->
+        defaultRoleConfig(role).copy(providerId = providerId)
+    }
 
 data class ModelProfile(
     val id: String,
     val name: String,
-    val provider: ProviderConfig = ProviderConfig(),
-    val globalEnabled: Boolean = true,
+    val globalEnabled: Boolean = false,
     val useApiKeyPool: Boolean = false,
+    val applyWorkspaceIds: Set<String> = emptySet(),
+    val applyCharacterIds: Set<String> = emptySet(),
     val roles: Map<ModelRole, RoleConfig> = defaultRoles(),
 ) {
     fun role(role: ModelRole): RoleConfig = roles[role] ?: defaultRoleConfig(role)
 }
 
+const val DEFAULT_PROVIDER_ID = "provider-default"
+
+fun defaultModelProvider(
+    id: String = DEFAULT_PROVIDER_ID,
+    name: String = "OpenAI",
+): ModelProvider = ModelProvider(
+    id = id,
+    name = name,
+    kind = ProviderKind.CLOUD,
+    vendor = CloudVendor.OPENAI,
+    endpoint = CloudVendor.OPENAI.defaultEndpoint,
+    roles = ModelRole.entries.toSet(),
+    models = listOf(ProviderModel(CloudVendor.OPENAI.defaultModel)),
+)
+
 fun defaultModelProfile(id: String = "default", name: String = "默认配置"): ModelProfile =
-    ModelProfile(id = id, name = name)
+    ModelProfile(
+        id = id,
+        name = name,
+        roles = defaultRoles(),
+    )

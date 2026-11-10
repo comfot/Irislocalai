@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
@@ -30,7 +29,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,9 +48,11 @@ import com.iris.localai.data.VoiceEngineType
 import com.iris.localai.data.VoiceKind
 import com.iris.localai.data.VoiceModelCatalog
 import com.iris.localai.data.VoiceModelPack
+import com.iris.localai.data.defaultAsrModel
+import com.iris.localai.data.defaultTtsModel
 import com.iris.localai.voice.VoiceDownloadStatus
 import com.iris.localai.voice.VoiceDownloadTask
-import java.util.Locale
+import com.iris.localai.voice.SystemTtsStatus
 
 @Composable
 internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
@@ -61,16 +61,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
-    var ttsReady by remember { mutableStateOf(false) }
-    val tts = remember {
-        TextToSpeech(context) { status -> ttsReady = status == TextToSpeech.SUCCESS }
-    }
-    DisposableEffect(tts) {
-        onDispose {
-            runCatching { tts.stop() }
-            runCatching { tts.shutdown() }
-        }
-    }
+    val ttsStatus by viewModel.ttsStatus.collectAsStateWithLifecycle()
 
     var sttResult by remember { mutableStateOf<String?>(null) }
     var sttMessage by remember { mutableStateOf<String?>(null) }
@@ -108,6 +99,38 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
         if (granted) startSpeech() else sttMessage = "未授予录音权限"
     }
 
+    val asrPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) viewModel.testCloudAsr() else sttMessage = "未授予录音权限"
+    }
+
+    val localAsrPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) viewModel.testLocalAsr() else sttMessage = "未授予录音权限"
+    }
+
+    fun testLocalAsr() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.testLocalAsr()
+        } else {
+            localAsrPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    fun testCloudAsr() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.testCloudAsr()
+        } else {
+            asrPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     fun testStt() {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
@@ -130,24 +153,20 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Android 系统 TTS", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                text = if (ttsReady) "引擎可用" else "引擎初始化中",
+                                text = ttsStatus.label,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Button(
                             onClick = {
-                                tts.language = Locale.SIMPLIFIED_CHINESE
-                                tts.setSpeechRate(settings.ttsSpeed)
-                                tts.speak(
-                                    "你好，这是 IRIS LocalAI 的语音测试。",
-                                    TextToSpeech.QUEUE_FLUSH,
-                                    null,
-                                    "iris-test",
-                                )
+                                viewModel.testSystemTts("你好，这是 IRIS LocalAI 的语音测试。")
                             },
-                            enabled = ttsReady,
+                            enabled = ttsStatus == SystemTtsStatus.READY,
                         ) { Text("测试朗读") }
+                        if (ttsStatus == SystemTtsStatus.UNAVAILABLE) {
+                            TextButton(onClick = viewModel::retrySystemTts) { Text("重新初始化") }
+                        }
                     }
                     SliderRow(
                         title = "语速",
@@ -163,7 +182,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("自动朗读回复", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                text = "AI 回复完成后自动调用 TTS（接入朗读链路后生效）",
+                                text = "AI 回复完成后自动调用 TTS",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -200,40 +219,168 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                         )
                     }
                     Text(
-                        text = "模型下载入口已接入 Hugging Face；本地推理运行时尚待接入。",
+                        text = "模型下载入口已接入 Hugging Face；本地推理使用 sherpa-onnx。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                viewModel.testLocalTts("你好，这是 IRIS LocalAI 的本地语音测试。")
+                            },
+                        ) { Text("测试本地合成") }
+                    }
+                    val localTest by viewModel.cloudTest.collectAsStateWithLifecycle()
+                    localTest?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 VoiceEngineType.CLOUD -> {
-                    CloudVoiceFields(
-                        provider = settings.ttsCloudProvider,
-                        endpoint = settings.ttsCloudEndpoint,
-                        apiKey = settings.ttsCloudKey,
-                        model = settings.ttsCloudModel,
-                        voice = settings.ttsCloudVoice,
-                        onProvider = { provider ->
-                            viewModel.update { current ->
-                                current.copy(
-                                    ttsCloudProvider = provider,
-                                    ttsCloudEndpoint = if (current.ttsCloudEndpoint.isBlank()) {
-                                        provider.defaultEndpoint
-                                    } else {
-                                        current.ttsCloudEndpoint
-                                    },
-                                )
+                    var expandedProvider by remember { mutableStateOf(false) }
+                    val cloudTest by viewModel.cloudTest.collectAsStateWithLifecycle()
+                    val samplePicker = rememberLauncherForActivityResult(
+                        ActivityResultContracts.OpenDocument(),
+                    ) { uri -> uri?.let(viewModel::importVoiceSample) }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("服务商", modifier = Modifier.weight(1f))
+                        Box {
+                            AssistChip(
+                                onClick = { expandedProvider = true },
+                                label = { Text(settings.ttsCloudProvider.label) },
+                            )
+                            DropdownMenu(
+                                expanded = expandedProvider,
+                                onDismissRequest = { expandedProvider = false },
+                            ) {
+                                CloudVoiceProvider.entries.forEach { item ->
+                                    DropdownMenuItem(
+                                        text = { Text(item.label) },
+                                        onClick = {
+                                            viewModel.update { current ->
+                                                current.copy(
+                                                    ttsCloudProvider = item,
+                                                    ttsCloudEndpoint = if (
+                                                        current.ttsCloudEndpoint.isBlank() ||
+                                                        CloudVoiceProvider.entries.any {
+                                                            it.defaultEndpoint == current.ttsCloudEndpoint
+                                                        }
+                                                    ) {
+                                                        item.defaultEndpoint
+                                                    } else {
+                                                        current.ttsCloudEndpoint
+                                                    },
+                                                    ttsCloudModel = if (
+                                                        current.ttsCloudModel.isBlank() ||
+                                                        CloudVoiceProvider.entries.any {
+                                                            it.defaultTtsModel() == current.ttsCloudModel
+                                                        }
+                                                    ) {
+                                                        item.defaultTtsModel()
+                                                    } else {
+                                                        current.ttsCloudModel
+                                                    },
+                                                )
+                                            }
+                                            expandedProvider = false
+                                        },
+                                    )
+                                }
                             }
-                        },
-                        onEndpoint = { value ->
+                        }
+                    }
+                    OutlinedTextField(
+                        value = settings.ttsCloudEndpoint,
+                        onValueChange = { value ->
                             viewModel.update { it.copy(ttsCloudEndpoint = value) }
                         },
-                        onKey = { value -> viewModel.update { it.copy(ttsCloudKey = value) } },
-                        onModel = { value -> viewModel.update { it.copy(ttsCloudModel = value) } },
-                        onVoice = { value -> viewModel.update { it.copy(ttsCloudVoice = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("API Endpoint") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = settings.ttsCloudKey,
+                        onValueChange = { value -> viewModel.update { it.copy(ttsCloudKey = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("API Key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    OutlinedTextField(
+                        value = settings.ttsCloudModel,
+                        onValueChange = { value -> viewModel.update { it.copy(ttsCloudModel = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("模型名称") },
+                        singleLine = true,
+                    )
+                    if (settings.ttsCloudProvider == CloudVoiceProvider.MIMO) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            listOf(
+                                "mimo-v2.5-tts" to "预置音色",
+                                "mimo-v2.5-tts-voicedesign" to "音色设计",
+                                "mimo-v2.5-tts-voiceclone" to "音色复刻",
+                            ).forEach { (id, label) ->
+                                FilterChip(
+                                    selected = settings.ttsCloudModel == id,
+                                    onClick = {
+                                        viewModel.update { it.copy(ttsCloudModel = id) }
+                                    },
+                                    label = { Text(label) },
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = settings.ttsCloudVoice,
+                        onValueChange = { value -> viewModel.update { it.copy(ttsCloudVoice = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("音色 / Voice（预置音色名）") },
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = settings.ttsCloudStyle,
+                        onValueChange = { value -> viewModel.update { it.copy(ttsCloudStyle = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("风格指令（可选，随 user 消息发送）") },
+                        minLines = 2,
+                        maxLines = 4,
                     )
                     Text(
-                        text = "云端语音调用尚未接入；参数会持久化。",
+                        text = "音色复刻样本",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = settings.ttsCloudVoiceSample.ifBlank { "未选择（voiceclone 必填，支持 wav/mp3，≤10 MB）" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { samplePicker.launch(arrayOf("audio/*")) }) {
+                            Text("选择克隆音频")
+                        }
+                        TextButton(
+                            onClick = { viewModel.testCloudTts("你好，这是 IRIS LocalAI 的云端语音测试。") },
+                        ) { Text("测试合成") }
+                    }
+                    cloudTest?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        text = "TTS 走 OpenAI 兼容的 /chat/completions；voiceclone 会把样本编码为 data URI 传给 audio.voice。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -315,40 +462,125 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                         )
                     }
                     Text(
-                        text = "模型下载入口已接入 Hugging Face；本地 ASR 运行时尚待接入。",
+                        text = "模型下载入口已接入 Hugging Face；本地识别使用 sherpa-onnx。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { testLocalAsr() }) { Text("录音并本地识别") }
+                    }
+                    val localTest by viewModel.cloudTest.collectAsStateWithLifecycle()
+                    localTest?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 VoiceEngineType.CLOUD -> {
-                    CloudVoiceFields(
-                        provider = settings.sttCloudProvider,
-                        endpoint = settings.sttCloudEndpoint,
-                        apiKey = settings.sttCloudKey,
-                        model = settings.sttCloudModel,
-                        voice = null,
-                        onProvider = { provider ->
-                            viewModel.update { current ->
-                                current.copy(
-                                    sttCloudProvider = provider,
-                                    sttCloudEndpoint = if (current.sttCloudEndpoint.isBlank()) {
-                                        provider.defaultEndpoint
-                                    } else {
-                                        current.sttCloudEndpoint
-                                    },
-                                )
+                    var expandedProvider by remember { mutableStateOf(false) }
+                    val cloudTest by viewModel.cloudTest.collectAsStateWithLifecycle()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("服务商", modifier = Modifier.weight(1f))
+                        Box {
+                            AssistChip(
+                                onClick = { expandedProvider = true },
+                                label = { Text(settings.sttCloudProvider.label) },
+                            )
+                            DropdownMenu(
+                                expanded = expandedProvider,
+                                onDismissRequest = { expandedProvider = false },
+                            ) {
+                                CloudVoiceProvider.entries.forEach { item ->
+                                    DropdownMenuItem(
+                                        text = { Text(item.label) },
+                                        onClick = {
+                                            viewModel.update { current ->
+                                                current.copy(
+                                                    sttCloudProvider = item,
+                                                    sttCloudEndpoint = if (
+                                                        current.sttCloudEndpoint.isBlank() ||
+                                                        CloudVoiceProvider.entries.any {
+                                                            it.defaultEndpoint == current.sttCloudEndpoint
+                                                        }
+                                                    ) {
+                                                        item.defaultEndpoint
+                                                    } else {
+                                                        current.sttCloudEndpoint
+                                                    },
+                                                    sttCloudModel = if (
+                                                        current.sttCloudModel.isBlank() ||
+                                                        CloudVoiceProvider.entries.any {
+                                                            it.defaultAsrModel() == current.sttCloudModel
+                                                        }
+                                                    ) {
+                                                        item.defaultAsrModel()
+                                                    } else {
+                                                        current.sttCloudModel
+                                                    },
+                                                )
+                                            }
+                                            expandedProvider = false
+                                        },
+                                    )
+                                }
                             }
-                        },
-                        onEndpoint = { value ->
+                        }
+                    }
+                    OutlinedTextField(
+                        value = settings.sttCloudEndpoint,
+                        onValueChange = { value ->
                             viewModel.update { it.copy(sttCloudEndpoint = value) }
                         },
-                        onKey = { value -> viewModel.update { it.copy(sttCloudKey = value) } },
-                        onModel = { value -> viewModel.update { it.copy(sttCloudModel = value) } },
-                        onVoice = {},
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("API Endpoint") },
+                        singleLine = true,
                     )
+                    OutlinedTextField(
+                        value = settings.sttCloudKey,
+                        onValueChange = { value -> viewModel.update { it.copy(sttCloudKey = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("API Key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    OutlinedTextField(
+                        value = settings.sttCloudModel,
+                        onValueChange = { value -> viewModel.update { it.copy(sttCloudModel = value) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("模型名称") },
+                        singleLine = true,
+                    )
+                    if (settings.sttCloudProvider == CloudVoiceProvider.MIMO) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FilterChip(
+                                selected = settings.sttCloudModel == "mimo-v2.5-asr",
+                                onClick = {
+                                    viewModel.update { it.copy(sttCloudModel = "mimo-v2.5-asr") }
+                                },
+                                label = { Text("MiMo ASR") },
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { testCloudAsr() }) { Text("录 5 秒并识别") }
+                    }
+                    cloudTest?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
-                        text = "云端语音识别尚未接入；参数会持久化。",
+                        text = "MiMo ASR 使用 /chat/completions 的 input_audio；识别结果可直接插入输入框。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

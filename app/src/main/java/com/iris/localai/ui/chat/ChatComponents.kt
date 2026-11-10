@@ -57,6 +57,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.iris.localai.voice.VoiceRecorder
+import java.io.File
+import kotlinx.coroutines.launch
 import com.iris.localai.agent.AgentStep
 import kotlinx.coroutines.launch
 import com.iris.localai.agent.ChatMessage
@@ -331,7 +340,54 @@ internal fun SelectorChip(
 internal fun VoiceInputDialog(
     onDismiss: () -> Unit,
     onInsert: (String) -> Unit,
+    onTranscribe: suspend (File) -> Result<String>,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val recorder = remember { VoiceRecorder() }
+    var recording by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var result by remember { mutableStateOf("") }
+
+    fun startRecording() {
+        if (recording) return
+        recording = true
+        message = "正在录音，请说话…"
+        scope.launch {
+            val file = recorder.record(maxMillis = 6_000)
+            recording = false
+            if (file == null) {
+                message = "没有录到有效语音，请靠近麦克风再试"
+                return@launch
+            }
+            message = "正在识别…"
+            val transcribed = onTranscribe(file)
+            file.delete()
+            transcribed.onSuccess {
+                result = it
+                message = null
+            }.onFailure {
+                message = "识别失败：${it.message ?: "未知错误"}"
+            }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startRecording() else message = "未授予录音权限"
+    }
+
+    fun requestRecording() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            startRecording()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(24.dp),
@@ -347,7 +403,7 @@ internal fun VoiceInputDialog(
                 val transition = rememberInfiniteTransition(label = "voice")
                 val scale by transition.animateFloat(
                     initialValue = 1f,
-                    targetValue = 1.18f,
+                    targetValue = if (recording) 1.18f else 1.02f,
                     animationSpec = infiniteRepeatable(
                         animation = tween(700),
                         repeatMode = RepeatMode.Reverse,
@@ -368,15 +424,34 @@ internal fun VoiceInputDialog(
                     )
                 }
                 Text(
-                    text = "离线 ASR 尚未接入，这里先展示听音状态。",
+                    text = when {
+                        recording -> "正在录音，最多 6 秒"
+                        result.isNotBlank() -> result
+                        else -> "点击下方按钮开始录音，识别后可直接插入输入框。"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                message?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (it.startsWith("识别失败")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = onDismiss) { Text("取消") }
-                    TextButton(onClick = { onInsert("帮我整理一下今天的任务") }) {
-                        Text("插入示例")
+                    TextButton(onClick = { requestRecording() }, enabled = !recording) {
+                        Text(if (recording) "录音中…" else "开始录音")
                     }
+                    TextButton(
+                        onClick = { if (result.isNotBlank()) onInsert(result) },
+                        enabled = result.isNotBlank(),
+                    ) { Text("插入") }
                 }
             }
         }

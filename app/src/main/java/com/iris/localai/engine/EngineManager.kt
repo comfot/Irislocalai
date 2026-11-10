@@ -1,5 +1,6 @@
 package com.iris.localai.engine
 
+import com.iris.localai.data.ModelProfile
 import com.iris.localai.data.SettingsRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -23,8 +24,8 @@ sealed interface EngineState {
  */
 class EngineManager(
     private val settings: SettingsRepository,
-    private val engineFactory: (Backend) -> InferenceEngine = { StubEngine() },
-    private val modelPathProvider: () -> String = { settings.current.modelPath },
+    private val engineFactory: (Backend, ModelProfile) -> InferenceEngine = { _, _ -> StubEngine() },
+    private val modelPathProvider: (ModelProfile) -> String = { settings.current.modelPath },
 ) {
 
     private val loadMutex = Mutex()
@@ -36,13 +37,14 @@ class EngineManager(
 
     val isReady: Boolean get() = engine?.isLoaded == true
 
-    suspend fun ensureLoaded(): Boolean = loadMutex.withLock {
+    suspend fun ensureLoaded(profile: ModelProfile? = null): Boolean = loadMutex.withLock {
         if (engine?.isLoaded == true) return@withLock true
+        val activeProfile = profile ?: return@withLock false
         val config = settings.current
-        val modelPath = modelPathProvider()
+        val modelPath = modelPathProvider(activeProfile)
         _state.value = EngineState.Loading(0f)
         try {
-            val created = engineFactory(config.backend)
+            val created = engineFactory(config.backend, activeProfile)
             val details = created.load(
                 modelPath = modelPath,
                 config = LoadConfig(

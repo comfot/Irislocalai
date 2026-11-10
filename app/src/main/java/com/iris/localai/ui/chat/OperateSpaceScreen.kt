@@ -471,6 +471,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                 viewModel.onInputChange(text)
                 showVoice = false
             },
+            onTranscribe = viewModel::transcribeVoice,
         )
     }
 

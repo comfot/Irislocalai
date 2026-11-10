@@ -1,5 +1,6 @@
 package com.iris.localai.server
 
+import com.iris.localai.data.ModelProfileStore
 import com.iris.localai.data.SettingsRepository
 import com.iris.localai.engine.EngineManager
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +27,7 @@ sealed interface ApiState {
 class ApiService(
     private val engines: EngineManager,
     private val settings: SettingsRepository,
+    private val models: ModelProfileStore,
     private val modelIdProvider: () -> String = { "iris-local" },
 ) {
 
@@ -53,6 +55,8 @@ class ApiService(
                 host = host,
                 handler = ApiRoutes(
                     engines = engines,
+                    settings = settings,
+                    models = models,
                     modelIdProvider = modelIdProvider,
                     keyProvider = { settings.current.apiKey },
                 )::handle,

@@ -824,6 +824,7 @@ private fun FullscreenGlassComposer(
                 viewModel.onInputChange(text)
                 showVoice = false
             },
+            onTranscribe = viewModel::transcribeVoice,
         )
     }
 }
@@ -1013,11 +1014,13 @@ private fun LifeComposer(
                 viewModel.onInputChange(text)
                 showVoice = false
             },
+            onTranscribe = viewModel::transcribeVoice,
         )
     }
 
     if (showVideo) {
         VideoCallScreen(
+            viewModel = viewModel,
             character = character,
             activeModel = activeModel,
             modelFile = modelFile,

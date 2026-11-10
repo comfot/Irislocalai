@@ -9,6 +9,14 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.iris.localai.data.AppSettings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,17 +24,32 @@ import java.io.File
 import java.util.Locale
 import kotlin.math.sqrt
 
+enum class SystemTtsStatus(val label: String) {
+    INITIALIZING("引擎初始化中"),
+    READY("引擎可用"),
+    UNAVAILABLE("未找到可用的系统 TTS 引擎"),
+}
+
 /**
  * 系统 TTS 的薄封装：异步初始化、语速设置、长文本分段与队列播放。
  * 优先 synthesizeToFile 后再用 MediaPlayer 播放，以便接 Visualizer 提供真实振幅；
  * 引擎不支持时自动回退到直接 speak，此时振幅保持 0，口型回退到说话状态。
  */
-class TtsController(context: Context) {
+class TtsController(
+    context: Context,
+    private val localVoice: LocalVoiceRuntime? = null,
+) {
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val cloudClient = CloudVoiceClient()
+    private val cloudScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var cloudJob: Job? = null
+    private var localJob: Job? = null
     private var engine: TextToSpeech? = null
     private var ready = false
+    private var initGeneration = 0
+    private var currentAttempt = 0
     private var pending: Pending? = null
     private var generation = 0
     private var fileMode = true
@@ -42,6 +65,9 @@ class TtsController(context: Context) {
     private val _speaking = MutableStateFlow(false)
     val speaking: StateFlow<Boolean> = _speaking.asStateFlow()
 
+    private val _status = MutableStateFlow(SystemTtsStatus.INITIALIZING)
+    val status: StateFlow<SystemTtsStatus> = _status.asStateFlow()
+
     private val _amplitude = MutableStateFlow(0f)
     val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
 
@@ -49,46 +75,118 @@ class TtsController(context: Context) {
 
     init {
         appContext.cacheDir.listFiles { file -> file.name.startsWith("iris-tts-") }?.forEach { it.delete() }
-        engine = TextToSpeech(appContext) { status ->
-            ready = status == TextToSpeech.SUCCESS
-            if (ready) {
-                configureLanguage()
-                engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {
-                        mainHandler.post {
-                            if (utteranceId?.startsWith("synth-") != true) _speaking.value = true
-                        }
-                    }
+        initEngine()
+    }
 
-                    override fun onDone(utteranceId: String?) {
-                        mainHandler.post {
-                            if (utteranceId?.startsWith("synth-") == true) {
-                                onSynthDone(utteranceId)
-                            } else {
-                                finishDirect()
-                            }
-                        }
-                    }
+    private fun initEngine() {
+        val token = ++initGeneration
+        ready = false
+        currentAttempt = 0
+        _status.value = SystemTtsStatus.INITIALIZING
+        runCatching { engine?.shutdown() }
+        engine = null
+        startAttempt(token, 1)
+    }
 
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) {
-                        mainHandler.post {
-                            if (utteranceId?.startsWith("synth-") == true) fallbackToDirect() else finishDirect()
-                        }
-                    }
-
-                    override fun onError(utteranceId: String?, errorCode: Int) {
-                        mainHandler.post {
-                            if (utteranceId?.startsWith("synth-") == true) fallbackToDirect() else finishDirect()
-                        }
-                    }
-                })
-                pending?.let { speakNow(it) }
-            } else {
-                pending = null
-                _speaking.value = false
+    private fun startAttempt(token: Int, attempt: Int) {
+        if (token != initGeneration) return
+        currentAttempt = attempt
+        ready = false
+        _status.value = SystemTtsStatus.INITIALIZING
+        val holder = arrayOfNulls<TextToSpeech>(1)
+        val listener = TextToSpeech.OnInitListener { status ->
+            mainHandler.post {
+                if (token != initGeneration || attempt != currentAttempt) return@post
+                val instance = holder[0]
+                if (status == TextToSpeech.SUCCESS && instance != null) {
+                    engine = instance
+                    ready = true
+                    currentAttempt = 0
+                    _status.value = SystemTtsStatus.READY
+                    configureLanguage()
+                    attachSystemListener(instance)
+                    pending?.let { speakNow(it) }
+                } else {
+                    runCatching { instance?.shutdown() }
+                    retryOrFail(token, attempt)
+                }
             }
         }
+        val created = runCatching {
+            val engineName = if (attempt > 1) defaultEngineName() else null
+            if (!engineName.isNullOrBlank()) {
+                TextToSpeech(appContext, listener, engineName)
+            } else {
+                TextToSpeech(appContext, listener)
+            }
+        }.getOrNull()
+        holder[0] = created
+        if (created == null) {
+            retryOrFail(token, attempt)
+            return
+        }
+        mainHandler.postDelayed({
+            if (token == initGeneration && attempt == currentAttempt && !ready) {
+                retryOrFail(token, attempt)
+            }
+        }, ATTEMPT_TIMEOUT_MS)
+    }
+
+    private fun retryOrFail(token: Int, attempt: Int) {
+        if (token != initGeneration || attempt != currentAttempt) return
+        currentAttempt = 0
+        if (attempt < MAX_INIT_ATTEMPTS) {
+            mainHandler.postDelayed({ startAttempt(token, attempt + 1) }, RETRY_DELAY_MS)
+        } else {
+            ready = false
+            _status.value = SystemTtsStatus.UNAVAILABLE
+            pending = null
+            _speaking.value = false
+        }
+    }
+
+    private fun defaultEngineName(): String? = runCatching {
+        TextToSpeech::class.java.getDeclaredMethod("getDefaultEngine")
+            .apply { isAccessible = true }
+            .invoke(null) as? String
+    }.getOrNull()
+
+    private fun attachSystemListener(instance: TextToSpeech) {
+        instance.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                mainHandler.post {
+                    if (utteranceId?.startsWith("synth-") != true) _speaking.value = true
+                }
+            }
+
+            override fun onDone(utteranceId: String?) {
+                mainHandler.post {
+                    if (utteranceId?.startsWith("synth-") == true) {
+                        onSynthDone(utteranceId)
+                    } else {
+                        finishDirect()
+                    }
+                }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                mainHandler.post {
+                    if (utteranceId?.startsWith("synth-") == true) fallbackToDirect() else finishDirect()
+                }
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                mainHandler.post {
+                    if (utteranceId?.startsWith("synth-") == true) fallbackToDirect() else finishDirect()
+                }
+            }
+        })
+    }
+
+    fun retry() {
+        if (_status.value == SystemTtsStatus.INITIALIZING) return
+        initEngine()
     }
 
     fun speak(text: String, speed: Float) {
@@ -98,14 +196,91 @@ class TtsController(context: Context) {
         val request = Pending(trimmed, speed.coerceIn(0.5f, 2.0f))
         if (!ready) {
             pending = request
+            if (_status.value == SystemTtsStatus.UNAVAILABLE) retry()
             return
         }
         speakNow(request)
     }
 
+    fun speakLocal(text: String, settings: AppSettings) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        stop()
+        val generationAtStart = generation
+        _speaking.value = true
+        localJob = cloudScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val runtime = localVoice ?: error("本地语音运行时不可用")
+                    runtime.synthesize(trimmed, settings.ttsSpeed)
+                }
+            }
+            if (generation != generationAtStart) return@launch
+            result.onSuccess { audio ->
+                if (generation != generationAtStart) return@onSuccess
+                val file = File(
+                    appContext.cacheDir,
+                    "iris-local-tts-$generationAtStart-${System.nanoTime()}.wav",
+                )
+                runCatching { WavCodec.writeFloatWav(file, audio.samples, audio.sampleRate) }
+                    .onSuccess {
+                        currentFile = file
+                        currentSynthId = null
+                        currentText = trimmed
+                        queue.clear()
+                        playFile(file)
+                    }
+                    .onFailure {
+                        _speaking.value = false
+                        speak(trimmed, settings.ttsSpeed)
+                    }
+            }.onFailure {
+                _speaking.value = false
+                speak(trimmed, settings.ttsSpeed)
+            }
+        }
+    }
+
+    fun speakCloud(text: String, settings: AppSettings) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        stop()
+        val generationAtStart = generation
+        _speaking.value = true
+        cloudJob = cloudScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                cloudClient.synthesize(settings, trimmed)
+            }
+            if (generation != generationAtStart) return@launch
+            result.onSuccess { bytes ->
+                if (generation != generationAtStart) return@onSuccess
+                val file = File(appContext.cacheDir, "iris-cloud-tts-$generationAtStart-${System.nanoTime()}.wav")
+                runCatching { file.writeBytes(bytes) }
+                    .onSuccess {
+                        currentFile = file
+                        currentSynthId = null
+                        currentText = trimmed
+                        queue.clear()
+                        playFile(file)
+                    }
+                    .onFailure {
+                        _speaking.value = false
+                        speak(trimmed, settings.ttsSpeed)
+                    }
+            }.onFailure {
+                _speaking.value = false
+                speak(trimmed, settings.ttsSpeed)
+            }
+        }
+    }
+
     fun stop() {
         pending = null
         generation += 1
+        cloudJob?.cancel()
+        cloudJob = null
+        localJob?.cancel()
+        localJob = null
         queue.clear()
         currentSynthId = null
         currentText = ""
@@ -119,10 +294,14 @@ class TtsController(context: Context) {
     }
 
     fun shutdown() {
+        initGeneration += 1
+        currentAttempt = 0
         stop()
+        cloudScope.cancel()
         runCatching { engine?.shutdown() }
         engine = null
         ready = false
+        _status.value = SystemTtsStatus.UNAVAILABLE
     }
 
     private fun speakNow(request: Pending) {
@@ -339,5 +518,8 @@ class TtsController(context: Context) {
 
     private companion object {
         const val MAX_CHUNK = 3200
+        const val MAX_INIT_ATTEMPTS = 3
+        const val ATTEMPT_TIMEOUT_MS = 5_000L
+        const val RETRY_DELAY_MS = 800L
     }
 }

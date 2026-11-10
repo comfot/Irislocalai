@@ -303,7 +303,7 @@ private fun WorkComposer(
                     icon = Icons.Outlined.Memory,
                     label = activeModel?.name ?: "默认配置",
                     options = modelProfiles.map {
-                        ChipOption(it.id, it.name, it.providerSummary())
+                        ChipOption(it.id, it.name, viewModel.modelProfileSummary(it.id))
                     },
                     onSelect = viewModel::setActiveModelProfile,
                 )
@@ -397,7 +397,7 @@ private fun WorkComposer(
                             maxLines = 2,
                             modifier = Modifier.weight(1f),
                         )
-                        if (message.contains("识图") && activeModel?.provider?.kind == ProviderKind.CLOUD) {
+                        if (message.contains("识图") && viewModel.activeLanguageProviderKind() == ProviderKind.CLOUD) {
                             TextButton(onClick = viewModel::enableVisionForActiveProfile) {
                                 Text("开启识图", style = MaterialTheme.typography.labelSmall)
                             }
@@ -492,6 +492,7 @@ private fun WorkComposer(
                 viewModel.onInputChange(text)
                 showVoice = false
             },
+            onTranscribe = viewModel::transcribeVoice,
         )
     }
 
@@ -585,9 +586,4 @@ private fun CheckRow(
             )
         }
     }
-}
-
-private fun ModelProfile.providerSummary(): String = when (provider.kind) {
-    ProviderKind.LOCAL -> "本地 · ${provider.modelName.ifBlank { "未选择模型" }}"
-    ProviderKind.CLOUD -> "${provider.vendor.label} · ${provider.modelName}"
 }

@@ -5,6 +5,7 @@ import com.iris.localai.agent.AssistantMessageParser
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.ConversationStore
 import com.iris.localai.data.ModelProfile
+import com.iris.localai.data.ModelProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -133,10 +134,13 @@ class MemoryStore(
     context: Context,
     private val conversations: ConversationStore? = null,
     profileProvider: (() -> ModelProfile?)? = null,
+    providerProvider: ((ModelProfile) -> ModelProvider?)? = null,
 ) {
 
     private val dir = File(context.applicationContext.filesDir, "memory").apply { mkdirs() }
-    private val embeddingClient = profileProvider?.let { MemoryEmbeddingClient(it) }
+    private val embeddingClient = profileProvider?.let {
+        MemoryEmbeddingClient(it) { profile -> providerProvider?.invoke(profile) }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val diaryMutex = Mutex()
     private val vectorCache = ConcurrentHashMap<String, CachedVector>()

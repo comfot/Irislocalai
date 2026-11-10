@@ -1,9 +1,8 @@
 package com.iris.localai.memory
 
-import com.iris.localai.data.CloudVendor
 import com.iris.localai.data.ModelProfile
+import com.iris.localai.data.ModelProvider
 import com.iris.localai.data.ModelRole
-import com.iris.localai.data.ProviderKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -87,6 +86,7 @@ object HashEmbedding {
  */
 class MemoryEmbeddingClient(
     private val profileProvider: () -> ModelProfile?,
+    private val providerResolver: (ModelProfile) -> ModelProvider?,
 ) {
 
     suspend fun embed(text: String): MemoryVector? =
@@ -106,10 +106,12 @@ class MemoryEmbeddingClient(
         withContext(Dispatchers.IO) {
             val profile = profileProvider() ?: return@withContext null
             val role = profile.role(ModelRole.EMBEDDING)
-            val provider = profile.provider
-            val model = role.modelName.trim()
+            val provider = providerResolver(profile) ?: return@withContext null
+            val model = role.modelName.trim().ifBlank {
+                provider.models.firstOrNull { it.enabled }?.name.orEmpty()
+            }
             if (!role.enabled || model.isBlank()) return@withContext null
-            if (provider.kind != ProviderKind.CLOUD) return@withContext null
+            if (provider.kind != com.iris.localai.data.ProviderKind.CLOUD) return@withContext null
             if (provider.vendor !in COMPATIBLE_VENDORS) return@withContext null
             val apiKey = provider.apiKey.trim()
             if (apiKey.isBlank()) return@withContext null
@@ -162,10 +164,10 @@ class MemoryEmbeddingClient(
         const val MAX_INPUT_CHARS = 8_000
         const val MAX_BATCH = 32
         val COMPATIBLE_VENDORS = setOf(
-            CloudVendor.OPENAI,
-            CloudVendor.DEEPSEEK,
-            CloudVendor.OPENROUTER,
-            CloudVendor.CUSTOM,
+            com.iris.localai.data.CloudVendor.OPENAI,
+            com.iris.localai.data.CloudVendor.DEEPSEEK,
+            com.iris.localai.data.CloudVendor.OPENROUTER,
+            com.iris.localai.data.CloudVendor.CUSTOM,
         )
     }
 }

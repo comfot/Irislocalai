@@ -33,6 +33,7 @@ import com.iris.localai.character.CharacterModelStore
 import com.iris.localai.data.HuggingFaceClient
 import com.iris.localai.data.AssetDownloadManager
 import com.iris.localai.data.ModelDownloadManager
+import com.iris.localai.data.ModelProfile
 import com.iris.localai.data.ModelProfileStore
 import com.iris.localai.data.ModelRole
 import com.iris.localai.data.ProviderKind
@@ -71,6 +72,8 @@ import com.iris.localai.skill.SkillStore
 import com.iris.localai.storage.AppStorage
 import com.iris.localai.server.ApiService
 import com.iris.localai.voice.TtsController
+import com.iris.localai.voice.CloudVoiceClient
+import com.iris.localai.voice.LocalVoiceRuntime
 import com.iris.localai.voice.VoiceDownloadManager
 import com.iris.localai.voice.VoiceModelStore
 import com.iris.localai.workspace.WorkspaceStore
@@ -84,7 +87,7 @@ import kotlinx.coroutines.SupervisorJob
  */
 class AppGraph(
     context: Context,
-    engineFactory: ((Backend) -> InferenceEngine)? = null,
+    engineFactory: ((Backend, ModelProfile) -> InferenceEngine)? = null,
 ) {
     val storage = AppStorage(context)
     val settings = SettingsRepository(context, storage)
@@ -102,7 +105,12 @@ class AppGraph(
     )
     val voiceModels = VoiceModelStore(context, storage)
     val worldBooks = WorldBookStore(context)
-    val memory = MemoryStore(context, conversations) { models.active() }
+    val memory = MemoryStore(
+        context = context,
+        conversations = conversations,
+        profileProvider = { models.active() },
+        providerProvider = { profile -> models.providerFor(profile, ModelRole.EMBEDDING) },
+    )
     val scenes = SceneStore(context, storage)
     val skills = SkillStore(context)
     val code = CodeSettingsStore(context)
@@ -116,27 +124,29 @@ class AppGraph(
     val githubAssets = GitHubAssetClient(settings)
     val downloads = ModelDownloadManager(context, ioScope, huggingFace, storage)
     val voiceDownloads = VoiceDownloadManager(context, ioScope, huggingFace, voiceModels)
-    val tts = TtsController(context)
+    val localVoice = LocalVoiceRuntime(context, voiceModels, settings)
+    val tts = TtsController(context, localVoice)
+    val cloudVoice = CloudVoiceClient()
     val permissions = DevicePermissionStore(context)
     val virtualDisplay = VirtualDisplayController(context)
     val deviceActions = DeviceActionExecutor(context, permissions, settings, virtualDisplay)
     val engines = EngineManager(
         settings,
-        engineFactory ?: { _ ->
-            val profile = models.active()
-            val provider = profile.provider
+        engineFactory ?: { _, profile ->
+            val provider = models.providerFor(profile, ModelRole.LANGUAGE)
             when {
                 provider.kind == ProviderKind.LOCAL -> LlamaEngine()
-                provider.kind == ProviderKind.CLOUD && provider.apiKey.isNotBlank() -> OpenAiCompatibleEngine(
+                provider.apiKey.isNotBlank() -> OpenAiCompatibleEngine(
                     provider = provider,
                     role = profile.role(ModelRole.LANGUAGE),
+                    visionProvider = models.providerFor(profile, ModelRole.VISION),
                     visionRole = profile.role(ModelRole.VISION),
                 )
                 else -> StubEngine()
             }
         },
-        modelPathProvider = {
-            val provider = models.active().provider
+        modelPathProvider = { profile ->
+            val provider = models.providerFor(profile, ModelRole.LANGUAGE)
             if (provider.kind == ProviderKind.LOCAL) provider.localModelPath else settings.current.modelPath
         },
     )
@@ -203,5 +213,13 @@ class AppGraph(
         installer.sync()
     }
     val agent = AgentLoop(engines, tools, pluginRuntime = pluginRuntime)
-    val api = ApiService(engines, settings) { models.active().name }
+    val api = ApiService(engines, settings, models) {
+        val current = settings.current
+        val profile = models.resolve(
+            space = current.space,
+            characterId = current.characterId,
+            workspaceId = workspaces.activeId.value,
+        )
+        models.modelNameFor(profile, ModelRole.LANGUAGE)
+    }
 }

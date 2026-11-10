@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 
 enum class VoiceDownloadStatus(val label: String) {
     QUEUED("排队中"),
@@ -40,7 +41,7 @@ data class VoiceDownloadTask(
 }
 
 class VoiceDownloadManager(
-    context: Context,
+    private val context: Context,
     private val scope: CoroutineScope,
     private val client: HuggingFaceClient,
     private val store: VoiceModelStore,
@@ -66,14 +67,14 @@ class VoiceDownloadManager(
 
         jobs[pack.id] = scope.launch {
             try {
-                val files = client.allFiles(pack.repo, source).getOrThrow()
-                    .filterNot { isMetadata(it.name) }
-                    .filter { it.size >= 0 }
-                val total = files.sumOf { it.size }
+                val manifest = VoiceManifests.read(context, pack)
+                val files = manifest.files
+                if (files.isEmpty()) throw IllegalStateException("模型清单为空：${pack.title}")
+                val total = if (manifest.totalBytes > 0) manifest.totalBytes else pack.approximateBytes
                 update(pack.id) {
                     it.copy(
                         status = VoiceDownloadStatus.RUNNING,
-                        totalBytes = if (total > 0) total else it.totalBytes,
+                        totalBytes = total,
                         filesTotal = files.size,
                     )
                 }
@@ -84,11 +85,12 @@ class VoiceDownloadManager(
                         throw CancellationException("cancelled")
                     }
                     client.download(
-                        repoId = pack.repo,
-                        fileName = file.name,
+                        repoId = manifest.repo,
+                        fileName = file.path,
                         destDir = store.dirFor(pack),
                         source = source,
                         preservePath = true,
+                        revision = manifest.revision,
                     ) { done, _ ->
                         update(pack.id) {
                             it.copy(
@@ -97,8 +99,13 @@ class VoiceDownloadManager(
                             )
                         }
                     }.getOrThrow()
-                    base += if (file.size > 0) file.size else
-                        FileSize.of(store.dirFor(pack), file.name)
+                    val downloadedFile = File(store.dirFor(pack), file.path)
+                    if (file.size > 0 && downloadedFile.length() != file.size) {
+                        throw IllegalStateException(
+                            "${file.path} 大小不匹配（期望 ${file.size}，实际 ${downloadedFile.length()}）",
+                        )
+                    }
+                    base += if (file.size > 0) file.size else downloadedFile.length()
                     update(pack.id) {
                         it.copy(downloadedBytes = base, filesDone = index + 1)
                     }
@@ -158,10 +165,5 @@ class VoiceDownloadManager(
             lower.startsWith("readme") ||
             lower.startsWith("license") ||
             lower.startsWith(".git")
-    }
-
-    private object FileSize {
-        fun of(dir: java.io.File, name: String): Long =
-            java.io.File(dir, name).takeIf { it.isFile }?.length() ?: 0L
     }
 }

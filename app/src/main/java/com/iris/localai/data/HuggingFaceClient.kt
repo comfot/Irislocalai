@@ -115,10 +115,11 @@ class HuggingFaceClient {
         destDir: File,
         source: DownloadSource = DownloadSource.AUTO,
         preservePath: Boolean = false,
+        revision: String = "main",
         onProgress: (downloaded: Long, total: Long) -> Unit,
     ): Result<File> = withContext(Dispatchers.IO) {
         tryBases(source) { base ->
-            downloadOnce(base, repoId, fileName, destDir, preservePath, onProgress)
+            downloadOnce(base, repoId, fileName, destDir, preservePath, revision, onProgress)
         }
     }
 
@@ -128,6 +129,7 @@ class HuggingFaceClient {
         fileName: String,
         destDir: File,
         preservePath: Boolean,
+        revision: String,
         onProgress: (downloaded: Long, total: Long) -> Unit,
     ): File {
         val repo = repoId.trim().trim('/')
@@ -148,7 +150,7 @@ class HuggingFaceClient {
         val existing = if (part.exists()) part.length() else 0L
 
         val connection = httpConnection(
-            "$base/$repo/resolve/main/$encodedFile?download=true",
+            "$base/$repo/resolve/$revision/$encodedFile?download=true",
         )
         if (existing > 0) {
             connection.setRequestProperty("Range", "bytes=$existing-")

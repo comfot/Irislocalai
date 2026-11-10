@@ -171,6 +171,8 @@ class SettingsRepository(
             .putString(KEY_TTS_CLOUD_KEY, next.ttsCloudKey)
             .putString(KEY_TTS_CLOUD_MODEL, next.ttsCloudModel)
             .putString(KEY_TTS_CLOUD_VOICE, next.ttsCloudVoice)
+            .putString(KEY_TTS_CLOUD_STYLE, next.ttsCloudStyle)
+            .putString(KEY_TTS_CLOUD_VOICE_SAMPLE, next.ttsCloudVoiceSample)
             .putString(KEY_STT_CLOUD_PROVIDER, next.sttCloudProvider.name)
             .putString(KEY_STT_CLOUD_ENDPOINT, next.sttCloudEndpoint)
             .putString(KEY_STT_CLOUD_KEY, next.sttCloudKey)
@@ -315,6 +317,8 @@ class SettingsRepository(
         ttsCloudKey = prefs.getString(KEY_TTS_CLOUD_KEY, "") ?: "",
         ttsCloudModel = prefs.getString(KEY_TTS_CLOUD_MODEL, "") ?: "",
         ttsCloudVoice = prefs.getString(KEY_TTS_CLOUD_VOICE, "") ?: "",
+        ttsCloudStyle = prefs.getString(KEY_TTS_CLOUD_STYLE, "") ?: "",
+        ttsCloudVoiceSample = prefs.getString(KEY_TTS_CLOUD_VOICE_SAMPLE, "") ?: "",
         sttCloudProvider = enumOf(
             prefs.getString(KEY_STT_CLOUD_PROVIDER, null),
             CloudVoiceProvider.OPENAI,
@@ -499,6 +503,8 @@ class SettingsRepository(
         const val KEY_TTS_CLOUD_KEY = "tts_cloud_key"
         const val KEY_TTS_CLOUD_MODEL = "tts_cloud_model"
         const val KEY_TTS_CLOUD_VOICE = "tts_cloud_voice"
+        const val KEY_TTS_CLOUD_STYLE = "tts_cloud_style"
+        const val KEY_TTS_CLOUD_VOICE_SAMPLE = "tts_cloud_voice_sample"
         const val KEY_STT_CLOUD_PROVIDER = "stt_cloud_provider"
         const val KEY_STT_CLOUD_ENDPOINT = "stt_cloud_endpoint"
         const val KEY_STT_CLOUD_KEY = "stt_cloud_key"

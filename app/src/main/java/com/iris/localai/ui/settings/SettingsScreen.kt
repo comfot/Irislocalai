@@ -319,8 +319,8 @@ private fun SettingsDetail(
     onOpen3D: () -> Unit,
 ) {
     when (entry.id) {
-        "model" -> ModelSettingsPage(settings, engineState, viewModel) { onOpenMarket(MarketSection.MODELS) }
-        "backend" -> BackendPage(settings, viewModel)
+        "model" -> ModelSettingsPage(settings, viewModel) { onOpenMarket(MarketSection.MODELS) }
+        "backend" -> BackendPage(settings, engineState, viewModel)
         "generation" -> GenerationPage(settings, viewModel)
         "performance" -> PerformancePage(settings, viewModel)
         "agent" -> AgentPage(settings, viewModel)

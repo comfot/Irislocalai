@@ -1,6 +1,6 @@
 package com.iris.localai.engine
 
-import com.iris.localai.data.ProviderConfig
+import com.iris.localai.data.ModelProvider
 import com.iris.localai.data.RoleConfig
 import com.iris.localai.data.CloudVendor
 import kotlinx.coroutines.CancellationException
@@ -28,8 +28,9 @@ import java.net.URL
  * 支持自定义请求头与 SSE 增量；工具调用仍由 AgentLoop 的文本协议负责。
  */
 class OpenAiCompatibleEngine(
-    private val provider: ProviderConfig,
+    private val provider: ModelProvider,
     private val role: RoleConfig,
+    private val visionProvider: ModelProvider? = null,
     private val visionRole: RoleConfig? = null,
 ) : InferenceEngine {
 
@@ -43,7 +44,8 @@ class OpenAiCompatibleEngine(
 
     private val modelName: String
         get() = role.modelName.ifBlank {
-            provider.modelName.ifBlank { provider.vendor.defaultModel }
+            provider.models.firstOrNull { it.enabled }?.name
+                ?: provider.vendor.defaultModel
         }
 
     override suspend fun load(
@@ -68,12 +70,19 @@ class OpenAiCompatibleEngine(
             emit(GenEvent.Failed("远程引擎尚未加载"))
             return@flow
         }
-        val apiKey = provider.apiKey.trim()
+        val useVision = history.any { it.images.isNotEmpty() } &&
+            visionProvider != null &&
+            visionRole?.enabled == true &&
+            visionRole.modelName.isNotBlank()
+        val activeProvider = if (useVision) visionProvider ?: provider else provider
+        val activeRole = if (useVision) visionRole ?: role else role
+        val apiKey = activeProvider.apiKey.trim()
         if (apiKey.isBlank()) {
             emit(GenEvent.Failed("API Key 为空，请在模型设置中填写"))
             return@flow
         }
-        val endpointBase = provider.endpoint.ifBlank { provider.vendor.defaultEndpoint }.trimEnd('/')
+        val endpointBase = activeProvider.endpoint.ifBlank { activeProvider.vendor.defaultEndpoint }
+            .trimEnd('/')
         if (endpointBase.isBlank()) {
             emit(GenEvent.Failed("API Endpoint 为空"))
             return@flow
@@ -88,7 +97,7 @@ class OpenAiCompatibleEngine(
             put("presence_penalty", params.presencePenalty)
             put("frequency_penalty", params.frequencyPenalty)
             params.seed?.let { put("seed", it) }
-            if (provider.vendor == CloudVendor.CUSTOM || provider.vendor == CloudVendor.OPENROUTER) {
+            if (activeProvider.vendor == CloudVendor.CUSTOM || activeProvider.vendor == CloudVendor.OPENROUTER) {
                 put("top_k", params.topK)
                 if (params.minP > 0f) put("min_p", params.minP)
                 put("repeat_penalty", params.repeatPenalty)
@@ -134,11 +143,7 @@ class OpenAiCompatibleEngine(
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Authorization", "Bearer $apiKey")
             setRequestProperty("Accept", "text/event-stream")
-            val headers = if (history.any { it.images.isNotEmpty() } && visionRole != null) {
-                role.customHeaders + visionRole.customHeaders
-            } else {
-                role.customHeaders
-            }
+            val headers = activeRole.customHeaders
             headers.forEach { (key, value) -> setRequestProperty(key, value) }
             activeConnection = this
         }
@@ -202,9 +207,9 @@ class OpenAiCompatibleEngine(
     private fun modelFor(history: List<PromptMessage>): String {
         val hasImages = history.any { it.images.isNotEmpty() }
         val visionModel = visionRole
-            ?.takeIf { it.enabled && it.modelName.isNotBlank() }
+            ?.takeIf { hasImages && visionProvider != null && it.enabled && it.modelName.isNotBlank() }
             ?.modelName
-        return if (hasImages && visionModel != null) visionModel else modelName
+        return visionModel ?: modelName
     }
 
     override suspend fun resetContext() = Unit

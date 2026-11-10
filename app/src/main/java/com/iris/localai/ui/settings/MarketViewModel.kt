@@ -267,15 +267,7 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setAsLocalModel(file: File) {
-        graph.models.updateActive { profile ->
-            profile.copy(
-                provider = profile.provider.copy(
-                    kind = ProviderKind.LOCAL,
-                    localModelPath = file.absolutePath,
-                    modelName = file.nameWithoutExtension,
-                ),
-            )
-        }
+        graph.models.assignLocalModel(file)
         graph.settings.update { it.copy(modelPath = file.absolutePath) }
         _message.value = "已将 ${file.name} 设为当前本地模型"
     }

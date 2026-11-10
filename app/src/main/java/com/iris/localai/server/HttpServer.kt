@@ -19,8 +19,10 @@ data class HttpRequest(
     val method: String,
     val path: String,
     val headers: Map<String, String>,
-    val body: String,
-)
+    val bodyBytes: ByteArray,
+) {
+    val body: String get() = String(bodyBytes, Charsets.UTF_8)
+}
 
 /**
  * 极简 HTTP/1.1 服务：一个连接一个请求、Content-Length 请求体、支持 SSE 流式响应。
@@ -99,7 +101,7 @@ class HttpServer(
             }
         }
         val length = headers["content-length"]?.toIntOrNull() ?: 0
-        val body = if (length in 1..MAX_BODY) readBody(input, length) else ""
+        val body = if (length in 1..MAX_BODY) readBody(input, length) else ByteArray(0)
 
         val response = HttpResponse(client.getOutputStream())
         try {
@@ -128,7 +130,7 @@ class HttpServer(
         return null
     }
 
-    private fun readBody(input: InputStream, length: Int): String {
+    private fun readBody(input: InputStream, length: Int): ByteArray {
         val bytes = ByteArray(length)
         var read = 0
         while (read < length) {
@@ -136,12 +138,12 @@ class HttpServer(
             if (count < 0) break
             read += count
         }
-        return String(bytes, 0, read, Charsets.UTF_8)
+        return if (read == length) bytes else bytes.copyOf(read)
     }
 
     private companion object {
         const val MAX_HEAD = 16 * 1024
-        const val MAX_BODY = 8 * 1024 * 1024
+        const val MAX_BODY = 16 * 1024 * 1024
     }
 }
 
@@ -161,6 +163,12 @@ class HttpResponse(out: OutputStream) {
 
     fun empty(status: Int) {
         sendHead(status, "text/plain; charset=utf-8", 0)
+        out.flush()
+    }
+
+    fun bytes(status: Int, contentType: String, body: ByteArray) {
+        sendHead(status, contentType, body.size)
+        out.write(body)
         out.flush()
     }
 
@@ -221,6 +229,8 @@ class HttpResponse(out: OutputStream) {
         401 -> "Unauthorized"
         404 -> "Not Found"
         500 -> "Internal Server Error"
+        502 -> "Bad Gateway"
+        503 -> "Service Unavailable"
         else -> "OK"
     }
 }

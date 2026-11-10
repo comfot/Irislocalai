@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -32,11 +33,12 @@ import com.iris.localai.data.AppSettings
 import com.iris.localai.data.ContextStrategy
 import com.iris.localai.data.ToolPermission
 import com.iris.localai.engine.Backend
+import com.iris.localai.engine.EngineState
 import com.iris.localai.engine.llama.LlamaNative
 import java.io.File
 
 @Composable
-internal fun BackendPage(settings: AppSettings, viewModel: SettingsViewModel) {
+internal fun BackendPage(settings: AppSettings, engineState: EngineState, viewModel: SettingsViewModel) {
     val runtimeStatus = remember {
         LlamaNative.unavailableReason ?: "可用 · llama.cpp（预编译 libiris_llama.so）"
     }
@@ -77,6 +79,25 @@ internal fun BackendPage(settings: AppSettings, viewModel: SettingsViewModel) {
             InfoRow("GGUF / llama.cpp", runtimeStatus)
             InfoRow("OpenCL GPU", if (gpuAvailable) "已检测到驱动" else "未检测到，仅 CPU")
             InfoRow("当前本地模型", settings.modelPath.ifBlank { "未选择" })
+        }
+
+        SettingsCard("本地推理引擎") {
+            Text(engineState.display(), style = MaterialTheme.typography.bodyLarge)
+            val details = (engineState as? EngineState.Ready)?.details
+            if (details != null) {
+                InfoRow("已加载", details.name)
+                InfoRow("上下文", details.contextLength.toString())
+                InfoRow("后端", details.backend.name)
+            }
+            Button(
+                onClick = viewModel::reloadEngine,
+                enabled = engineState !is EngineState.Loading,
+            ) { Text("重新加载引擎") }
+            Text(
+                text = "语言模型选择本地提供商时使用对应的 GGUF；云端提供商通过 OpenAI 兼容接口请求。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
