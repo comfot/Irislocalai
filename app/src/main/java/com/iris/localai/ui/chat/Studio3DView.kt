@@ -2,19 +2,24 @@ package com.iris.localai.ui.chat
 
 import android.content.Context
 import android.graphics.Color
+import android.net.Uri
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import com.iris.localai.IrisApp
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.FileInputStream
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -132,6 +137,11 @@ internal fun Studio3DView(
                     }
                 }
                 webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(
+                        view: WebView,
+                        request: WebResourceRequest,
+                    ): WebResourceResponse? = interceptStudioModel(context, request)
+
                     override fun onPageFinished(view: WebView, url: String?) {
                         controller.attach(view)
                         controller.reapply(view)
@@ -163,13 +173,13 @@ internal fun Studio3DView(
                     "StudioBridge",
                 )
                 fun load() {
-                    val cached = studioFile(context)
-                    if (cached != null) {
-                        loadUrl("file://$cached")
-                    } else {
-                        val url = "file:///android_asset/studio.html"
-                        loadDataWithBaseURL(url, studioHtml(context), "text/html", "UTF-8", url)
-                    }
+                    loadDataWithBaseURL(
+                        "https://iris.local/studio/",
+                        studioHtml(context),
+                        "text/html",
+                        "UTF-8",
+                        null,
+                    )
                 }
                 controller.reloadAction = { load() }
                 load()
@@ -190,12 +200,6 @@ internal fun Studio3DView(
 /** 把 three.js 与场景脚本内联到页面里；资源只读取一次。 */
 private var cachedStudioHtml: String? = null
 
-private fun studioFile(context: Context): String? = runCatching {
-    val file = File(context.cacheDir, "studio-3d.html")
-    file.writeText(studioHtml(context))
-    file.absolutePath
-}.getOrNull()
-
 private fun studioHtml(context: Context): String {
     cachedStudioHtml?.let { return it }
     val html = context.assets.open("studio.html").bufferedReader().use { it.readText() }
@@ -212,4 +216,78 @@ private fun studioHtml(context: Context): String {
         )
     cachedStudioHtml = bundled
     return bundled
+}
+
+/** 综合空间小人的 YSM 模型文件：https://iris.local/studio-models/<id>/<相对路径>。 */
+internal fun interceptStudioModel(context: Context, request: WebResourceRequest): WebResourceResponse? {
+    val url = request.url
+    if (url.host != "iris.local") return null
+    val path = url.path ?: return null
+    if (path.startsWith("/studio-assets/")) {
+        val relative = Uri.decode(path.removePrefix("/studio-assets/")).replace('\\', '/')
+        if (relative.isBlank() || relative.contains("..")) return studioNotFound()
+        return runCatching {
+            WebResourceResponse(
+                studioMime(relative),
+                null,
+                200,
+                "OK",
+                mapOf(
+                    "Cache-Control" to "max-age=86400",
+                    "Access-Control-Allow-Origin" to "*",
+                ),
+                context.assets.open(relative),
+            )
+        }.getOrNull() ?: studioNotFound()
+    }
+    if (!path.startsWith("/studio-models/")) return null
+    val rest = Uri.decode(path.removePrefix("/studio-models/")).replace('\\', '/')
+    val separator = rest.indexOf('/')
+    if (separator <= 0) return studioNotFound()
+    val modelId = rest.substring(0, separator)
+    val relative = rest.substring(separator + 1)
+    if (relative.isBlank() || relative.contains("..")) return studioNotFound()
+    val dir = (context.applicationContext as IrisApp).graph.studioModels.directory(modelId)
+        ?: return studioNotFound()
+    val canonicalRoot = runCatching { dir.canonicalFile }.getOrNull() ?: return studioNotFound()
+    val file = runCatching { File(canonicalRoot, relative).canonicalFile }.getOrNull()
+        ?: return studioNotFound()
+    if (!file.isFile || !file.path.startsWith(canonicalRoot.path + File.separator)) {
+        return studioNotFound()
+    }
+    return runCatching {
+        WebResourceResponse(
+            studioMime(file.name),
+            null,
+            200,
+            "OK",
+            mapOf(
+                "Content-Length" to file.length().toString(),
+                "Cache-Control" to "no-store",
+                "Access-Control-Allow-Origin" to "*",
+            ),
+            FileInputStream(file),
+        )
+    }.getOrNull()
+}
+
+private fun studioNotFound(): WebResourceResponse = WebResourceResponse(
+    "text/plain",
+    "UTF-8",
+    404,
+    "Not Found",
+    emptyMap(),
+    ByteArrayInputStream("not found".toByteArray()),
+)
+
+private fun studioMime(name: String): String = when (name.substringAfterLast('.').lowercase()) {
+    "json", "mcmeta" -> "application/json"
+    "js", "mjs" -> "text/javascript"
+    "wasm" -> "application/wasm"
+    "png" -> "image/png"
+    "jpg", "jpeg" -> "image/jpeg"
+    "ogg" -> "audio/ogg"
+    "wav" -> "audio/wav"
+    "mp3" -> "audio/mpeg"
+    else -> "application/octet-stream"
 }

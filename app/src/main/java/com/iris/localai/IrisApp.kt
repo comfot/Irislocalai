@@ -17,6 +17,7 @@ class IrisApp : Application() {
         graph = AppGraph(this)
         graph.api.syncEnabled()
         graph.mcpServer.syncEnabled()
+        graph.integrations.startAll()
         graph.memory.onAppOpened(graph.settings.current.memoryAutoDiary)
     }
 }

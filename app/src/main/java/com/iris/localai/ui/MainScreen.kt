@@ -62,6 +62,10 @@ fun MainScreen() {
                 settingsEntry = null
                 showSettings = true
             },
+            onOpenStudioSettings = {
+                settingsEntry = "studio-space"
+                showSettings = true
+            },
         )
     }
 }

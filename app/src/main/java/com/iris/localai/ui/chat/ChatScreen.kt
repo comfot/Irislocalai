@@ -52,6 +52,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun ChatScreen(
     onOpenSettings: () -> Unit,
+    onOpenStudioSettings: () -> Unit,
     viewModel: ChatViewModel = viewModel(),
 ) {
     val space by viewModel.space.collectAsStateWithLifecycle()
@@ -237,7 +238,7 @@ fun ChatScreen(
                     Space.COMPOSITE -> CompositeSpaceScreen(
                         viewModel = viewModel,
                         onOpenDrawer = { scope.launch { drawerState.open() } },
-                        onOpenSettings = onOpenSettings,
+                        onOpenStudioSettings = onOpenStudioSettings,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }

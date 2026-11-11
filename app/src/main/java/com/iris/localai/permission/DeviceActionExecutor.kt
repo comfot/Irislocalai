@@ -8,7 +8,12 @@ import com.iris.localai.accessibility.IrisAccessibilityService
 import com.iris.localai.data.OperationSurfaceMode
 import com.iris.localai.data.SettingsRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import java.io.File
 
 /** 操作通道执行器：Shizuku 优先，失败回退无障碍；没有虚拟屏隔离。 */
@@ -123,6 +128,277 @@ class DeviceActionExecutor(
         }, {
             IrisAccessibilityService.instance?.inputText(text) == true
         })
+    }
+
+    /** 读取当前界面的控件树；虚拟屏窗口不可读时回退到截图 OCR。 */
+    suspend fun uiSnapshot(maxNodes: Int = 200): String {
+        val displayId = targetDisplayId()
+        val service = IrisAccessibilityService.instance
+        if (service != null) {
+            val snapshot = withContext(Dispatchers.Default) {
+                service.captureUi(maxNodes.coerceIn(20, 300), displayId = displayId)
+            }
+            if (snapshot.nodes.isNotEmpty()) {
+                return buildJsonObject {
+                    put("mode", "ui")
+                    put("package", snapshot.packageName)
+                    put("display", displayId)
+                    put("width", snapshot.width)
+                    put("height", snapshot.height)
+                    putJsonArray("nodes") {
+                        snapshot.nodes.forEach { node ->
+                            addJsonObject {
+                                if (node.text.isNotBlank()) put("text", node.text)
+                                if (node.description.isNotBlank()) put("desc", node.description)
+                                if (node.viewId.isNotBlank()) put("id", node.viewId)
+                                put("class", node.className)
+                                put("bounds", node.boundsText())
+                                if (node.clickable) put("clickable", true)
+                                if (node.editable) put("editable", true)
+                                if (node.scrollable) put("scrollable", true)
+                                if (node.longClickable) put("long_clickable", true)
+                            }
+                        }
+                    }
+                }.toString()
+            }
+        }
+        val lines = ocrScreen()
+        if (!lines.isNullOrEmpty()) return ocrJson(displayId, lines)
+        if (displayId != android.view.Display.DEFAULT_DISPLAY || service == null) {
+            error("虚拟屏窗口没有暴露给无障碍服务，截图 OCR 也没有识别到文字；请确认无障碍/截图权限，或切回主屏")
+        }
+        return buildJsonObject {
+            put("mode", "empty")
+            put("display", displayId)
+            putJsonArray("nodes") {}
+        }.toString()
+    }
+
+    suspend fun tapText(text: String, matchIndex: Int = 0): String {
+        val displayId = targetDisplayId()
+        val service = IrisAccessibilityService.instance
+        var clicked = false
+        if (service != null) {
+            clicked = withContext(Dispatchers.Default) { service.tapText(text, matchIndex, displayId) }
+            if (!clicked && useVirtualDisplay()) {
+                val bounds = withContext(Dispatchers.Default) {
+                    service.findTextBounds(text, matchIndex, displayId)
+                }
+                if (bounds != null) {
+                    val tapped = withContext(Dispatchers.IO) {
+                        virtualDisplay.tap(bounds.centerX(), bounds.centerY())
+                    }
+                    if (tapped) {
+                        delay(250)
+                        return "已点击「$text」（虚拟屏）"
+                    }
+                }
+            }
+        }
+        if (!clicked) {
+            val line = ocrFind(text, matchIndex)
+            if (line != null) {
+                val tapped = if (useVirtualDisplay()) {
+                    withContext(Dispatchers.IO) {
+                        virtualDisplay.tap(line.bounds.centerX(), line.bounds.centerY())
+                    }
+                } else {
+                    tap(line.bounds.centerX(), line.bounds.centerY())
+                    true
+                }
+                if (tapped) {
+                    delay(250)
+                    return "已点击「$text」（OCR）"
+                }
+            }
+        }
+        if (!clicked) error("未找到可点击的文字「$text」")
+        delay(250)
+        return "已点击「$text」"
+    }
+
+    suspend fun scroll(direction: String): String {
+        val displayId = targetDisplayId()
+        val service = IrisAccessibilityService.instance
+        val ok = if (service != null) {
+            withContext(Dispatchers.Default) { service.scrollUi(direction, displayId) }
+        } else {
+            false
+        }
+        if (!ok && useVirtualDisplay()) {
+            val metrics = context.resources.displayMetrics
+            val cx = metrics.widthPixels / 2f
+            val cy = metrics.heightPixels / 2f
+            val distance = minOf(metrics.widthPixels, metrics.heightPixels) * 0.32f
+            val swiped = withContext(Dispatchers.IO) {
+                when (direction.lowercase()) {
+                    "up", "back", "backward" -> virtualDisplay.swipe(
+                        cx.toInt(), (cy - distance).toInt(), cx.toInt(), (cy + distance).toInt(), 260,
+                    )
+                    "left" -> virtualDisplay.swipe(
+                        (cx + distance).toInt(), cy.toInt(), (cx - distance).toInt(), cy.toInt(), 260,
+                    )
+                    "right" -> virtualDisplay.swipe(
+                        (cx - distance).toInt(), cy.toInt(), (cx + distance).toInt(), cy.toInt(), 260,
+                    )
+                    else -> virtualDisplay.swipe(
+                        cx.toInt(), (cy + distance).toInt(), cx.toInt(), (cy - distance).toInt(), 260,
+                    )
+                }
+            }
+            if (swiped) {
+                delay(250)
+                return "已向 $direction 滚动（虚拟屏）"
+            }
+        }
+        if (!ok) error("滚动失败：当前界面没有可滚动区域")
+        delay(250)
+        return "已向 $direction 滚动"
+    }
+
+    suspend fun waitForText(text: String, timeoutMs: Int): String {
+        val displayId = targetDisplayId()
+        val service = IrisAccessibilityService.instance
+        val deadline = System.currentTimeMillis() + timeoutMs.coerceIn(200, 15_000)
+        while (System.currentTimeMillis() < deadline) {
+            if (service != null && withContext(Dispatchers.Default) { service.hasText(text, displayId) }) {
+                return "已出现「$text」"
+            }
+            if (ocrFind(text) != null) return "已出现「$text」（OCR）"
+            delay(700)
+        }
+        error("等待超时：未出现「$text」")
+    }
+
+    suspend fun recents(): String {
+        if (useVirtualDisplay()) error("虚拟屏暂不支持最近任务，请切回主屏")
+        val service = IrisAccessibilityService.instance
+        if (service != null && withContext(Dispatchers.Default) { service.recents() }) {
+            delay(200)
+            return "已打开最近任务"
+        }
+        if (shizuku("input keyevent 187")) {
+            delay(200)
+            return "已打开最近任务：Shizuku 成功"
+        }
+        error("打开最近任务失败：请开启无障碍或 Shizuku")
+    }
+
+    suspend fun notifications(): String {
+        if (useVirtualDisplay()) error("虚拟屏暂不支持通知栏，请切回主屏")
+        val service = IrisAccessibilityService.instance
+        if (service != null && withContext(Dispatchers.Default) { service.notifications() }) {
+            delay(200)
+            return "已打开通知栏"
+        }
+        if (shizuku("cmd statusbar expand-notifications")) {
+            delay(200)
+            return "已打开通知栏：Shizuku 成功"
+        }
+        error("打开通知栏失败：请开启无障碍或 Shizuku")
+    }
+
+    private suspend fun ocrScreen(): List<ScreenTextLine>? {
+        val bitmap = withContext(Dispatchers.IO) {
+            if (useVirtualDisplay()) {
+                ensureVirtualDisplay()
+                virtualDisplay.capture()
+            } else {
+                captureBitmap()
+            }
+        } ?: return null
+        return try {
+            ScreenTextRecognizer.recognize(bitmap)
+        } catch (_: Exception) {
+            emptyList()
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private suspend fun ocrFind(text: String, matchIndex: Int = 0): ScreenTextLine? {
+        val query = text.trim()
+        if (query.isBlank()) return null
+        val lines = ocrScreen() ?: return null
+        val matches = lines.filter { line ->
+            line.text.contains(query, ignoreCase = true) || query.contains(line.text, ignoreCase = true)
+        }
+        return matches.getOrNull(matchIndex.coerceAtLeast(0))
+    }
+
+    private fun ocrJson(displayId: Int, lines: List<ScreenTextLine>): String = buildJsonObject {
+        put("mode", "ocr")
+        put("package", "")
+        put("display", displayId)
+        put("width", context.resources.displayMetrics.widthPixels)
+        put("height", context.resources.displayMetrics.heightPixels)
+        putJsonArray("lines") {
+            lines.take(80).forEach { line ->
+                addJsonObject {
+                    put("text", line.text.take(120))
+                    put(
+                        "bounds",
+                        "[${line.bounds.left},${line.bounds.top}][${line.bounds.right},${line.bounds.bottom}]",
+                    )
+                    put("cx", line.bounds.centerX())
+                    put("cy", line.bounds.centerY())
+                }
+            }
+        }
+    }.toString()
+
+    private fun targetDisplayId(): Int =
+        if (useVirtualDisplay()) {
+            virtualDisplay.currentDisplayId().takeIf { it > 0 }
+                ?: android.view.Display.DEFAULT_DISPLAY
+        } else {
+            android.view.Display.DEFAULT_DISPLAY
+        }
+
+    suspend fun tapNormalized(x: Float, y: Float): String {
+        val metrics = context.resources.displayMetrics
+        return tap(
+            (x.coerceIn(0f, 1f) * metrics.widthPixels).toInt(),
+            (y.coerceIn(0f, 1f) * metrics.heightPixels).toInt(),
+        )
+    }
+
+    suspend fun longPress(x: Int, y: Int): String = run("长按 ($x, $y)", {
+        shizuku("input swipe $x $y $x $y 650")
+    }, {
+        IrisAccessibilityService.instance?.longPress(x.toFloat(), y.toFloat()) == true
+    })
+
+    suspend fun longPressNormalized(x: Float, y: Float): String {
+        val metrics = context.resources.displayMetrics
+        return longPress(
+            (x.coerceIn(0f, 1f) * metrics.widthPixels).toInt(),
+            (y.coerceIn(0f, 1f) * metrics.heightPixels).toInt(),
+        )
+    }
+
+    suspend fun enter(): String = run("回车", {
+        shizuku("input keyevent 66")
+    }, {
+        IrisAccessibilityService.instance?.pressEnter() == true
+    })
+
+    suspend fun swipeNormalized(
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        durationMs: Int,
+    ): String {
+        val metrics = context.resources.displayMetrics
+        return swipe(
+            (x1.coerceIn(0f, 1f) * metrics.widthPixels).toInt(),
+            (y1.coerceIn(0f, 1f) * metrics.heightPixels).toInt(),
+            (x2.coerceIn(0f, 1f) * metrics.widthPixels).toInt(),
+            (y2.coerceIn(0f, 1f) * metrics.heightPixels).toInt(),
+            durationMs,
+        )
     }
 
     suspend fun screenshot(): String = withContext(Dispatchers.IO) {

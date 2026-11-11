@@ -51,6 +51,7 @@ internal fun MMDView(
     val graph = remember(context) { (context.applicationContext as IrisApp).graph }
     val appSettings by graph.settings.settings.collectAsStateWithLifecycle()
     val idleMotionAsset = appSettings.idleMotionAsset
+    val renderScale = appSettings.mmdRenderScale
     val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot|$idleMotionAsset"
     var webView by remember { mutableStateOf<WebView?>(null) }
     var bgmPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -139,6 +140,12 @@ internal fun MMDView(
             )
         }
     }
+    LaunchedEffect(renderScale) {
+        webView?.evaluateJavascript(
+            "window.irisMmd&&window.irisMmd.setRenderScale($renderScale)",
+            null,
+        )
+    }
     AndroidView(
         factory = { ctx ->
             WebView(ctx).apply {
@@ -193,7 +200,7 @@ internal fun MMDView(
                         return true
                     }
                 }
-                loadMmd(this, ctx, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset)
+                loadMmd(this, ctx, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset, renderScale)
                 tag = key
                 webView = this
             }
@@ -201,7 +208,7 @@ internal fun MMDView(
         update = { view ->
             if (view.tag != key) {
                 view.tag = key
-                loadMmd(view, view.context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset)
+                loadMmd(view, view.context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset, renderScale)
             }
             applyMmdState(view, mood, speaking, moodIntensity, mouthAmplitude)
             view.postDelayed({
@@ -228,6 +235,7 @@ private fun loadMmd(
     interactive: Boolean,
     modelRoot: String,
     idleMotionAsset: String,
+    renderScale: Float,
 ) {
     val storage = (context.applicationContext as IrisApp).graph.storage
     val root = storage.containingRoot(modelRoot, modelFile)
@@ -255,6 +263,7 @@ private fun loadMmd(
         .put("speaking", speaking)
         .put("portrait", portrait)
         .put("interactive", interactive)
+        .put("renderScale", renderScale.toDouble())
     Log.d("MMDView", "load portrait=$portrait root=$modelRoot file=${modelFile.name} mood=$mood")
     findMmdMotion(modelFile, context, modelRoot)?.let { config.put("motion", it) }
     if (idleMotionAsset.isNotBlank()) config.put("idleMotion", motionAssetUrl(idleMotionAsset))

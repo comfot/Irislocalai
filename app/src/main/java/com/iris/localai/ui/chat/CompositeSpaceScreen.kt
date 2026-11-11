@@ -1,5 +1,6 @@
 package com.iris.localai.ui.chat
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +27,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Construction
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Park
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -52,17 +54,22 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.IrisApp
 import com.iris.localai.agent.Conversation
 import com.iris.localai.data.Space
 import com.iris.localai.engine.EngineState
+import com.iris.localai.scene.StudioAvatar
 import com.iris.localai.server.ApiState
 import com.iris.localai.workspace.Workspace
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.coroutines.delay
 import java.io.File
@@ -74,6 +81,7 @@ internal enum class StudioPlace(
     val icon: ImageVector,
 ) {
     STUDIO("studio", "工作室", "当前角色与工作区在这里待命。", Icons.Outlined.Business),
+    HOME("home", "家", "角色卡们住在这里，按卡数量生成居民。", Icons.Outlined.Home),
     CAMPUS("campus", "园区", "工作室和它周围的地方，点一栋楼进去看看。", Icons.Outlined.Park),
     LIBRARY(
         "library",
@@ -95,7 +103,7 @@ internal enum class StudioPlace(
 fun CompositeSpaceScreen(
     viewModel: ChatViewModel,
     onOpenDrawer: () -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenStudioSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val allConversations by viewModel.conversations.collectAsStateWithLifecycle()
@@ -116,6 +124,10 @@ fun CompositeSpaceScreen(
     val mcpServers by viewModel.mcpServers.collectAsStateWithLifecycle()
     val mcpSettings by viewModel.mcpSettings.collectAsStateWithLifecycle()
     val placeId by viewModel.studioPlace.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val studioAvatars by graph.studioAvatars.avatars.collectAsStateWithLifecycle()
+    val studioModels by graph.studioModels.models.collectAsStateWithLifecycle()
 
     val place = StudioPlace.of(placeId)
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -140,6 +152,26 @@ fun CompositeSpaceScreen(
         put("place", place.id)
         put("accent", accentHex)
         put("dark", dark)
+        putJsonArray("avatars") {
+            characters.forEach { entry ->
+                val avatar = studioAvatars[entry.id] ?: StudioAvatar()
+                val fallbackColor = String.format(
+                    "#%06X",
+                    (entry.card.accent ?: 0xFF7DB3FFL) and 0xFFFFFFL,
+                )
+                addJsonObject {
+                    put("id", entry.id)
+                    put("name", avatar.name.ifBlank { entry.card.charName })
+                    put("style", avatar.style)
+                    put("color", avatar.color.ifBlank { fallbackColor })
+                    studioModels.firstOrNull { it.id == avatar.modelId }?.let { model ->
+                        val entry = model.entry.ifBlank { "ysm.json" }
+                        val path = entry.split('/').joinToString("/") { Uri.encode(it) }
+                        put("model", "https://iris.local/studio-models/${model.id}/$path")
+                    }
+                }
+            }
+        }
         putJsonObject("stats") {
             put("character", character?.card?.charName ?: "Agent")
             put("workspace", workspace?.name ?: "未选择工作区")
@@ -242,7 +274,7 @@ fun CompositeSpaceScreen(
             ),
             onOpenConversation = viewModel::openConversation,
             onEnterWork = { viewModel.selectSpace(Space.WORK) },
-            onOpenSettings = onOpenSettings,
+            onOpenSettings = onOpenStudioSettings,
             modifier = Modifier.align(Alignment.BottomCenter),
         )
     }
@@ -424,6 +456,12 @@ private fun statsFor(
         StudioStat("图书馆", "$knowledgeCount 份知识"),
         StudioStat("工地", "$fileCount 个文件"),
         StudioStat("角色", "$characters 位"),
+    )
+
+    StudioPlace.HOME -> listOf(
+        StudioStat("居民", "$characters 位"),
+        StudioStat("会话", "$conversations 段"),
+        StudioStat("记忆", "$memoryCount 条"),
     )
 
     StudioPlace.LIBRARY -> listOf(

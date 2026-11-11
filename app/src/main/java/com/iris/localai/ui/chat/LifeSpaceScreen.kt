@@ -855,33 +855,33 @@ private fun StageBase(scene: SceneConfig?) {
         when (scene.baseStyle) {
             StageBaseStyle.ROUND -> drawOval(
                 color = base.copy(alpha = 0.38f),
-                topLeft = Offset(centerX - 110f, baseY - 18f),
-                size = Size(220f, 36f),
+                topLeft = Offset(centerX - 275f, baseY - 45f),
+                size = Size(550f, 90f),
             )
             StageBaseStyle.GRID -> {
                 drawOval(
                     color = base.copy(alpha = 0.30f),
-                    topLeft = Offset(centerX - 110f, baseY - 24f),
-                    size = Size(220f, 48f),
+                    topLeft = Offset(centerX - 275f, baseY - 60f),
+                    size = Size(550f, 120f),
                     style = Stroke(width = 2f),
                 )
                 for (i in -2..2) {
                     drawLine(
                         color = base.copy(alpha = 0.22f),
-                        start = Offset(centerX + i * 38f, baseY - 20f),
-                        end = Offset(centerX + i * 52f, baseY + 20f),
+                        start = Offset(centerX + i * 95f, baseY - 50f),
+                        end = Offset(centerX + i * 130f, baseY + 50f),
                         strokeWidth = 1.5f,
                     )
                 }
             }
             StageBaseStyle.GLOW -> drawCircle(
                 color = base.copy(alpha = 0.18f),
-                radius = 92f,
+                radius = 230f,
                 center = Offset(centerX, baseY),
             )
             StageBaseStyle.TEXTURE -> {
-                val width = 260f
-                val height = 64f
+                val width = 650f
+                val height = 160f
                 val left = centerX - width / 2f
                 val top = baseY - height / 2f
                 if (texture != null) {

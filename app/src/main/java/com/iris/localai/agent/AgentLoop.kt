@@ -254,6 +254,15 @@ class AgentLoop(
                 appendLine("文件操作建议：先用 list_files / search_files 定位，再用 read_file 确认原文；" +
                     "局部修改用 edit_file，整文件重写用 write_file。")
             }
+            if (availableTools.any { it.name == "device_ui" }) {
+                appendLine(
+                    "操作空间流程：先用 device_ui 读取当前界面（主屏或虚拟屏）的控件树；device_screenshot 只返回文件路径，" +
+                        "不能用来读取界面文字或价格。device_ui 返回 mode=ocr 时，用 lines 里的 text 判断内容，用 cx/cy 调 device_tap 点击。" +
+                        "优先用 device_tap_text 按文字/描述点按，找不到目标时用 device_scroll 滚动查找；" +
+                        "每次只做一个动作，操作后用 device_wait_text 或 device_ui 校验结果；不要连续盲点坐标，也不要一次调用多个操作工具。" +
+                        "若 device_ui 同时没有控件树和 OCR 文字，先提醒用户检查无障碍/截图权限。",
+                )
+            }
         }
         if (planFirst) {
             appendLine("调用工具前，先用一句话说明你打算做什么。")

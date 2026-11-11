@@ -6,11 +6,29 @@ import com.iris.localai.agent.ConversationStore
 import com.iris.localai.agent.ToolRegistry
 import com.iris.localai.agent.tools.DeviceBackTool
 import com.iris.localai.agent.tools.DeviceHomeTool
+import com.iris.localai.agent.tools.DeviceEnterTool
 import com.iris.localai.agent.tools.DeviceInputTextTool
+import com.iris.localai.agent.tools.DeviceLongPressTool
+import com.iris.localai.agent.tools.DeviceNotificationsTool
 import com.iris.localai.agent.tools.DeviceOpenAppTool
+import com.iris.localai.agent.tools.DeviceRecentsTool
 import com.iris.localai.agent.tools.DeviceScreenshotTool
+import com.iris.localai.agent.tools.DeviceScrollTool
 import com.iris.localai.agent.tools.DeviceSwipeTool
+import com.iris.localai.agent.tools.DeviceTapTextTool
 import com.iris.localai.agent.tools.DeviceTapTool
+import com.iris.localai.agent.tools.DeviceUiTool
+import com.iris.localai.agent.tools.DeviceWaitTextTool
+import com.iris.localai.agent.tools.BrowserBackTool
+import com.iris.localai.agent.tools.BrowserClickTool
+import com.iris.localai.agent.tools.BrowserInputTool
+import com.iris.localai.agent.tools.BrowserOpenTool
+import com.iris.localai.agent.tools.BrowserNavigateTool
+import com.iris.localai.agent.tools.BrowserReadTool
+import com.iris.localai.agent.tools.BrowserScreenshotTool
+import com.iris.localai.agent.tools.BrowserScrollTool
+import com.iris.localai.agent.tools.BrowserSnapshotTool
+import com.iris.localai.agent.tools.BrowserWaitTool
 import com.iris.localai.agent.tools.CurrentTimeTool
 import com.iris.localai.agent.tools.DeviceInfoTool
 import com.iris.localai.agent.tools.EditFileTool
@@ -26,6 +44,7 @@ import com.iris.localai.agent.tools.SearchFilesTool
 import com.iris.localai.agent.tools.UseSkillTool
 import com.iris.localai.agent.tools.WorkspaceTool
 import com.iris.localai.agent.tools.WriteFileTool
+import com.iris.localai.browser.BrowserController
 import com.iris.localai.character.CharacterCardStore
 import com.iris.localai.code.CodeSettingsStore
 import com.iris.localai.code.ShellTool
@@ -43,6 +62,9 @@ import com.iris.localai.engine.EngineManager
 import com.iris.localai.engine.InferenceEngine
 import com.iris.localai.engine.OpenAiCompatibleEngine
 import com.iris.localai.engine.StubEngine
+import com.iris.localai.integration.BotMessageRouter
+import com.iris.localai.integration.IntegrationManager
+import com.iris.localai.integration.IntegrationStore
 import com.iris.localai.engine.llama.LlamaEngine
 import com.iris.localai.lorebook.WorldBookStore
 import com.iris.localai.mcp.McpConnectionManager
@@ -68,6 +90,8 @@ import com.iris.localai.plugin.PluginRuntime
 import com.iris.localai.plugin.PluginStore
 import com.iris.localai.plugin.PluginToolInstaller
 import com.iris.localai.scene.SceneStore
+import com.iris.localai.scene.StudioAvatarStore
+import com.iris.localai.scene.StudioModelStore
 import com.iris.localai.skill.SkillStore
 import com.iris.localai.storage.AppStorage
 import com.iris.localai.server.ApiService
@@ -112,6 +136,8 @@ class AppGraph(
         providerProvider = { profile -> models.providerFor(profile, ModelRole.EMBEDDING) },
     )
     val scenes = SceneStore(context, storage)
+    val studioAvatars = StudioAvatarStore(context)
+    val studioModels = StudioModelStore(context, storage)
     val skills = SkillStore(context)
     val code = CodeSettingsStore(context)
     val workspaces = WorkspaceStore(context)
@@ -153,6 +179,8 @@ class AppGraph(
     val memoryAutoCapture = MemoryAutoCapture(context, memory, conversations, engines, settings)
     val mcp = McpStore(context, storage)
     val toolClips = HastMotionStore.get(context)
+    val integrationStore = IntegrationStore(context)
+    val browser = BrowserController(context) { integrationStore.settings.value.browser }
     val tools = ToolRegistry().apply {
         register(CurrentTimeTool())
         register(DeviceInfoTool())
@@ -176,6 +204,24 @@ class AppGraph(
         register(DeviceHomeTool(deviceActions))
         register(DeviceInputTextTool(deviceActions))
         register(DeviceScreenshotTool(deviceActions))
+        register(DeviceUiTool(deviceActions))
+        register(DeviceTapTextTool(deviceActions))
+        register(DeviceScrollTool(deviceActions))
+        register(DeviceWaitTextTool(deviceActions))
+        register(DeviceRecentsTool(deviceActions))
+        register(DeviceNotificationsTool(deviceActions))
+        register(DeviceLongPressTool(deviceActions))
+        register(DeviceEnterTool(deviceActions))
+        register(BrowserOpenTool(browser))
+        register(BrowserReadTool(browser))
+        register(BrowserSnapshotTool(browser))
+        register(BrowserClickTool(browser))
+        register(BrowserInputTool(browser))
+        register(BrowserScrollTool(browser))
+        register(BrowserWaitTool(browser))
+        register(BrowserNavigateTool(browser))
+        register(BrowserBackTool(browser))
+        register(BrowserScreenshotTool(browser))
     }
     val mcpConnections = McpConnectionManager(
         registry = tools,
@@ -213,6 +259,10 @@ class AppGraph(
         installer.sync()
     }
     val agent = AgentLoop(engines, tools, pluginRuntime = pluginRuntime)
+    val integrations = IntegrationManager(
+        store = integrationStore,
+        router = BotMessageRouter(agent, conversations, settings, skills),
+    )
     val api = ApiService(engines, settings, models) {
         val current = settings.current
         val profile = models.resolve(

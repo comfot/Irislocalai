@@ -86,6 +86,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.agent.AgentStep
+import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
 import com.iris.localai.data.OperationSurfaceMode
 import com.iris.localai.permission.DevicePermissionState
@@ -93,9 +94,12 @@ import com.iris.localai.permission.OperationChannel
 import kotlinx.coroutines.delay
 
 private val quickActions = listOf(
+    "查看当前界面",
     "打开设置",
     "返回上一页",
+    "向下滚动",
     "查看通知",
+    "最近任务",
     "截屏",
 )
 
@@ -141,6 +145,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
     }
 
     val steps = messages.flatMap { it.steps }
+    val lastReply = messages.lastOrNull { it.role == ChatRole.ASSISTANT && it.text.isNotBlank() }
     val backgroundMode = settings.operateBackgroundMode
     val shizukuMode = settings.operateShizukuMode
     val backgroundBlocked = backgroundMode && !permissions.shizukuReady
@@ -159,6 +164,24 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                     backgroundBlocked = backgroundBlocked,
                     onRefresh = viewModel::refreshPermissions,
                 )
+            }
+            if (lastReply != null) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 1.dp,
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text("最近回复", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = lastReply.text.take(1000),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
             if (virtualDisplayRunning && settings.operationSurfaceMode == OperationSurfaceMode.ARIES_VIRTUAL_DISPLAY) {
                 item {
@@ -190,7 +213,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                                         .background(Color.Black, RoundedCornerShape(12.dp)),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    Text("等待虚拟屏画面…", color = Color.White)
+                                    Text("等待虚拟屏首帧…", color = Color.White)
                                 }
                             } else {
                                 Image(
@@ -204,7 +227,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                                 )
                             }
                             Text(
-                                text = "画面每 200ms 刷新；虚拟屏内的应用不会占用主屏。",
+                                text = "画面每 200ms 刷新；若长时间无画面，请先在虚拟屏打开一个应用（测试按钮会自动打开设置）。",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -426,6 +449,24 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                 }
             }
             item {
+                SectionTitle("操作技能")
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 1.dp,
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text("观察 → 定位 → 操作 → 校验", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = "Agent 会先读取当前界面的控件树，再用文字/描述定位并点击；列表目标会用滚动查找，" +
+                                "操作后等待文字或重新读取界面确认结果。优先文字定位，减少盲点坐标。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            item {
                 SectionTitle("常用指令")
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(quickActions) { action ->
@@ -448,7 +489,8 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
             }
             item {
                 Text(
-                    text = "操作工具已接入：优先使用 Shizuku，失败回退无障碍；执行记录来自 Agent 工具步骤。虚拟屏隔离与输入结果校验尚未完成。",
+                    text = "操作通道：Shizuku 与无障碍互为回退；已支持控件树读取、按文字点击、滚动查找与等待校验。" +
+                        "虚拟屏文本输入仍建议切回普通屏幕。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 2.dp),

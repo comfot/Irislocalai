@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -227,6 +228,7 @@ private fun ControlFoundation(
     }
 
     if (kind == Model3DKind.MMD) {
+        MmdRenderQualityCard(settings, viewModel)
         MmdControlCard(localMotions, onToast)
     } else {
         VrmControlCard(
@@ -285,21 +287,6 @@ private fun ControlFoundation(
         )
     }
 
-    if (kind == Model3DKind.MMD) {
-        VrmControlCard(
-            settings = settings,
-            viewModel = viewModel,
-            hastSkills = hastSkills,
-            hastStore = hastStore,
-            vrmaAssets = vrmaAssets,
-            vrmaStore = vrmaStore,
-            motionBindings = motionBindings,
-            onHastSkills = onHastSkills,
-        )
-    } else {
-        MmdControlCard(localMotions, onToast)
-    }
-
     ModelPositionCard(active, graph)
     SettingsCard(title = "使用说明") {
         Text(
@@ -323,6 +310,32 @@ private fun ControlFoundation(
                     Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/sola1039/HAST-SEC")),
                 )
             }) { Text("HAST-SEC") }
+        }
+    }
+}
+
+@Composable
+private fun MmdRenderQualityCard(settings: AppSettings, viewModel: SettingsViewModel) {
+    SettingsCard(title = "MMD 渲染清晰度") {
+        Text(
+            text = "按屏幕像素比渲染舞台模型，高清档位可减轻放大带来的模糊，但会增加 GPU 负载；" +
+                "帧率持续偏低时会自动降到当前档位的 70%。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(
+                0.75f to "省电",
+                1f to "标准",
+                1.25f to "高清",
+                1.5f to "超清",
+            ).forEach { (scale, label) ->
+                FilterChip(
+                    selected = settings.mmdRenderScale == scale,
+                    onClick = { viewModel.update { it.copy(mmdRenderScale = scale) } },
+                    label = { Text("$label ${(scale * 100).toInt()}%") },
+                )
+            }
         }
     }
 }

@@ -606,7 +606,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val skillBlock = graph.skills.promptBlock(
                     query = text,
-                    forAgent = settings.space == Space.WORK || settings.space == Space.COMPOSITE,
+                    forAgent = settings.space == Space.WORK || settings.space == Space.COMPOSITE ||
+                        settings.space == Space.OPERATE,
                 )
                 val injectMemory = if (settings.space == Space.WORK || settings.space == Space.COMPOSITE) {
                     settings.memoryInjectAgent
@@ -1059,7 +1060,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ids = ids + setOf("shell", "workspace")
         }
         val inOperateSpace = settings.space == Space.OPERATE || settings.space == Space.COMPOSITE
-        if (!inOperateSpace) ids = ids - com.iris.localai.agent.tools.DeviceToolNames.all
+        if (inOperateSpace) {
+            // 操作空间始终提供完整设备工具，避免新工具因旧设置未勾选而缺失。
+            ids = ids + com.iris.localai.agent.tools.DeviceToolNames.all
+        } else {
+            ids = ids - com.iris.localai.agent.tools.DeviceToolNames.all
+        }
         return ids
     }
 
@@ -1543,16 +1549,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             val metrics = getApplication<Application>().resources.displayMetrics
+            // 测试按钮总是用最新的 flags 重建，避免复用旧虚拟屏导致预览仍然空白。
+            graph.virtualDisplay.stop()
             val result = graph.virtualDisplay.start(
                 metrics.widthPixels,
                 metrics.heightPixels,
                 metrics.densityDpi,
             )
+            val opened = result.isSuccess && graph.virtualDisplay.launchApp("com.android.settings")
             withContext(Dispatchers.Main) {
                 Toast.makeText(
                     getApplication(),
                     result.fold(
-                        { "虚拟屏已启动：display $it" },
+                        { id ->
+                            if (opened) "虚拟屏已启动：display $id，已打开设置"
+                            else "虚拟屏已启动：display $id，请手动打开一个应用"
+                        },
                         { "虚拟屏启动失败：${it.message ?: "未知错误"}" },
                     ),
                     Toast.LENGTH_LONG,

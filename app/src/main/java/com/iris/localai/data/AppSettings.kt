@@ -74,6 +74,8 @@ data class AppSettings(
     val assetToken: String = "",
     val idleMotionAsset: String = "",
     val danceBgmEnabled: Boolean = true,
+    /** MMD 渲染精度：后备缓冲按屏幕 DPR × 该倍率渲染。 */
+    val mmdRenderScale: Float = 1f,
 
     // 模型与加载
     val autoLoadLastModel: Boolean = true,
@@ -171,6 +173,16 @@ data class AppSettings(
             "memory",
             "motion_control",
             "expression_control",
+            "browser_open",
+            "browser_read",
+            "browser_snapshot",
+            "browser_click",
+            "browser_input",
+            "browser_scroll",
+            "browser_wait",
+            "browser_navigate",
+            "browser_back",
+            "browser_screenshot",
         )
 
         /** 首次升级时补默认开启的工具目录，避免旧安装一直停留在三五个工具。 */
@@ -186,6 +198,16 @@ data class AppSettings(
             "memory",
             "motion_control",
             "expression_control",
+            "browser_open",
+            "browser_read",
+            "browser_snapshot",
+            "browser_click",
+            "browser_input",
+            "browser_scroll",
+            "browser_wait",
+            "browser_navigate",
+            "browser_back",
+            "browser_screenshot",
         )
     }
 }

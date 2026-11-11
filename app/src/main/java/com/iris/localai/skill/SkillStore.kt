@@ -50,6 +50,31 @@ class SkillStore(context: Context) {
         if (root.listFiles { file -> file.isDirectory }?.isEmpty() != false) seed()
         refresh()
         upgradeKnowledgeSkill()
+        ensureOperationSkill()
+    }
+
+    /** 首次启动或升级后补充操作空间技能；用户删除后不再重建。 */
+    private fun ensureOperationSkill() {
+        if (prefs.getBoolean(KEY_OPERATION_SKILL, false)) return
+        prefs.edit().putBoolean(KEY_OPERATION_SKILL, true).apply()
+        if (_skills.value.any { it.id == "phone-control" }) return
+        save(
+            Skill(
+                id = "phone-control",
+                name = "手机操作",
+                description = "观察界面、按文字定位、滚动查找并校验手机操作",
+                instructions = "## 手机操作\n\n" +
+                    "1. 先用 device_ui 读取当前界面（package、nodes 的 text/desc、bounds、clickable/scrollable）。\n" +
+                    "2. 优先用 device_tap_text 按文字/描述点击；同文多处时用 match_index。\n" +
+                    "3. 目标不在屏幕内时用 device_scroll（down/up），再用 device_ui 确认。\n" +
+                    "4. 输入时先点击输入框，再 device_input_text；提交用 device_enter。\n" +
+                    "5. 每次只做一个动作；操作后用 device_wait_text 或 device_ui 校验。\n" +
+                    "6. 不要连续盲点坐标；支付、删除、卸载等不可逆操作先询问用户。",
+                triggers = listOf("操作手机", "点击", "滑动", "滚动", "打开应用", "打开设置", "通知", "最近任务"),
+                enabled = true,
+                alwaysOn = true,
+            ),
+        )
     }
 
     private fun upgradeKnowledgeSkill() {
@@ -293,5 +318,6 @@ class SkillStore(context: Context) {
         const val KEY_MAX = "max_chars"
         const val KEY_CHAT = "inject_chat"
         const val KEY_AGENT = "inject_agent"
+        const val KEY_OPERATION_SKILL = "operation_skill_seeded"
     }
 }

@@ -8,7 +8,7 @@
   const boot = document.getElementById('boot')
   let firstFrame = true
 
-  const PLACES = ['studio', 'campus', 'library', 'site', 'duty', 'desk']
+  const PLACES = ['studio', 'home', 'campus', 'library', 'site', 'duty', 'desk']
   const FRAME_MS = 1000 / 30
   const FRAME_MS_ACTIVE = 1000 / 60
 
@@ -41,16 +41,68 @@
   let animateFns = []
   let pulseMats = []
   let randomSeed = 7
+  // 人物行走范围使用当前场所的局部坐标，在 addPerson 时固化到每个人物。
+  let walkArea = { minX: -4, maxX: 4, minZ: -3, maxZ: 3 }
+  const PERSON_RADIUS = 0.26
+  let obstacles = []
+
+  function addObstacle(minX, maxX, minZ, maxZ) {
+    obstacles.push({ minX, maxX, minZ, maxZ })
+  }
+
+  function addObstacleAt(x, z, width, depth) {
+    addObstacle(x - width / 2, x + width / 2, z - depth / 2, z + depth / 2)
+  }
+
+  function isObstacleAt(x, z, radius = PERSON_RADIUS) {
+    if (x < walkArea.minX || x > walkArea.maxX || z < walkArea.minZ || z > walkArea.maxZ) return true
+    for (const box of obstacles) {
+      if (x + radius > box.minX && x - radius < box.maxX && z + radius > box.minZ && z - radius < box.maxZ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  function pickWalkTarget(walk) {
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const x = walk.minX + rand() * Math.max(0.1, walk.maxX - walk.minX)
+      const z = walk.minZ + rand() * Math.max(0.1, walk.maxZ - walk.minZ)
+      if (!isObstacleAt(x, z, PERSON_RADIUS + 0.04)) {
+        walk.targetX = x
+        walk.targetZ = z
+        return true
+      }
+    }
+    return false
+  }
+
+  function findFreeSpot(x, z) {
+    const clampX = Math.max(walkArea.minX, Math.min(walkArea.maxX, x))
+    const clampZ = Math.max(walkArea.minZ, Math.min(walkArea.maxZ, z))
+    if (!isObstacleAt(clampX, clampZ, PERSON_RADIUS + 0.04)) return { x: clampX, z: clampZ }
+    for (let radius = 0.3; radius <= 2.4; radius += 0.3) {
+      for (let i = 0; i < 12; i++) {
+        const angle = (i / 12) * Math.PI * 2
+        const nx = clampX + Math.cos(angle) * radius
+        const nz = clampZ + Math.sin(angle) * radius
+        if (!isObstacleAt(nx, nz, PERSON_RADIUS + 0.04)) return { x: nx, z: nz }
+      }
+    }
+    return { x: clampX, z: clampZ }
+  }
 
   let state = {
     place: 'studio',
     accent: '#0D84FF',
     dark: false,
     stats: {},
+    avatars: [],
   }
 
   const frames = {
     studio: { x: 0, y: 0.9, z: 0, radius: 21, polar: 0.94, azimuth: 0.6 },
+    home: { x: 0, y: 1.0, z: 0, radius: 18, polar: 0.95, azimuth: 0.55 },
     campus: { x: 0, y: 0.6, z: 0, radius: 50, polar: 0.93, azimuth: 0.62 },
     library: { x: 0, y: 0.9, z: 0, radius: 23, polar: 0.96, azimuth: 0.58 },
     site: { x: 0, y: 0.6, z: 0, radius: 30, polar: 0.94, azimuth: 0.6 },
@@ -251,10 +303,618 @@
     root = null
   }
 
+  const ysmAssets = new Map()
+  const YSM_TARGET_HEIGHT = 1.55
+  const DEG = Math.PI / 180
+
+  async function fetchYsmJson(url) {
+    const response = await fetch(url)
+    if (!response.ok) throw new Error('请求失败 ' + response.status)
+    return response.json()
+  }
+
+  function resolveYsmAsset(base, ref) {
+    if (!ref) return ''
+    const value = String(ref).replace(/\\/g, '/')
+    if (/^https?:\/\//i.test(value)) return value
+    return base + value.replace(/^\.?\//, '')
+  }
+
+  function pickYsmTexture(texture) {
+    const first = Array.isArray(texture) ? texture[0] : texture
+    if (typeof first === 'string') return first
+    if (first && typeof first === 'object') {
+      return first.uv || first.path || first.texture || first.default || ''
+    }
+    return ''
+  }
+
+  function parseBedrockGeometry(raw) {
+    const holder = raw && raw['minecraft:geometry']
+    const geometry = Array.isArray(holder) ? holder[0] : (holder || raw || {})
+    const description = geometry.description || {}
+    const source = Array.isArray(geometry.bones) ? geometry.bones : []
+    const hidden = new Set()
+    const isHidden = (name) => /colou?rpalette/i.test(name) || /^background$/i.test(name)
+    for (const bone of source) {
+      if (isHidden(bone.name || '')) hidden.add(bone.name)
+    }
+    // 隐藏的辅助骨骼可能还有子骨骼，一并排除。
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const bone of source) {
+        if (hidden.has(bone.name)) continue
+        if (hidden.has(bone.parent)) {
+          hidden.add(bone.name)
+          changed = true
+        }
+      }
+    }
+    return {
+      textureWidth: Number(description.texture_width) || 64,
+      textureHeight: Number(description.texture_height) || 64,
+      bones: source.filter((bone) => !hidden.has(bone.name)),
+    }
+  }
+
+  function parseYsmChannel(channel) {
+    if (!channel || typeof channel !== 'object' || Array.isArray(channel)) return null
+    const frames = []
+    for (const [key, value] of Object.entries(channel)) {
+      const time = Number(key)
+      if (!Number.isFinite(time)) continue
+      const data = Array.isArray(value)
+        ? value
+        : value && (Array.isArray(value.post) ? value.post : value.pre)
+      if (!Array.isArray(data) || data.length < 3) continue
+      if (!data.slice(0, 3).every((item) => typeof item === 'number' && Number.isFinite(item))) continue
+      frames.push({ time, value: [data[0], data[1], data[2]] })
+    }
+    frames.sort((a, b) => a.time - b.time)
+    return frames.length ? frames : null
+  }
+
+  function parseYsmAnimation(name, raw) {
+    const bones = {}
+    const source = raw && raw.bones
+    if (source && typeof source === 'object') {
+      for (const [boneName, channels] of Object.entries(source)) {
+        if (!channels || typeof channels !== 'object') continue
+        bones[boneName] = {
+          rotation: parseYsmChannel(channels.rotation),
+          position: parseYsmChannel(channels.position),
+          scale: parseYsmChannel(channels.scale),
+        }
+      }
+    }
+    const times = []
+    for (const channel of Object.values(bones)) {
+      for (const key of ['rotation', 'position', 'scale']) {
+        const frames = channel[key]
+        if (frames && frames.length) times.push(frames[frames.length - 1].time)
+      }
+    }
+    return {
+      name,
+      loop: raw && raw.loop !== false,
+      length: Math.max(0.05, Number(raw && raw.animation_length) || Math.max(0, ...times) || 1),
+      bones,
+    }
+  }
+
+  async function loadYsmAnimations(animationRef, readJson) {
+    const refs = []
+    if (typeof animationRef === 'string') {
+      refs.push(animationRef)
+    } else if (Array.isArray(animationRef)) {
+      for (const item of animationRef) {
+        if (typeof item === 'string') refs.push(item)
+        else if (item && typeof item === 'object') {
+          for (const value of Object.values(item)) {
+            if (typeof value === 'string') refs.push(value)
+          }
+        }
+      }
+    } else if (animationRef && typeof animationRef === 'object') {
+      for (const key of ['main', 'extra', 'carryon', 'tac']) {
+        if (typeof animationRef[key] === 'string') refs.push(animationRef[key])
+      }
+      for (const value of Object.values(animationRef)) {
+        if (typeof value === 'string' && !refs.includes(value)) refs.push(value)
+      }
+    }
+    const merged = {}
+    for (const ref of refs) {
+      try {
+        const raw = await readJson(ref)
+        const animations = (raw && raw.animations) || {}
+        for (const [name, value] of Object.entries(animations)) {
+          if (!merged[name]) merged[name] = parseYsmAnimation(name, value)
+        }
+      } catch (error) {
+        console.warn('[studio] YSM animation skipped', ref, error)
+      }
+    }
+    const entries = Object.values(merged)
+    const findByName = (keywords) => entries.find((item) => {
+      const name = item.name.toLowerCase()
+      return keywords.some((keyword) => name.includes(keyword))
+    })
+    return {
+      idle: findByName(['idle', 'wait', 'rest']) || entries[0] || null,
+      walk: findByName(['walk', 'move', 'run']) || null,
+      all: entries,
+    }
+  }
+
+  const YSM_WASM_BASE = 'https://iris.local/studio-assets/ysm/'
+  let ysmParserPromise = null
+  let ysmParseCounter = 0
+
+  function loadYsmParser() {
+    if (ysmParserPromise) return ysmParserPromise
+    ysmParserPromise = (async () => {
+      if (!window.YSMParserModule) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+          script.src = YSM_WASM_BASE + 'YSMParser.js'
+          script.async = true
+          script.onload = () => resolve()
+          script.onerror = () => reject(new Error('YSMParser 脚本加载失败'))
+          document.head.appendChild(script)
+        })
+      }
+      if (!window.YSMParserModule) throw new Error('YSMParser 模块未导出')
+      return window.YSMParserModule({
+        locateFile: (path) => YSM_WASM_BASE + path,
+        print: () => {},
+        printErr: (message) => console.warn('[YSM]', message),
+      })
+    })().catch((error) => {
+      ysmParserPromise = null
+      throw error
+    })
+    return ysmParserPromise
+  }
+
+  function readYsmMemfs(module, root) {
+    const files = []
+    const walk = (dir) => {
+      for (const name of module.FS.readdir(dir)) {
+        if (name === '.' || name === '..') continue
+        const full = dir + '/' + name
+        const stat = module.FS.stat(full)
+        if (module.FS.isDir(stat.mode)) walk(full)
+        else files.push({ path: full.slice(root.length + 1), data: module.FS.readFile(full) })
+      }
+    }
+    walk(root)
+    return files
+  }
+
+  function removeYsmMemfs(module, root) {
+    try {
+      for (const name of module.FS.readdir(root)) {
+        if (name === '.' || name === '..') continue
+        const full = root + '/' + name
+        const stat = module.FS.stat(full)
+        if (module.FS.isDir(stat.mode)) removeYsmMemfs(module, full)
+        else module.FS.unlink(full)
+      }
+      module.FS.rmdir(root)
+    } catch (_) { }
+  }
+
+  async function parseYsmArchive(bytes) {
+    const module = await loadYsmParser()
+    const id = ++ysmParseCounter
+    const outputDir = '/ysm/out-' + id
+    const errorSize = 2048
+    module.FS.mkdirTree(outputDir)
+    const dataPtr = module._malloc(bytes.byteLength)
+    const errorPtr = module._malloc(errorSize)
+    try {
+      if (module.writeArrayToMemory) module.writeArrayToMemory(bytes, dataPtr)
+      else module.HEAPU8.set(bytes, dataPtr)
+      // 第 4 个参数传 0：让 YSMParser 反推为 Blockbench 工程（cube 几何），
+      // 复用现有的立方体/UV 渲染；V3 raw mesh 模式暂不使用。
+      const code = module.ccall(
+        'ysm_parse_bytes',
+        'number',
+        ['number', 'number', 'string', 'number', 'number', 'number'],
+        [dataPtr, bytes.byteLength, outputDir, 0, errorPtr, errorSize],
+      )
+      if (code !== 0) {
+        throw new Error(module.UTF8ToString(errorPtr, errorSize) || 'YSM 解密失败')
+      }
+      return readYsmMemfs(module, outputDir)
+    } finally {
+      module._free(dataPtr)
+      module._free(errorPtr)
+      removeYsmMemfs(module, outputDir)
+    }
+  }
+
+  function decodeYsmText(data) {
+    return new TextDecoder('utf-8').decode(data)
+  }
+
+  function normalizeYsmPath(value) {
+    return String(value || '').replace(/\\/g, '/').replace(/^\.?\//, '')
+  }
+
+  async function loadYsmTexture(url) {
+    const texture = await new THREE.TextureLoader().loadAsync(url)
+    texture.magFilter = THREE.NearestFilter
+    texture.minFilter = THREE.NearestMipmapLinearFilter
+    texture.flipY = false
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.needsUpdate = true
+    return texture
+  }
+
+  async function loadYsmProject(manifest, readJson, readTexture) {
+    const player = (manifest && manifest.files && manifest.files.player) || {}
+    const modelInfo = player.model || {}
+    const mainRef = typeof modelInfo.main === 'string'
+      ? modelInfo.main
+      : (modelInfo.main && (modelInfo.main.default || modelInfo.main.main)) || ''
+    if (!mainRef) throw new Error('ysm.json 缺少 model.main')
+    const geometry = parseBedrockGeometry(await readJson(mainRef))
+    const textureRef = pickYsmTexture(player.texture)
+    let texture = null
+    if (textureRef) {
+      try {
+        texture = await readTexture(textureRef)
+      } catch (error) {
+        console.warn('[studio] YSM texture failed', error)
+      }
+    }
+    const animations = await loadYsmAnimations(player.animation, readJson)
+    return { geometry, texture, animations }
+  }
+
+  async function loadYsmFromUrl(url) {
+    const base = url.substring(0, url.lastIndexOf('/') + 1)
+    const manifest = await fetchYsmJson(url)
+    const asset = await loadYsmProject(
+      manifest,
+      (ref) => fetchYsmJson(resolveYsmAsset(base, ref)),
+      (ref) => loadYsmTexture(resolveYsmAsset(base, ref)),
+    )
+    return { ...asset, mirrorX: false }
+  }
+
+  async function loadYsmFromFiles(files) {
+    const map = new Map()
+    for (const file of files) {
+      map.set(normalizeYsmPath(file.path), file.data)
+    }
+    const manifests = [...map.keys()].filter((path) => /(^|\/)ysm\.json$/i.test(path))
+    manifests.sort((a, b) => a.split('/').length - b.split('/').length)
+    const manifestPath = manifests[0]
+    if (!manifestPath) throw new Error('解密结果缺少 ysm.json')
+    const base = manifestPath.slice(0, manifestPath.lastIndexOf('/') + 1)
+    const manifest = JSON.parse(decodeYsmText(map.get(manifestPath)))
+    const readPath = (ref) => normalizeYsmPath(base + ref)
+    const asset = await loadYsmProject(
+      manifest,
+      async (ref) => {
+        const data = map.get(readPath(ref))
+        if (!data) throw new Error('缺少文件 ' + ref)
+        return JSON.parse(decodeYsmText(data))
+      },
+      async (ref) => {
+        const data = map.get(readPath(ref))
+        if (!data) throw new Error('缺少贴图 ' + ref)
+        const url = URL.createObjectURL(new Blob([data], { type: 'image/png' }))
+        const texture = await loadYsmTexture(url)
+        setTimeout(() => URL.revokeObjectURL(url), 5000)
+        return texture
+      },
+    )
+    // YSMParser 输出的是 Blockbench 坐标，需要按 YSM 的镜像 X 规则转换。
+    return { ...asset, mirrorX: true }
+  }
+
+  async function loadYsm(url) {
+    if (ysmAssets.has(url)) return ysmAssets.get(url)
+    const task = (async () => {
+      if (/\.ysm(?:$|\?)/i.test(url)) {
+        const response = await fetch(url)
+        if (!response.ok) throw new Error('模型请求失败 ' + response.status)
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        return loadYsmFromFiles(await parseYsmArchive(bytes))
+      }
+      return loadYsmFromUrl(url)
+    })()
+    ysmAssets.set(url, task)
+    try {
+      return await task
+    } catch (error) {
+      ysmAssets.delete(url)
+      throw error
+    }
+  }
+
+  function applyYsmBoxUv(geometry, uv, size, textureWidth, textureHeight, mirrorU) {
+    const attributes = geometry.attributes.uv
+    if (!attributes) return
+    const depth = Math.max(0.01, size[2])
+    const width = Math.max(0.01, size[0])
+    const height = Math.max(0.01, size[1])
+    const baseU = Array.isArray(uv) ? Number(uv[0]) || 0 : 0
+    const baseV = Array.isArray(uv) ? Number(uv[1]) || 0 : 0
+    const rects = {
+      east: [baseU, baseV + depth, depth, height],
+      west: [baseU + depth + width, baseV + depth, depth, height],
+      up: [baseU + depth, baseV, width, depth],
+      down: [baseU + depth + width, baseV, width, depth],
+      south: [baseU + depth + width + depth, baseV + depth, width, height],
+      north: [baseU + depth, baseV + depth, width, height],
+    }
+    const faces = [
+      ['east', 0],
+      ['west', 1],
+      ['up', 2],
+      ['down', 3],
+      ['south', 4],
+      ['north', 5],
+    ]
+    for (const [key, face] of faces) {
+      let rect = rects[key]
+      if (uv && !Array.isArray(uv) && uv[key]) {
+        const perFace = uv[key]
+        const offset = Array.isArray(perFace.uv) ? perFace.uv : [0, 0]
+        const faceSize = Array.isArray(perFace.uv_size) ? perFace.uv_size : [rect[2], rect[3]]
+        rect = [Number(offset[0]) || 0, Number(offset[1]) || 0, faceSize[0], faceSize[1]]
+      }
+      const u0 = rect[0] / textureWidth
+      const u1 = (rect[0] + rect[2]) / textureWidth
+      const v0 = rect[1] / textureHeight
+      const v1 = (rect[1] + rect[3]) / textureHeight
+      const corners = mirrorU
+        ? [[u1, v0], [u0, v0], [u1, v1], [u0, v1]]
+        : [[u0, v0], [u1, v0], [u0, v1], [u1, v1]]
+      for (let i = 0; i < 4; i++) {
+        attributes.setXY(face * 4 + i, corners[i][0], corners[i][1])
+      }
+    }
+    attributes.needsUpdate = true
+  }
+
+  function buildYsmCube(asset, cube) {
+    const size = Array.isArray(cube.size) ? cube.size : [0, 0, 0]
+    const inflate = cube.inflate
+    const ix = Array.isArray(inflate) ? Number(inflate[0]) || 0 : Number(inflate) || 0
+    const iy = Array.isArray(inflate) ? Number(inflate[1]) || 0 : Number(inflate) || 0
+    const iz = Array.isArray(inflate) ? Number(inflate[2]) || 0 : Number(inflate) || 0
+    const geometry = cube.__ysmGeometry || new THREE.BoxGeometry(
+      Math.max(0.01, size[0] + ix * 2),
+      Math.max(0.01, size[1] + iy * 2),
+      Math.max(0.01, size[2] + iz * 2),
+    )
+    if (!cube.__ysmGeometry) {
+      applyYsmBoxUv(
+        geometry,
+        cube.uv,
+        [size[0], size[1], size[2]],
+        asset.geometry.textureWidth,
+        asset.geometry.textureHeight,
+        asset.mirrorX,
+      )
+      cube.__ysmGeometry = geometry
+    }
+    if (!asset.material) {
+      asset.material = new THREE.MeshStandardMaterial({
+        map: asset.texture,
+        color: asset.texture ? 0xffffff : 0x9aa6b5,
+        transparent: false,
+        alphaTest: 0.5,
+        side: THREE.DoubleSide,
+        roughness: 0.9,
+        metalness: 0,
+      })
+    }
+    const mesh = new THREE.Mesh(geometry, asset.material)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    if (Array.isArray(cube.rotation)) {
+      const mirror = asset.mirrorX ? -1 : 1
+      mesh.rotation.order = 'ZYX'
+      mesh.rotation.set(
+        mirror * (Number(cube.rotation[0]) || 0) * DEG,
+        mirror * (Number(cube.rotation[1]) || 0) * DEG,
+        (Number(cube.rotation[2]) || 0) * DEG,
+      )
+    }
+    return mesh
+  }
+
+  function buildYsmInstance(asset) {
+    const mirrorX = !!asset.mirrorX
+    const root = new THREE.Group()
+    const inner = new THREE.Group()
+    root.add(inner)
+    const nodes = new Map()
+
+    let minX = Infinity
+    let minY = Infinity
+    let minZ = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    let maxZ = -Infinity
+    for (const bone of asset.geometry.bones) {
+      for (const cube of bone.cubes || []) {
+        const origin = Array.isArray(cube.origin) ? cube.origin : [0, 0, 0]
+        const size = Array.isArray(cube.size) ? cube.size : [0, 0, 0]
+        const inflate = cube.inflate
+        const ix = Array.isArray(inflate) ? Number(inflate[0]) || 0 : Number(inflate) || 0
+        const iy = Array.isArray(inflate) ? Number(inflate[1]) || 0 : Number(inflate) || 0
+        const iz = Array.isArray(inflate) ? Number(inflate[2]) || 0 : Number(inflate) || 0
+        minX = Math.min(minX, origin[0] - ix)
+        minY = Math.min(minY, origin[1] - iy)
+        minZ = Math.min(minZ, origin[2] - iz)
+        maxX = Math.max(maxX, origin[0] + size[0] + ix)
+        maxY = Math.max(maxY, origin[1] + size[1] + iy)
+        maxZ = Math.max(maxZ, origin[2] + size[2] + iz)
+      }
+    }
+    if (!Number.isFinite(minY)) {
+      minX = 0
+      minY = 0
+      minZ = 0
+      maxX = 8
+      maxY = 32
+      maxZ = 8
+    }
+    const centerX = mirrorX ? -(minX + maxX) / 2 : (minX + maxX) / 2
+    const centerZ = (minZ + maxZ) / 2
+    const heightPixels = Math.max(1, maxY - minY)
+    // YSM 模型可能按像素（1 unit = 1/16 米）或按米导出，不能硬编码 1/16；
+    // 一律按包围盒高度归一化到固定身高。
+    const scale = YSM_TARGET_HEIGHT / heightPixels
+    root.scale.setScalar(scale)
+    // 综合空间的小人约定面朝 +Z；YSM 模型镜像后正面朝 -Z，需要转 180°。
+    root.rotation.y = Math.PI
+    root.position.y = -minY * scale
+    inner.position.set(-centerX, 0, -centerZ)
+
+    for (const bone of asset.geometry.bones) {
+      const node = new THREE.Group()
+      node.name = bone.name || ''
+      node.rotation.order = 'ZYX'
+      const pivot = Array.isArray(bone.pivot) ? bone.pivot : [0, 0, 0]
+      node.position.set(mirrorX ? -pivot[0] : pivot[0], pivot[1], pivot[2])
+      const rotation = Array.isArray(bone.rotation) ? bone.rotation : [0, 0, 0]
+      node.rotation.set(
+        (mirrorX ? -1 : 1) * (Number(rotation[0]) || 0) * DEG,
+        (mirrorX ? -1 : 1) * (Number(rotation[1]) || 0) * DEG,
+        (Number(rotation[2]) || 0) * DEG,
+      )
+      nodes.set(node.name, { bone, node, parent: bone.parent, absPivot: node.position.clone() })
+    }
+    for (const item of nodes.values()) {
+      const parent = nodes.get(item.parent)
+      if (parent) {
+        item.node.position.copy(item.absPivot).sub(parent.absPivot)
+        parent.node.add(item.node)
+      } else {
+        inner.add(item.node)
+      }
+      const pivot = Array.isArray(item.bone.pivot) ? item.bone.pivot : [0, 0, 0]
+      for (const cube of item.bone.cubes || []) {
+        const mesh = buildYsmCube(asset, cube)
+        const origin = Array.isArray(cube.origin) ? cube.origin : [0, 0, 0]
+        const size = Array.isArray(cube.size) ? cube.size : [0, 0, 0]
+        const dx = origin[0] + size[0] / 2 - pivot[0]
+        mesh.position.set(
+          mirrorX ? -dx : dx,
+          origin[1] + size[1] / 2 - pivot[1],
+          origin[2] + size[2] / 2 - pivot[2],
+        )
+        item.node.add(mesh)
+      }
+    }
+    for (const item of nodes.values()) {
+      item.basePosition = item.node.position.clone()
+      item.baseRotation = item.node.rotation.clone()
+      item.baseScale = item.node.scale.clone()
+    }
+    // 部分 YSM 模型同时提供 Soc_（袜子/鞋）与 Emp_（空腿）两套腿部，
+    // 默认显隐靠 Molang 表达式控制；这里在有袜子模型时隐藏空腿，避免两套重叠。
+    const boneNames = new Set(asset.geometry.bones.map((bone) => bone.name || ''))
+    const hasSocks = Array.from(boneNames).some((name) => /^Soc_/i.test(name))
+    if (hasSocks) {
+      for (const item of nodes.values()) {
+        if (/^Emp_/i.test(item.node.name)) item.node.visible = false
+      }
+    }
+
+    function sample(frames, time) {
+      if (!frames || !frames.length) return null
+      if (time <= frames[0].time) return frames[0].value
+      const last = frames[frames.length - 1]
+      if (time >= last.time) return last.value
+      for (let i = 1; i < frames.length; i++) {
+        const current = frames[i]
+        if (time <= current.time) {
+          const previous = frames[i - 1]
+          const span = Math.max(0.0001, current.time - previous.time)
+          const k = (time - previous.time) / span
+          return [
+            previous.value[0] + (current.value[0] - previous.value[0]) * k,
+            previous.value[1] + (current.value[1] - previous.value[1]) * k,
+            previous.value[2] + (current.value[2] - previous.value[2]) * k,
+          ]
+        }
+      }
+      return last.value
+    }
+
+    let elapsed = 0
+    let action = asset.animations.idle
+    function play(next) {
+      if (!next || next === action) return
+      action = next
+      elapsed = 0
+    }
+    function update(dt, moving) {
+      elapsed += dt
+      const wanted = moving
+        ? (asset.animations.walk || asset.animations.idle)
+        : asset.animations.idle
+      play(wanted)
+      if (!action) return
+      const time = action.loop ? elapsed % action.length : Math.min(elapsed, action.length)
+      for (const [boneName, channel] of Object.entries(action.bones)) {
+        const item = nodes.get(boneName)
+        if (!item) continue
+        const rotation = sample(channel.rotation, time)
+        if (rotation) {
+          item.node.rotation.set(
+            (mirrorX ? -1 : 1) * rotation[0] * DEG,
+            (mirrorX ? -1 : 1) * rotation[1] * DEG,
+            rotation[2] * DEG,
+          )
+        }
+        const position = sample(channel.position, time)
+        if (position) {
+          item.node.position.set(
+            item.basePosition.x + (mirrorX ? -position[0] : position[0]),
+            item.basePosition.y + position[1],
+            item.basePosition.z + position[2],
+          )
+        }
+        const scaleValue = sample(channel.scale, time)
+        if (scaleValue) {
+          item.node.scale.set(scaleValue[0], scaleValue[1], scaleValue[2])
+        }
+      }
+    }
+    return { root, update, nodes, asset }
+  }
+
+  function attachYsm(person, url) {
+    loadYsm(url).then((asset) => {
+      if (!person.parent) return
+      const instance = buildYsmInstance(asset)
+      person.add(instance.root)
+      for (const child of person.children) {
+        if (child !== instance.root) child.visible = false
+      }
+      person.userData.ysm = instance
+    }).catch((error) => {
+      console.warn('[studio] YSM load failed', url, error)
+    })
+  }
+
   function addPerson(group, options) {
     const p = palette()
     const person = new THREE.Group()
-    person.position.set(options.x, options.y ?? 0, options.z)
+    const spot = findFreeSpot(options.x, options.z)
+    person.position.set(spot.x, options.y ?? 0, spot.z)
     person.rotation.y = options.facing ?? 0
     person.scale.setScalar(options.scale ?? 1)
     group.add(person)
@@ -280,6 +940,21 @@
     const nose = sphere(person, 0.035, skin, 0, 1.29, 0.21, { detail: 8 })
     const eyeL = sphere(person, 0.023, p.hair, -0.08, 1.34, 0.2, { detail: 8 })
     const eyeR = sphere(person, 0.023, p.hair, 0.08, 1.34, 0.2, { detail: 8 })
+    const style = options.style || 'standard'
+    if (style === 'longhair' || style === 'dress') {
+      const backHair = put(person, new THREE.CapsuleGeometry(0.17, 0.36, 4, 8), hair, 0, 1.02, -0.13)
+      backHair.scale.set(1, 1.2, 0.7)
+      hairMesh.scale.set(1.02, 0.94, 1.02)
+    }
+    if (style === 'dress') {
+      cone(person, 0.4, 0.66, cloth, 0, 0.58, 0, { segments: 16 })
+      legL.visible = false
+      legR.visible = false
+    }
+    if (style === 'outfit') {
+      box(person, 0.07, 0.3, 0.05, '#f2b544', -0.19, 0.84, 0.23)
+      box(person, 0.07, 0.3, 0.05, '#f2b544', 0.19, 0.84, 0.23)
+    }
     if (options.helmet) {
       const helmet = sphere(person, 0.27, '#f2b544', 0, 1.45, 0, { detail: 14 })
       helmet.scale.set(1.05, 0.62, 1.05)
@@ -298,7 +973,20 @@
     person.userData.handR = handR
     person.userData.nose = nose
     person.userData.eyes = [eyeL, eyeR]
+    person.userData.walk = {
+      minX: walkArea.minX,
+      maxX: walkArea.maxX,
+      minZ: walkArea.minZ,
+      maxZ: walkArea.maxZ,
+      speed: options.walkSpeed ?? 1.0,
+      targetX: spot.x,
+      targetZ: spot.z,
+      wait: 1.2 + rand() * 3.2,
+      moving: false,
+    }
+    pickWalkTarget(person.userData.walk)
     animateFns.push({ kind: 'person', data: person.userData })
+    if (options.model) attachYsm(person, options.model)
     return person
   }
 
@@ -467,10 +1155,221 @@
     return g
   }
 
+  function buildHome() {
+    const p = palette()
+    const g = new THREE.Group()
+    root.add(g)
+    buildRoom(g, { width: 13, depth: 10, height: 3.1, windowWidth: 3.2, windowX: 0.6, windowY: 1.9 })
+
+    // 木地板、踢脚线与护墙板
+    for (let i = 0; i < 10; i++) {
+      plane(g, 12.7, 0.92, i % 2 ? p.floor : p.floorDark, 0, 0.075, -4.5 + i, { cast: false })
+    }
+    box(g, 12.9, 0.16, 0.07, p.wallLow, 0, 0.15, -4.94)
+    box(g, 0.07, 0.16, 9.8, p.wallLow, -6.44, 0.15, 0)
+    box(g, 0.07, 0.16, 9.8, p.wallLow, 6.44, 0.15, 0)
+    box(g, 12.8, 0.9, 0.04, p.wallLow, 0, 0.6, -4.96)
+
+    // 客厅：地毯、沙发、茶几与电视墙
+    plane(g, 5.4, 4.0, p.fabricLight, -1.8, 0.08, -1.4, { opacity: 0.95, cast: false })
+    plane(g, 4.8, 0.1, accentColor(), -1.8, 0.085, -3.3, { opacity: 0.5, cast: false })
+    buildSofa(g, -1.8, -3.4, 3.0, 0)
+    roundBox(g, 0.42, 0.42, 0.22, 0.08, accentColor(), -3.0, 0.62, -3.35, { rotation: [0.1, 0.2, 0.05] })
+    roundBox(g, 0.42, 0.42, 0.22, 0.08, p.fabricLight, -0.6, 0.62, -3.35, { rotation: [0.1, -0.2, -0.05] })
+    roundBox(g, 1.0, 0.06, 0.6, 0.05, p.fabric, -1.4, 0.47, -3.2)
+    addObstacle(-3.35, -0.25, -3.9, -2.9)
+
+    roundBox(g, 1.7, 0.12, 0.95, 0.06, p.woodLight, -1.8, 0.42, -1.8)
+    box(g, 0.08, 0.36, 0.08, p.metal, -2.45, 0.2, -1.55)
+    box(g, 0.08, 0.36, 0.08, p.metal, -1.15, 0.2, -1.55)
+    box(g, 0.34, 0.05, 0.25, p.paper, -2.2, 0.51, -1.85)
+    box(g, 0.3, 0.04, 0.22, '#d97a7a', -2.18, 0.56, -1.84)
+    cylinder(g, 0.06, 0.05, 0.12, 10, p.paper, -1.45, 0.54, -1.7)
+    cylinder(g, 0.09, 0.07, 0.28, 10, p.glass, -1.8, 0.62, -1.9)
+    sphere(g, 0.12, accentColor(), -1.8, 0.8, -1.9, { glow: true, detail: 10 })
+    addObstacle(-2.7, -0.9, -2.3, -1.3)
+
+    roundBox(g, 2.8, 0.5, 0.5, 0.06, p.wood, -1.8, 0.28, -4.5)
+    box(g, 2.0, 1.1, 0.06, p.darkMetal, -1.8, 1.18, -4.42)
+    plane(g, 1.8, 0.96, accentColor(), -1.8, 1.18, -4.38, {
+      glow: true,
+      emissiveIntensity: 0.6,
+      pulse: true,
+      cast: false,
+    })
+    box(g, 0.26, 0.5, 0.24, p.darkMetal, -3.4, 0.35, -4.45)
+    box(g, 0.26, 0.5, 0.24, p.darkMetal, -0.2, 0.35, -4.45)
+    box(g, 0.34, 0.08, 0.24, p.metal, -1.8, 0.58, -4.45)
+    addObstacle(-3.25, -0.35, -4.8, -4.2)
+
+    // 窗帘与壁灯
+    roundBox(g, 0.36, 2.2, 0.12, 0.05, p.fabric, -1.0, 1.85, -4.85)
+    roundBox(g, 0.36, 2.2, 0.12, 0.05, p.fabric, 2.2, 1.85, -4.85)
+    cylinder(g, 0.02, 0.02, 3.5, 6, p.metal, 0.6, 2.95, -4.85, { rotation: [0, 0, Math.PI / 2] })
+    box(g, 0.12, 0.3, 0.08, p.metal, -6.4, 1.9, -2.0)
+    sphere(g, 0.12, '#ffe2b8', -6.3, 2.02, -2.0, { glow: true, detail: 10 })
+
+    // 餐桌、餐具与吊灯
+    cylinder(g, 1.12, 1.12, 0.1, 28, p.deskTop, 3.8, 0.76, -2.6)
+    cylinder(g, 1.16, 1.16, 0.02, 28, p.fabricLight, 3.8, 0.82, -2.6)
+    cylinder(g, 0.12, 0.22, 0.72, 12, p.darkMetal, 3.8, 0.38, -2.6)
+    for (let i = 0; i < 4; i++) {
+      const angle = (i / 4) * Math.PI * 2 + Math.PI / 4
+      const cx = 3.8 + Math.cos(angle) * 1.62
+      const cz = -2.6 + Math.sin(angle) * 1.62
+      roundBox(g, 0.44, 0.08, 0.42, 0.05, p.fabric, cx, 0.46, cz)
+      roundBox(
+        g, 0.42, 0.46, 0.07, 0.05, p.fabricLight,
+        cx + Math.cos(angle) * 0.2, 0.68, cz + Math.sin(angle) * 0.2,
+        { rotation: [0, -angle + Math.PI / 2, 0] },
+      )
+      box(g, 0.06, 0.44, 0.06, p.metal, cx, 0.22, cz)
+    }
+    for (const [x, z] of [[3.4, -2.6], [4.2, -2.6]]) {
+      cylinder(g, 0.16, 0.16, 0.03, 18, p.paper, x, 0.84, z)
+      cylinder(g, 0.06, 0.05, 0.18, 10, p.glass, x, 0.94, z)
+    }
+    cylinder(g, 0.1, 0.08, 0.3, 10, p.glass, 3.8, 0.9, -2.9)
+    sphere(g, 0.16, '#e27d9c', 3.8, 1.12, -2.9, { detail: 12 })
+    cylinder(g, 0.02, 0.02, 0.95, 6, p.metal, 3.8, 2.62, -2.6)
+    const pendant = sphere(g, 0.3, '#ffe2b8', 3.8, 2.12, -2.6, { glow: true, detail: 14 })
+    pendant.scale.set(1, 0.62, 1)
+    addObstacle(1.9, 5.7, -4.5, -0.75)
+
+    // 厨房岛台、吧台凳与吊柜
+    roundBox(g, 2.4, 0.9, 0.9, 0.08, p.deskTop, 4.6, 0.45, 3.5)
+    box(g, 2.2, 0.06, 0.7, p.metal, 4.6, 0.92, 3.5)
+    box(g, 0.62, 0.06, 0.42, p.darkMetal, 4.1, 0.96, 3.5)
+    cylinder(g, 0.03, 0.03, 0.34, 8, p.metal, 4.1, 1.16, 3.7)
+    roundBox(g, 0.5, 0.62, 0.42, 0.05, p.metal, 5.3, 1.25, 3.5)
+    box(g, 0.16, 0.08, 0.2, p.darkMetal, 5.3, 1.04, 3.5)
+    cylinder(g, 0.07, 0.05, 0.12, 8, p.paper, 5.3, 0.98, 3.2)
+    box(g, 0.5, 0.7, 1.8, p.wood, 6.25, 2.1, 3.2)
+    for (const dz of [-0.45, 0.45]) {
+      box(g, 0.03, 0.66, 0.8, p.woodLight, 5.98, 2.1, 3.2 + dz)
+      box(g, 0.04, 0.14, 0.04, p.metal, 5.95, 2.1, 3.2 + dz + (dz > 0 ? -0.28 : 0.28))
+    }
+    for (const [x, z] of [[3.4, 2.6], [4.0, 2.6]]) {
+      cylinder(g, 0.2, 0.2, 0.06, 14, p.fabric, x, 0.62, z)
+      cylinder(g, 0.04, 0.04, 0.6, 8, p.metal, x, 0.31, z)
+      cylinder(g, 0.26, 0.26, 0.03, 14, p.metal, x, 0.03, z)
+    }
+    addObstacle(3.35, 5.85, 3.0, 4.0)
+    addObstacle(3.1, 4.3, 2.3, 2.9)
+
+    // 卧室：床、床头柜、床尾凳与衣柜
+    plane(g, 2.6, 2.2, p.fabricLight, -4.9, 0.085, 2.1, { cast: false })
+    roundBox(g, 2.4, 0.36, 3.0, 0.08, p.wood, -4.9, 0.2, 3.1)
+    roundBox(g, 2.2, 0.28, 2.7, 0.08, p.paper, -4.9, 0.5, 3.1)
+    roundBox(g, 0.85, 0.16, 0.45, 0.06, p.paper, -5.3, 0.68, 2.0)
+    roundBox(g, 0.85, 0.16, 0.45, 0.06, p.paper, -4.5, 0.68, 2.0)
+    roundBox(g, 2.2, 0.14, 1.5, 0.06, p.fabric, -4.9, 0.68, 3.7)
+    roundBox(g, 1.6, 0.32, 0.5, 0.06, p.fabricLight, -4.9, 0.26, 1.25)
+    roundBox(g, 0.55, 0.5, 0.5, 0.05, p.woodLight, -3.45, 0.25, 4.35)
+    sphere(g, 0.15, '#ffe2b8', -3.45, 0.62, 4.35, { glow: true, detail: 10 })
+    box(g, 0.5, 2.2, 0.64, p.wood, -6.15, 1.1, 0.4)
+    box(g, 0.02, 1.9, 0.02, p.darkMetal, -5.83, 1.1, 0.4)
+    box(g, 0.04, 0.12, 0.04, p.metal, -5.8, 1.2, 0.15)
+    box(g, 0.04, 0.12, 0.04, p.metal, -5.8, 1.2, 0.65)
+    addObstacle(-6.1, -3.7, 1.6, 4.6)
+    addObstacle(-3.75, -3.15, 4.08, 4.62)
+    addObstacle(-6.5, -5.85, 0.05, 0.75)
+
+    // 冰箱
+    roundBox(g, 0.9, 1.9, 0.8, 0.08, p.metal, 6.0, 0.95, 1.1)
+    box(g, 0.04, 1.6, 0.02, p.darkMetal, 5.58, 0.95, 1.1)
+    box(g, 0.03, 0.5, 0.04, p.paper, 5.55, 1.2, 0.8)
+    addObstacle(5.52, 6.48, 0.68, 1.52)
+
+    // 书架、落地灯、植物、鱼缸与猫窝
+    buildShelf(g, -6.1, -1.2, 2.4, 2.2, 'z')
+    addObstacle(-6.5, -5.7, -2.45, 0.05)
+    cylinder(g, 0.04, 0.04, 1.6, 8, p.metal, -5.9, 0.8, -3.2)
+    sphere(g, 0.22, '#ffe2b8', -5.9, 1.68, -3.2, { glow: true, detail: 12 })
+    addObstacle(-6.1, -5.7, -3.4, -3.0)
+    buildPlant(g, -6.0, 4.5, 0.85)
+    buildPlant(g, 6.0, -4.4, 1.0)
+    buildPlant(g, 5.85, 0.15, 0.7)
+    buildPlant(g, -6.0, 3.2, 0.6)
+    box(g, 0.9, 0.7, 0.5, p.glass, 6.0, 0.45, -1.6, { opacity: 0.35, cast: false })
+    box(g, 0.8, 0.06, 0.4, p.glass, 6.0, 0.72, -1.6, { opacity: 0.6, glow: true, cast: false })
+    box(g, 0.1, 0.06, 0.04, '#f2a65a', 5.9, 0.5, -1.55)
+    box(g, 0.1, 0.06, 0.04, '#7db3ff', 6.12, 0.42, -1.65)
+    addObstacle(5.55, 6.45, -1.9, -1.3)
+    cylinder(g, 0.44, 0.4, 0.16, 18, p.fabric, -4.5, 0.12, -1.0)
+    cylinder(g, 0.34, 0.32, 0.08, 16, p.fabricLight, -4.5, 0.18, -1.0)
+    sphere(g, 0.16, p.skin, -4.5, 0.3, -1.0, { detail: 12 })
+    sphere(g, 0.12, p.skin, -4.5, 0.42, -1.0, { detail: 12 })
+    cone(g, 0.05, 0.1, p.hair, -4.56, 0.52, -1.0, { segments: 4 })
+    cone(g, 0.05, 0.1, p.hair, -4.44, 0.52, -1.0, { segments: 4 })
+    cylinder(g, 0.03, 0.02, 0.3, 6, p.hair, -4.34, 0.32, -0.9, { rotation: [0.4, 0, -0.8] })
+    addObstacle(-4.95, -4.05, -1.45, -0.55)
+
+    // 照片墙与壁钟
+    box(g, 0.5, 0.4, 0.04, p.paper, 4.6, 2.0, -4.9)
+    box(g, 0.36, 0.3, 0.04, p.paper, 5.3, 1.85, -4.9)
+    box(g, 0.3, 0.24, 0.04, p.paper, 4.9, 1.45, -4.9)
+    cylinder(g, 0.36, 0.36, 0.05, 24, p.paper, -6.4, 2.1, 2.6, { rotation: [0, 0, Math.PI / 2] })
+    box(g, 0.02, 0.24, 0.02, p.darkMetal, -6.37, 2.1, 2.6)
+    box(g, 0.02, 0.16, 0.02, p.darkMetal, -6.37, 2.1, 2.66, { rotation: [0.7, 0, 0] })
+
+    // 窗外草地、栅栏、路灯、邮箱与花坛
+    plane(g, 6.0, 3.4, p.lawn, 0, 0.02, 6.8, { cast: false })
+    plane(g, 1.4, 3.4, p.path, 0, 0.025, 6.8, { cast: false })
+    box(g, 2.2, 0.12, 0.5, p.stone, 0, 0.06, 5.3)
+    for (let x = -6; x <= 6; x += 0.8) {
+      box(g, 0.08, 0.8, 0.08, p.wood, x, 0.4, 7.1)
+    }
+    box(g, 12.2, 0.08, 0.06, p.wood, 0, 0.62, 7.1)
+    box(g, 12.2, 0.08, 0.06, p.wood, 0, 0.3, 7.1)
+    cylinder(g, 0.04, 0.04, 1.6, 8, p.metal, -1.5, 0.8, 6.2)
+    sphere(g, 0.14, '#ffe2b8', -1.5, 1.7, 6.2, { glow: true, detail: 10 })
+    cylinder(g, 0.05, 0.05, 0.8, 8, p.wood, 2.0, 0.4, 6.0)
+    box(g, 0.3, 0.24, 0.22, p.metal, 2.0, 0.92, 6.0)
+    box(g, 0.3, 0.04, 0.22, '#d97a7a', 2.0, 1.05, 6.0)
+    box(g, 1.6, 0.22, 0.5, p.woodLight, 4.0, 0.11, 6.1)
+    for (let i = 0; i < 5; i++) {
+      sphere(g, 0.09, i % 2 ? '#f6c177' : '#e27d9c', 3.5 + i * 0.24, 0.3, 6.1, { detail: 8 })
+    }
+    buildTree(g, -3.4, 7.4, 1.0)
+    buildTree(g, 3.6, 7.8, 0.85)
+
+    // 家的居民：角色卡有几张就摆几个小人，可走动
+    walkArea = { minX: -2.2, maxX: 3.2, minZ: -0.4, maxZ: 3.0 }
+    const residents = Array.isArray(state.avatars) ? state.avatars : []
+    labels = []
+    residents.forEach((person, index) => {
+      const x = -1.4 + (index % 5) * 1.0
+      const z = 0.1 + Math.min(3, Math.floor(index / 5)) * 0.9
+      const node = addPerson(g, {
+        x: x,
+        z: z,
+        facing: Math.atan2(-x, -z),
+        accent: new THREE.Color(person.color || state.accent || '#0D84FF'),
+        style: person.style || 'standard',
+        model: person.model,
+        scale: 0.96 + (index % 3) * 0.03,
+      })
+      const label = {
+        id: 'resident-' + (person.id || index),
+        title: person.name || `角色 ${index + 1}`,
+        at: { x: node.position.x, y: 2.0, z: node.position.z },
+      }
+      node.userData.label = label
+      labels.push(label)
+    })
+    return frames.home
+  }
+
   function buildStudio() {
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
+    walkArea = { minX: 2.0, maxX: 4.3, minZ: -1.4, maxZ: 3.0 }
+    addObstacle(-3.55, 3.55, -2.75, -1.85)
+    addObstacle(-0.6, 1.4, 0.0, 2.0)
+    addObstacle(-4.7, -2.6, 1.55, 2.45)
+    addObstacle(2.0, 4.2, -1.25, 0.7)
     buildRoom(g, { width: 10, depth: 8, height: 2.8, board: true, shelf: true })
 
     // 后墙窗与工作台
@@ -544,7 +1443,7 @@
     plane(g, 0.12, 6.6, accentColor(), -4.25, 0.075, 0.4, { glow: true, opacity: 0.45, cast: false })
 
     // 人物
-    addPerson(g, {
+    const characterNode = addPerson(g, {
       x: 0.4,
       z: 2.35,
       facing: Math.PI,
@@ -588,6 +1487,7 @@
         tone: 'busy',
       },
     ]
+    if (characterNode && labels[0]) characterNode.userData.label = labels[0]
     return frames.studio
   }
 
@@ -667,6 +1567,7 @@
 
     const spots = {
       studio: { x: 0, z: -4.6 },
+      home: { x: -8.6, z: 5.2 },
       library: { x: -8.6, z: -3.4 },
       site: { x: 9.0, z: -5.2 },
       duty: { x: 8.2, z: 5.2 },
@@ -694,6 +1595,26 @@
     const beacon = sphere(studio, 0.07, accentColor(), 0, 4.62, 0.2, { glow: true, detail: 8 })
     beacon.userData.beacon = true
     animateFns.push({ kind: 'beacon', mesh: beacon, light: antenna })
+
+    // 家：坡屋顶小屋，可点击进入
+    const home = campusBuilding(g, {
+      x: spots.home.x,
+      z: spots.home.z,
+      width: 4.6,
+      depth: 3.8,
+      height: 2.1,
+      floors: 1,
+      color: state.dark ? '#4a4038' : '#f3e6d2',
+      lit: true,
+      pick: 'home',
+    })
+    const homeRoof = cone(home, 3.2, 1.4, state.dark ? '#5c4436' : '#b96f4a', 0, 2.8, 0, {
+      segments: 4,
+      rotation: [0, Math.PI / 4, 0],
+      pick: 'home',
+    })
+    homeRoof.scale.set(1.35, 1, 1.1)
+    box(home, 0.28, 0.7, 0.28, p.stone, 1.2, 3.1, -0.4, { pick: 'home' })
 
     // 图书馆：柱廊
     const library = campusBuilding(g, {
@@ -840,6 +1761,13 @@
         pick: 'studio',
       },
       {
+        id: 'home',
+        title: '家',
+        detail: `${(state.avatars && state.avatars.length) || 0} 位居民`,
+        at: { x: spots.home.x, y: 3.9, z: spots.home.z },
+        pick: 'home',
+      },
+      {
         id: 'library',
         title: '图书馆',
         detail: `${state.stats.knowledge ?? 0} 份知识 · ${state.stats.memories ?? 0} 条记忆`,
@@ -877,6 +1805,12 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
+    walkArea = { minX: -2.0, maxX: 4.6, minZ: -2.6, maxZ: 3.2 }
+    addObstacle(-5.45, 1.65, -2.86, -2.44)
+    addObstacle(-2.15, -0.45, 0.65, 1.55)
+    addObstacle(1.25, 2.95, 1.45, 2.35)
+    addObstacle(-4.81, -4.39, 1.2, 3.6)
+    addObstacle(4.29, 4.71, -1.7, 0.7)
     buildRoom(g, { width: 11, depth: 8.6, height: 3.3, windowWidth: 3.4, windowX: 0.8, windowY: 1.9 })
 
     // 书架区：三排
@@ -992,6 +1926,9 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
+    walkArea = { minX: -2.1, maxX: 2.1, minZ: -1.8, maxZ: 1.8 }
+    addObstacle(-0.9, 2.1, -4.25, -2.15)
+    addObstacle(4.8, 5.4, -2.4, -1.8)
 
     roundBox(g, 15, 0.3, 10.5, 0.35, p.dirt, 0, -0.15, 0, { receive: true })
     plane(g, 14.2, 9.8, p.dirt, 0, 0.02, 0.1, { cast: false })
@@ -1129,6 +2066,10 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
+    walkArea = { minX: -3.0, maxX: 3.6, minZ: -2.4, maxZ: 3.0 }
+    addObstacle(-1.5, 0.5, -2.9, -2.2)
+    addObstacle(3.2, 4.2, 1.7, 2.7)
+    addObstacle(3.7, 4.5, -3.1, -2.3)
     buildRoom(g, { width: 10.5, depth: 8, height: 2.9, windowWidth: 2.2, windowX: 3.1, windowY: 1.8 })
 
     // 监控墙
@@ -1246,10 +2187,13 @@
     return frames.duty
   }
 
-  function buildDesk() {
+  function buildReception() {
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
+    walkArea = { minX: -3.4, maxX: 3.6, minZ: -0.9, maxZ: 2.4 }
+    addObstacle(-3.2, -1.8, 1.9, 2.7)
+    addObstacle(-3.6, 3.6, -2.9, -2.0)
     buildRoom(g, { width: 10.5, depth: 8, height: 3.0, windowWidth: 1.8, windowX: -3.4, windowY: 1.8 })
 
     // 长前台
@@ -1346,15 +2290,17 @@
 
   const builders = {
     studio: buildStudio,
+    home: buildHome,
     campus: buildCampus,
     library: buildLibrary,
     site: buildSite,
     duty: buildDuty,
-    desk: buildDesk,
+    desk: buildReception,
   }
 
   function buildPlace() {
     clearScene()
+    obstacles = []
     root = new THREE.Group()
     scene.add(root)
     const frame = (builders[currentPlace] || buildStudio)()
@@ -1591,13 +2537,66 @@
           const data = item.data
           const phase = data.phase
           const baseY = data.baseY || 0
-          const bob = Math.sin(t * 1.8 + phase) * 0.018
           const group = data.body.parent
+          const walk = data.walk
+          let moving = false
+          if (walk) {
+            if (walk.wait > 0) {
+              walk.wait -= dt
+            } else {
+              const dx = walk.targetX - group.position.x
+              const dz = walk.targetZ - group.position.z
+              const distance = Math.hypot(dx, dz)
+              if (distance < 0.12) {
+                pickWalkTarget(walk)
+                walk.wait = 1.5 + rand() * 3.5
+              } else {
+                const step = Math.min(distance, walk.speed * dt)
+                const nextX = group.position.x + (dx / distance) * step
+                const nextZ = group.position.z + (dz / distance) * step
+                if (!isObstacleAt(nextX, nextZ)) {
+                  group.position.x = nextX
+                  group.position.z = nextZ
+                  moving = true
+                } else if (!isObstacleAt(nextX, group.position.z)) {
+                  group.position.x = nextX
+                  moving = true
+                } else if (!isObstacleAt(group.position.x, nextZ)) {
+                  group.position.z = nextZ
+                  moving = true
+                } else {
+                  pickWalkTarget(walk)
+                  walk.wait = 0.4
+                }
+                if (moving) {
+                  let delta = Math.atan2(dx, dz) - group.rotation.y
+                  while (delta > Math.PI) delta -= Math.PI * 2
+                  while (delta < -Math.PI) delta += Math.PI * 2
+                  group.rotation.y += delta * Math.min(1, dt * 7)
+                }
+              }
+            }
+          }
+          const stride = moving ? Math.sin(t * 9 + phase) : 0
+          const bob = moving
+            ? Math.abs(Math.sin(t * 9 + phase)) * 0.035
+            : Math.sin(t * 1.8 + phase) * 0.018
           group.position.y = baseY + bob
           data.body.rotation.z = Math.sin(t * 1.1 + phase) * 0.015
+          data.armL.rotation.x = moving ? stride * 0.55 : 0
+          data.armR.rotation.x = moving ? -stride * 0.55 : 0
           data.armL.rotation.z = 0.24 + Math.sin(t * 1.9 + phase) * 0.06
           data.armR.rotation.z = -0.24 + Math.cos(t * 2.1 + phase) * 0.06
-          data.head.rotation.y = Math.sin(t * 0.6 + phase) * 0.16
+          data.legL.rotation.x = moving ? stride * 0.5 : 0
+          data.legR.rotation.x = moving ? -stride * 0.5 : 0
+          data.head.rotation.y = moving
+            ? Math.sin(t * 0.6 + phase) * 0.06
+            : Math.sin(t * 0.6 + phase) * 0.16
+          if (data.label) {
+            data.label.at.x = group.position.x
+            data.label.at.z = group.position.z
+          }
+          if (data.ysm) data.ysm.update(dt, moving)
         } else if (item.kind === 'beacon') {
           item.mesh.visible = Math.sin(t * 2.4) > -0.25
         }
@@ -1605,6 +2604,42 @@
       pulseMats.forEach((material, index) => {
         material.emissiveIntensity = 0.55 + Math.sin(t * 1.3 + index * 0.7) * 0.18
       })
+      // 人物之间保持最小间距，避免多个居民叠在一起。
+      const people = animateFns
+        .filter((item) => item.kind === 'person')
+        .map((item) => item.data.body.parent)
+      for (let i = 0; i < people.length; i++) {
+        for (let j = i + 1; j < people.length; j++) {
+          const a = people[i]
+          const b = people[j]
+          const dx = b.position.x - a.position.x
+          const dz = b.position.z - a.position.z
+          const distance = Math.hypot(dx, dz)
+          const minDistance = 0.52
+          if (distance > 0.0001 && distance < minDistance) {
+            const push = (minDistance - distance) / 2
+            const nx = dx / distance
+            const nz = dz / distance
+            const ax = a.position.x - nx * push
+            const az = a.position.z - nz * push
+            const bx = b.position.x + nx * push
+            const bz = b.position.z + nz * push
+            if (!isObstacleAt(ax, az)) {
+              a.position.x = ax
+              a.position.z = az
+            }
+            if (!isObstacleAt(bx, bz)) {
+              b.position.x = bx
+              b.position.z = bz
+            }
+          }
+        }
+      }
+      for (const item of animateFns) {
+        if (item.kind !== 'person' || !item.data.label) continue
+        item.data.label.at.x = item.data.body.parent.position.x
+        item.data.label.at.z = item.data.body.parent.position.z
+      }
       idleTurns += dt
       if (idleTurns > 14 && !dragging) {
         cameraGoal.azimuth += dt * 0.03
@@ -1758,11 +2793,12 @@
       const previousAccent = state.accent
       const previousDark = state.dark
       state.stats = next.stats || {}
+      state.avatars = Array.isArray(next.avatars) ? next.avatars : []
       if (next.accent) state.accent = next.accent
       if (typeof next.dark === 'boolean') state.dark = next.dark
       if (PLACES.includes(next.place)) state.place = next.place
       applyTheme()
-      const signature = JSON.stringify(state.stats)
+      const signature = JSON.stringify(state.stats) + '|' + JSON.stringify(state.avatars)
       if (previousAccent !== state.accent || previousDark !== state.dark) {
         scene.fog.color.set(state.dark ? 0x07101c : 0xdcebe3)
         lastStatsSignature = signature

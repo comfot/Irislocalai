@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Gesture
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
@@ -84,6 +85,13 @@ object SettingsCatalog {
                 SettingsEntry("skill", "Skill 技能", "技能的安装与触发", Icons.Outlined.AutoAwesome),
                 SettingsEntry("code", "编程管理", "代码执行与工作区", Icons.Outlined.Code),
                 SettingsEntry("space", "空间管理", "四个空间的会话与偏好", Icons.Outlined.Workspaces),
+                SettingsEntry(
+                    "studio-space",
+                    "综合空间",
+                    "家的小人模型、名字与颜色",
+                    Icons.Outlined.Home,
+                    hidden = true,
+                ),
             ),
         ),
         SettingsSection(

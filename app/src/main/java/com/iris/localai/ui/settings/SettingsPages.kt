@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -108,6 +109,7 @@ internal fun SpacePage(
     settings: AppSettings,
     conversations: List<Conversation>,
     viewModel: SettingsViewModel,
+    onOpenStudioSpace: () -> Unit,
 ) {
     val workspaces by viewModel.workspaces.collectAsStateWithLifecycle()
     val activeWorkspaceId by viewModel.activeWorkspaceId.collectAsStateWithLifecycle()
@@ -127,6 +129,25 @@ internal fun SpacePage(
     }
 
     SettingsPage {
+        SettingsCard("综合空间") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenStudioSpace),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Home, contentDescription = null)
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("家与小人的模型", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = "按角色卡生成居民，设置名字、造型与颜色",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         SettingsCard("工作区（文件夹）") {
             Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
                 Button(

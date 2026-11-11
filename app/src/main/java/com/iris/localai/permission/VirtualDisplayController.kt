@@ -2,10 +2,15 @@ package com.iris.localai.permission
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
+import android.media.Image
 import android.media.ImageReader
 import android.os.Binder
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IInterface
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
@@ -33,7 +38,9 @@ class VirtualDisplayController(private val context: Context) {
     private var width = 0
     private var height = 0
     @Volatile private var lastLaunchedPackage: String? = null
-    @Volatile private var preferShellCapture = false
+    private var latestFrame: Bitmap? = null
+    private val frameLock = Any()
+    private var frameThread: HandlerThread? = null
 
     private val _running = MutableStateFlow(false)
     val running: StateFlow<Boolean> = _running.asStateFlow()
@@ -85,6 +92,21 @@ class VirtualDisplayController(private val context: Context) {
                 }
             }
             if (id <= 0) error("createVirtualDisplay 返回无效 displayId")
+            val thread = HandlerThread("iris-vd-frames").apply { start() }
+            frameThread = thread
+            val handler = Handler(thread.looper)
+            imageReader.setOnImageAvailableListener({ r ->
+                val image = runCatching { r.acquireLatestImage() }.getOrNull()
+                    ?: return@setOnImageAvailableListener
+                val bitmap = runCatching { imageToBitmap(image) }.getOrNull()
+                runCatching { image.close() }
+                if (bitmap != null) {
+                    synchronized(frameLock) {
+                        latestFrame?.recycle()
+                        latestFrame = bitmap
+                    }
+                }
+            }, handler)
             displayId = id
             callback = cb
             reader = imageReader
@@ -115,6 +137,12 @@ class VirtualDisplayController(private val context: Context) {
         }
         runCatching { reader?.close() }
         runCatching { outputSurface?.release() }
+        frameThread?.quitSafely()
+        frameThread = null
+        synchronized(frameLock) {
+            latestFrame?.recycle()
+            latestFrame = null
+        }
         reader = null
         outputSurface = null
         width = 0
@@ -122,38 +150,50 @@ class VirtualDisplayController(private val context: Context) {
     }
 
     fun capture(): Bitmap? {
-        if (preferShellCapture) return captureViaShell()
-        val r = reader ?: return null
-        val image = runCatching { r.acquireLatestImage() }.getOrNull()
-        if (image == null) {
-            preferShellCapture = true
-            return captureViaShell()
+        val cached = synchronized(frameLock) {
+            latestFrame?.copy(Bitmap.Config.ARGB_8888, false)
         }
-        val direct = try {
-            val plane = image.planes.firstOrNull() ?: return null
-            val buffer = plane.buffer
-            val pixelStride = plane.pixelStride
-            val rowStride = plane.rowStride
-            val rowPadding = rowStride - pixelStride * width
-            val paddedWidth = width + if (pixelStride > 0) rowPadding / pixelStride else 0
-            val padded = Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888)
-            padded.copyPixelsFromBuffer(buffer)
-            if (paddedWidth == width) {
-                padded
-            } else {
-                Bitmap.createBitmap(padded, 0, 0, width, height).also { padded.recycle() }
-            }
-        } finally {
-            runCatching { image.close() }
+        if (cached != null && !isLikelyBlack(cached)) return cached
+        val direct = readLatestImage()
+        if (direct != null && !isLikelyBlack(direct)) {
+            cached?.recycle()
+            return direct
         }
-        if (direct != null && !isLikelyBlack(direct)) return direct
         val shell = captureViaShell()
         if (shell != null && !isLikelyBlack(shell)) {
-            preferShellCapture = true
+            cached?.recycle()
             direct?.recycle()
             return shell
         }
-        return direct ?: shell
+        return cached ?: direct ?: shell
+    }
+
+    private fun readLatestImage(): Bitmap? {
+        val r = reader ?: return null
+        val image = runCatching { r.acquireLatestImage() }.getOrNull() ?: return null
+        return try {
+            imageToBitmap(image)
+        } finally {
+            runCatching { image.close() }
+        }
+    }
+
+    private fun imageToBitmap(image: Image): Bitmap? {
+        val plane = image.planes.firstOrNull() ?: return null
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        val imageWidth = image.width.coerceAtLeast(1)
+        val imageHeight = image.height.coerceAtLeast(1)
+        val rowPadding = rowStride - pixelStride * imageWidth
+        val paddedWidth = imageWidth + if (pixelStride > 0) rowPadding / pixelStride else 0
+        val padded = Bitmap.createBitmap(paddedWidth, imageHeight, Bitmap.Config.ARGB_8888)
+        padded.copyPixelsFromBuffer(buffer)
+        return if (paddedWidth == imageWidth) {
+            padded
+        } else {
+            Bitmap.createBitmap(padded, 0, 0, imageWidth, imageHeight).also { padded.recycle() }
+        }
     }
 
     private fun isLikelyBlack(bitmap: Bitmap): Boolean {
@@ -240,13 +280,15 @@ class VirtualDisplayController(private val context: Context) {
 
     private fun captureViaShell(): Bitmap? {
         if (displayId <= 0) return null
-        val bytes = runCatching {
-            ShizukuBridge.execResult("screencap -d $displayId -p").stdout
-        }.getOrNull() ?: return null
-        if (bytes.isEmpty()) return null
-        return runCatching {
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        }.getOrNull()
+        for (command in listOf("screencap -d $displayId -p", "screencap -p -d $displayId")) {
+            val result = runCatching { ShizukuBridge.execResult(command) }.getOrNull() ?: continue
+            if (result.exitCode != 0 || result.stdout.isEmpty()) continue
+            val bitmap = runCatching {
+                BitmapFactory.decodeByteArray(result.stdout, 0, result.stdout.size)
+            }.getOrNull()
+            if (bitmap != null) return bitmap
+        }
+        return null
     }
 
     private fun findStackId(targetDisplayId: Int): Int? {
@@ -415,9 +457,10 @@ class VirtualDisplayController(private val context: Context) {
     }
 
     private fun buildFlags(): Int {
-        var flags = VIRTUAL_DISPLAY_FLAG_PUBLIC or (1 shl 1) // PUBLIC + PRESENTATION
+        var flags = VIRTUAL_DISPLAY_FLAG_PUBLIC or (1 shl 1) or (1 shl 3) // PUBLIC + PRESENTATION + OWN_CONTENT_ONLY
         flags = flags or TRUSTED_FLAG
         flags = flags or (1 shl 6) // SUPPORTS_TOUCH
+        flags = flags or (1 shl 7) // ROTATES_WITH_CONTENT
         flags = flags or (1 shl 8) // DESTROY_CONTENT_ON_REMOVAL
         return flags
     }

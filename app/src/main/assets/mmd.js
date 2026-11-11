@@ -16,6 +16,66 @@
   // 模型加载完成前的动作请求先缓存，就绪后再执行。
   let pendingAsset = null
 
+  // 渲染分辨率：后备缓冲 = CSS 像素 × DPR × renderScale，DPR 封顶避免超高密度屏爆显存。
+  const MAX_RENDER_DPR = 3
+  const MAX_RENDER_PIXELS = 4_000_000
+  const MIN_RENDER_SCALE = 0.5
+  const MAX_RENDER_SCALE = 2
+  const DEGRADE_SCALE = 0.7
+  let renderScale = clampRenderScale(config.renderScale)
+  let perfScale = 1
+  let hardwareScaling = 1
+  let slowStreak = 0
+  let fastStreak = 0
+
+  function clampRenderScale(value) {
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return 1
+    return Math.max(MIN_RENDER_SCALE, Math.min(MAX_RENDER_SCALE, numeric))
+  }
+
+  /** 依 DPR、用户精度与性能降级乘数重设后备缓冲，并钳制到 GPU 纹理上限与像素预算。 */
+  function applyScaling() {
+    if (!engine) return
+    const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, MAX_RENDER_DPR))
+    const target = dpr * renderScale * perfScale
+    const cssWidth = Math.max(1, canvas.clientWidth || window.innerWidth || 1)
+    const cssHeight = Math.max(1, canvas.clientHeight || window.innerHeight || 1)
+    let budget = 1
+    const maxSide = engine.getCaps().maxTextureSize
+    if (Number.isFinite(maxSide) && maxSide > 0) {
+      const side = Math.max(cssWidth, cssHeight) * target
+      if (side > maxSide) budget = Math.min(budget, maxSide / side)
+    }
+    const pixels = cssWidth * cssHeight * target * target
+    if (pixels > MAX_RENDER_PIXELS) budget = Math.min(budget, Math.sqrt(MAX_RENDER_PIXELS / pixels))
+    hardwareScaling = 1 / (target * budget)
+    engine.setHardwareScalingLevel(hardwareScaling)
+  }
+
+  /** MMD 的球面/材质贴图在斜视时靠各向异性过滤保清晰；toon 等无 mipmap 贴图跳过。 */
+  function tuneTextureSampling(container) {
+    let maxAnisotropy = 1
+    try {
+      const gl = engine && engine._gl
+      const ext = gl && (gl.getExtension('EXT_texture_filter_anisotropic') ||
+        gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic'))
+      if (ext) maxAnisotropy = gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT)
+    } catch (_) { }
+    const level = Math.max(1, Math.min(8, Number(maxAnisotropy) || 1))
+    const seen = new Set()
+    const apply = (texture) => {
+      if (!texture || seen.has(texture)) return
+      seen.add(texture)
+      try {
+        if (texture.isCube || texture.noMipmap) return
+        texture.anisotropicFilteringLevel = level
+      } catch (_) { }
+    }
+    for (const texture of (container && container.textures) || []) apply(texture)
+    for (const texture of scene.textures || []) apply(texture)
+  }
+
   window.addEventListener('error', (event) => {
     console.error('[mmd] window error', event.message, event.filename, event.lineno)
   })
@@ -49,7 +109,6 @@
   let model
   let modelRoot
   let fitRadius = 30
-  let baseScale = 1
   let headY = 0
   const headTmp = new BABYLON.Vector3()
 
@@ -243,6 +302,24 @@
     resize() {
       resize()
     },
+    setRenderScale(value) {
+      renderScale = clampRenderScale(value)
+      perfScale = 1
+      slowStreak = 0
+      fastStreak = 0
+      applyScaling()
+      return renderScale
+    },
+    getRenderInfo() {
+      return {
+        width: engine ? engine.getRenderWidth() : 0,
+        height: engine ? engine.getRenderHeight() : 0,
+        hardwareScaling: hardwareScaling,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        renderScale: renderScale,
+        perfScale: perfScale,
+      }
+    },
   }
 
   let modelHeight = 20
@@ -250,15 +327,14 @@
   const canvas = document.createElement('canvas')
   stage.appendChild(canvas)
   try {
-    engine = new BABYLON.Engine(canvas, false, {
+    engine = new BABYLON.Engine(canvas, true, {
       preserveDrawingBuffer: true,
       stencil: true,
       alpha: true,
       premultipliedAlpha: false,
       powerPreference: 'high-performance',
     })
-    baseScale = Math.max(0.74, 1 / Math.min(window.devicePixelRatio || 1, 1.35))
-    engine.setHardwareScalingLevel(baseScale)
+    applyScaling()
   } catch (error) {
     console.error('mmd engine error', error)
     showStatus('这台设备无法显示 MMD 模型（WebGL 不可用）')
@@ -876,6 +952,7 @@
         materialProxyConstructor: BABYLONMMD.MmdStandardMaterialProxy,
       })
       if (!model) throw new Error('MMD 运行时初始化失败')
+      tuneTextureSampling(container)
 
       let loaded = false
       runtime.playAnimation()
@@ -914,6 +991,7 @@
     stage.style.width = width + 'px'
     stage.style.height = height + 'px'
     engine.resize()
+    applyScaling()
     fitCamera()
   }
 
@@ -937,15 +1015,31 @@
   let lastQualityCheck = 0
   scene.onAfterRenderObservable.add(() => {
     const now = performance.now()
-    if (now - lastQualityCheck < 4000) return
+    if (now - lastQualityCheck < 2000) return
     lastQualityCheck = now
-    if (now < 6000) return
+    // 模型加载与物理初始化期间帧率没有参考价值。
+    if (now < 8000) return
     const fps = engine.getFps()
-    const current = engine.getHardwareScalingLevel()
-    if (fps > 0 && fps < 27 && current < baseScale + 0.45) {
-      engine.setHardwareScalingLevel(Math.min(baseScale + 0.45, current + 0.1))
-    } else if (fps > 50 && current > baseScale) {
-      engine.setHardwareScalingLevel(Math.max(baseScale, current - 0.08))
+    if (!(fps > 0)) return
+    if (fps < 27) {
+      slowStreak++
+      fastStreak = 0
+    } else if (fps > 50) {
+      fastStreak++
+      slowStreak = 0
+    } else {
+      slowStreak = 0
+      fastStreak = 0
+    }
+    // 连续 4 秒低帧才降到 70%，连续 6 秒富余帧才恢复，避免档位来回抖动。
+    if (slowStreak >= 2 && perfScale > DEGRADE_SCALE) {
+      perfScale = DEGRADE_SCALE
+      slowStreak = 0
+      applyScaling()
+    } else if (fastStreak >= 3 && perfScale < 1) {
+      perfScale = 1
+      fastStreak = 0
+      applyScaling()
     }
   })
 

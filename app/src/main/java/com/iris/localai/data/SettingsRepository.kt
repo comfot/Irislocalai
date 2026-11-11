@@ -112,6 +112,7 @@ class SettingsRepository(
             .putString(KEY_ASSET_TOKEN, next.assetToken)
             .putString(KEY_IDLE_MOTION_ASSET, next.idleMotionAsset)
             .putBoolean(KEY_DANCE_BGM, next.danceBgmEnabled)
+            .putFloat(KEY_MMD_RENDER_SCALE, next.mmdRenderScale)
             .putBoolean(KEY_AUTO_LOAD, next.autoLoadLastModel)
             .putInt(KEY_VISION_SIDE, next.visionQualitySide)
             .putString(KEY_DOWNLOAD_SOURCE, next.downloadSource.name)
@@ -255,6 +256,7 @@ class SettingsRepository(
         assetToken = prefs.getString(KEY_ASSET_TOKEN, "") ?: "",
         idleMotionAsset = prefs.getString(KEY_IDLE_MOTION_ASSET, "") ?: "",
         danceBgmEnabled = prefs.getBoolean(KEY_DANCE_BGM, true),
+        mmdRenderScale = prefs.getFloat(KEY_MMD_RENDER_SCALE, 1f),
         autoLoadLastModel = prefs.getBoolean(KEY_AUTO_LOAD, true),
         visionQualitySide = prefs.getInt(KEY_VISION_SIDE, 1024),
         downloadSource = enumOf(prefs.getString(KEY_DOWNLOAD_SOURCE, null), DownloadSource.AUTO),
@@ -441,6 +443,7 @@ class SettingsRepository(
         const val KEY_ASSET_TOKEN = "asset_token"
         const val KEY_IDLE_MOTION_ASSET = "idle_motion_asset"
         const val KEY_DANCE_BGM = "dance_bgm_enabled"
+        const val KEY_MMD_RENDER_SCALE = "mmd_render_scale"
         const val KEY_AUTO_LOAD = "auto_load_last_model"
         const val KEY_VISION_SIDE = "vision_quality_side"
         const val KEY_DOWNLOAD_SOURCE = "download_source"

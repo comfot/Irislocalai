@@ -67,7 +67,11 @@ fun SettingsScreen(
     LaunchedEffect(navigationRequestId, initialEntryId) {
         if (!initialEntryId.isNullOrBlank()) {
             entryId = initialEntryId
-            previousEntryId = if (initialEntryId == "pet") "interaction" else null
+            previousEntryId = when (initialEntryId) {
+                "pet" -> "interaction"
+                "studio-space" -> "space"
+                else -> null
+            }
         }
     }
 
@@ -82,7 +86,7 @@ fun SettingsScreen(
                 entryId = previous
                 previousEntryId = null
             }
-            (entryId == "live2d-control" || entryId == "model3d-control") && previous != null -> {
+            (entryId == "live2d-control" || entryId == "model3d-control" || entryId == "studio-space") && previous != null -> {
                 entryId = previous
                 previousEntryId = null
             }
@@ -148,6 +152,10 @@ fun SettingsScreen(
                     onOpen3D = {
                         previousEntryId = entryId
                         entryId = "model3d-control"
+                    },
+                    onOpenStudioSpace = {
+                        previousEntryId = "space"
+                        entryId = "studio-space"
                     },
                 )
             }
@@ -317,6 +325,7 @@ private fun SettingsDetail(
     onOpenPet: () -> Unit,
     onOpenLive2D: () -> Unit,
     onOpen3D: () -> Unit,
+    onOpenStudioSpace: () -> Unit,
 ) {
     when (entry.id) {
         "model" -> ModelSettingsPage(settings, viewModel) { onOpenMarket(MarketSection.MODELS) }
@@ -350,7 +359,14 @@ private fun SettingsDetail(
         "plugin" -> PluginPage(onOpenMarket = { onOpenMarket(MarketSection.PLUGINS) })
         "market" -> MarketPage(initialSection = initialMarketSection)
         "theme" -> ThemePage(settings, viewModel)
-        "space" -> SpacePage(settings, conversations, viewModel)
+        "space" -> SpacePage(
+            settings,
+            conversations,
+            viewModel,
+            onOpenStudioSpace = onOpenStudioSpace,
+        )
+        "integration" -> IntegrationPage()
+        "studio-space" -> StudioSpacePage()
         "permission" -> PermissionPage(viewModel)
         "storage" -> StoragePage(viewModel)
         "about" -> AboutPage()
