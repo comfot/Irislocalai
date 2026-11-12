@@ -1,4 +1,4 @@
-# IRIS LocalAI
+# IRIS LocalAI （自用未完善）
 
 IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里完成本地 GGUF 推理、云端模型接入、Agent 工具调用、角色陪伴、内容创作与设备操作。应用采用单模块 `:app`，Kotlin + Jetpack Compose 构建，依赖由 `AppGraph` 手动装配。
 
