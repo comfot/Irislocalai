@@ -2,9 +2,11 @@ package com.iris.localai.proot
 
 import android.content.Context
 import android.os.Build
+import android.os.Environment
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
 data class ProotStatus(
@@ -25,7 +27,8 @@ data class ProotResult(
 )
 
 /**
- * 用随包的 `libproot_exec.so` 启动 PRoot，把当前应用内工作区挂载到 rootfs 的 /workspace。
+ * 用随包的 `libproot_exec.so` 启动 PRoot，把当前应用内工作区挂载到 rootfs 的 /workspace，
+ * 同时把本机共享存储挂到 /sdcard、应用专属外置目录挂到 /mnt/iris。
  * 不依赖 root、Termux 或系统 proot。
  */
 class ProotRuntime(
@@ -103,7 +106,12 @@ class ProotRuntime(
         require(workspaceDir.isDirectory) { "工作区目录不存在：${workspaceDir.absolutePath}" }
 
         // PRoot 的 bind 目标需要在 guest 内存在
-        File(rootfs, ProotPaths.ROOTFS_WORKSPACE_DIR).mkdirs()
+        listOf(
+            ProotPaths.ROOTFS_WORKSPACE_DIR,
+            ProotPaths.ROOTFS_SHARED_STORAGE,
+            ProotPaths.ROOTFS_STORAGE_ROOT,
+            ProotPaths.ROOTFS_APP_STORAGE,
+        ).forEach { ensureGuestMountPoint(rootfs, it) }
         val tempDir = paths.tempDir(imageId).apply { mkdirs() }
         patcher.patch(rootfs)
 
@@ -138,6 +146,10 @@ class ProotRuntime(
         add(ProotPaths.ROOTFS_WORKSPACE_DIR)
         add("-b")
         add("${workspaceDir.absolutePath}:${ProotPaths.ROOTFS_WORKSPACE_DIR}")
+        storageMounts().forEach { (host, guest) ->
+            add("-b")
+            add("$host:$guest")
+        }
         listOf("/dev", "/proc", "/sys").forEach { path ->
             if (File(path).exists()) {
                 add("-b")
@@ -164,6 +176,32 @@ class ProotRuntime(
         add("iris")
         add(ProotPaths.ROOTFS_WORKSPACE_DIR)
         add(command)
+    }
+
+    private fun ensureGuestMountPoint(rootfs: File, guest: String) {
+        val target = File(rootfs, guest)
+        if (!target.exists() && !Files.isSymbolicLink(target.toPath())) {
+            target.mkdirs()
+        }
+    }
+
+    /**
+     * 容器内可见的本机存储。共享存储需要「所有文件访问」才能读写应用目录之外的路径；
+     * 应用专属外置目录不需要额外授权，因此总是挂载。
+     */
+    fun storageMounts(): List<Pair<String, String>> = buildList {
+        context.getExternalFilesDir(null)?.takeIf { it.isDirectory }?.let { dir ->
+            add(dir.absolutePath to ProotPaths.ROOTFS_APP_STORAGE)
+        }
+        val shared = Environment.getExternalStorageDirectory()
+        if (shared != null && shared.isDirectory) {
+            add(shared.absolutePath to ProotPaths.ROOTFS_SHARED_STORAGE)
+            // /storage 挂载后才能直接访问 /storage/emulated/0 与 SD 卡路径。
+            val storageRoot = shared.parentFile?.parentFile
+            if (storageRoot != null && storageRoot.isDirectory) {
+                add(storageRoot.absolutePath to ProotPaths.ROOTFS_STORAGE_ROOT)
+            }
+        }
     }
 
     private fun Process.readResult(timeoutMillis: Long, maxChars: Int): ProotResult {

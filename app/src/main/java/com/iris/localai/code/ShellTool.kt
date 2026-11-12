@@ -58,7 +58,7 @@ class ShellTool(
         }
     }
 
-    private fun executeAppShell(settings: CodeSettings, command: String): String {
+    private suspend fun executeAppShell(settings: CodeSettings, command: String): String {
         val active = workspaces.active()
         val workspace = when {
             active == null -> File(context.filesDir, "workspace")
@@ -68,42 +68,56 @@ class ShellTool(
         }
         workspace.mkdirs()
 
-        return runCatching {
-            val process = ProcessBuilder("/system/bin/sh", "-c", command)
-                .directory(workspace)
-                .redirectErrorStream(true)
-                .start()
-            val limit = settings.outputLimit.coerceIn(1024, 200_000)
-            val output = StringBuilder()
-            val reader = thread(start = true, isDaemon = true) {
-                runCatching {
-                    process.inputStream.bufferedReader().use { stream ->
-                        val buffer = CharArray(4096)
-                        while (true) {
-                            val count = stream.read(buffer)
-                            if (count < 0) break
-                            if (output.length < limit) {
-                                output.append(buffer, 0, minOf(count, limit - output.length))
-                            }
+        return try {
+            runInterruptible(Dispatchers.IO) { runAppShell(settings, workspace, command) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            "执行失败：${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    private fun runAppShell(settings: CodeSettings, workspace: File, command: String): String {
+        val timeout = settings.timeoutSeconds.coerceIn(1, 300)
+        val limit = settings.outputLimit.coerceIn(1024, 200_000)
+        val process = ProcessBuilder("/system/bin/sh", "-c", command)
+            .directory(workspace)
+            .redirectErrorStream(true)
+            .start()
+        val output = StringBuilder()
+        val reader = thread(start = true, isDaemon = true) {
+            runCatching {
+                process.inputStream.bufferedReader().use { stream ->
+                    val buffer = CharArray(4096)
+                    while (true) {
+                        val count = stream.read(buffer)
+                        if (count < 0) break
+                        if (output.length < limit) {
+                            output.append(buffer, 0, minOf(count, limit - output.length))
                         }
                     }
                 }
             }
+        }
 
-            val finished = process.waitFor(
-                settings.timeoutSeconds.coerceIn(1, 300).toLong(),
-                TimeUnit.SECONDS,
-            )
-            if (!finished) {
-                process.destroyForcibly()
+        try {
+            if (!process.waitFor(timeout.toLong(), TimeUnit.SECONDS)) {
+                killProcessTree(process)
                 reader.join(1000)
-                return@runCatching "执行超时（${settings.timeoutSeconds}s），已终止\n${output.toString()}"
+                return "执行超时（${timeout}s），已终止。目录很大时可缩小检索范围，或在「命令执行通道」提高超时。\n" +
+                    output.toString()
             }
             reader.join(2000)
             val text = output.toString()
             val suffix = if (output.length >= limit) "\n…输出已截断" else ""
-            "exit=${process.exitValue()}\n$text$suffix"
-        }.getOrElse { "执行失败：${it.message ?: "未知错误"}" }
+            return "exit=${process.exitValue()}\n$text$suffix"
+        } finally {
+            if (process.isAlive) killProcessTree(process)
+        }
+    }
+
+    private fun killProcessTree(process: Process) {
+        process.destroyForcibly()
     }
 
     private suspend fun executeProot(settings: CodeSettings, command: String): String {
@@ -155,7 +169,10 @@ class ShellTool(
                 append("\n[stderr]\n")
                 append(result.stderr.trimEnd())
             }
-            if (result.timedOut) append("\n执行超时（${settings.timeoutSeconds}s），已终止")
+            if (result.timedOut) {
+                append("\n执行超时（${settings.timeoutSeconds}s），已终止。目录很大时可缩小检索范围，")
+                append("或在「命令执行通道」提高超时。")
+            }
             if (result.truncated) append("\n…输出已截断")
         }
     }

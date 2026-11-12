@@ -43,6 +43,12 @@ android {
         // PRoot 启动器以 .so 形式随包，需要解压到 nativeLibraryDir 才能执行。
         jniLibs {
             useLegacyPackaging = true
+            // OpenCV 只保留 arm64-v8a，避免 APK 多带 90MB 的其他 ABI。
+            excludes += listOf(
+                "lib/armeabi-v7a/libopencv_java4.so",
+                "lib/x86/libopencv_java4.so",
+                "lib/x86_64/libopencv_java4.so",
+            )
         }
     }
 }
@@ -78,6 +84,8 @@ dependencies {
     implementation(libs.hiddenapibypass)
     // sherpa-onnx 1.13.8: 本地 TTS/ASR；由 Gradle 从 JitPack 按需下载完整 AAR，不随仓库内置裁剪版。
     implementation("com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8")
+    // OpenCV 官方 AAR（Apache-2.0），用于 AR 光流位移跟踪。
+    implementation("org.opencv:opencv:4.14.0")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.zxing:core:3.5.4")

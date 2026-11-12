@@ -141,7 +141,7 @@ class AppGraph(
     val skills = SkillStore(context)
     val code = CodeSettingsStore(context)
     val workspaces = WorkspaceStore(context)
-    val huggingFace = HuggingFaceClient()
+    val huggingFace = HuggingFaceClient { settings.current.mirrorEnabled }
     val assetDownloads = AssetDownloadManager(context, ioScope)
     val motionAssets = MotionAssetStore(context, storage)
     val vrmaMotions = VrmaMotionStore(context, storage)
@@ -178,7 +178,7 @@ class AppGraph(
     )
     val memoryAutoCapture = MemoryAutoCapture(context, memory, conversations, engines, settings)
     val mcp = McpStore(context, storage)
-    val toolClips = HastMotionStore.get(context)
+    val toolClips = HastMotionStore.get(context) { settings.current.mirrorEnabled }
     val integrationStore = IntegrationStore(context)
     val browser = BrowserController(context) { integrationStore.settings.value.browser }
     val tools = ToolRegistry().apply {

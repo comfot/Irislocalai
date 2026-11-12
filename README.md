@@ -22,7 +22,7 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 - **家与居民**：「家」按角色卡数量生成小人（每张卡一个居民），房屋包含客厅、餐厅、厨房、卧室、书架/鱼缸/猫窝与带栅栏的院子；小人的名字、造型（标准/长发/工装/礼服）与颜色在 设置 › 高级功能 › 空间管理 › 综合空间 中配置，保存在本地偏好。综合空间底部的「设置」按钮直达该页。场所内的人物会对家具/墙体做碰撞检测与分轴避障，并在彼此之间保持最小间距，不再直接穿过家具。
 - **YSM 小人模型**：同一设置页可为角色卡绑定未加密的 YSM 模型（含 `ysm.json` 的文件夹或 ZIP），也可直接导入加密 `.ysm`：内置 MIT 许可的 YSMParser WASM，在 WebView 内存中解密 V1/V2/V3 并反推为基岩版 geometry，再按 YSM 的镜像坐标/UV 规则渲染；`.ysm` 不会落盘为明文。解析失败或未绑定模型时回退程序化小人。仅应用于你拥有授权、允许本地预览的模型。
 - 会话按空间隔离，统一持久化到 `conversations.json`；切换空间会切换对应会话与输入栏。
-- 视频通话会持续采集前置摄像头画面和麦克风，本地或云端 ASR 转写后连同画面帧进入多模态对话，回复再由本地、云端或系统 TTS 朗读，形成实时语音视频对话。
+- 视频通话会持续采集前置摄像头画面和麦克风，本地或云端 ASR 转写后连同画面帧进入多模态对话，回复再由本地、云端或系统 TTS 朗读，形成实时语音视频对话。通话支持两种舞台：房间背景（场景图/视频 + 上半身取景）与 AR 网格（后置相机 + IMU 姿态驱动的地平面锚定 + 全身模型），入口在 设置 › 交互 › 视频通话；AR 网格对 Live2D、VRM/GLB 与 MMD 都可用，网格对齐反编译版的琥珀色 #FFCC40、±1 范围 0.5 步长 5×5 线与 1.2 半径地面环；手机转动时网格与人物固定在真实地面上，拖动可重新锚定，大小/位置/相机高度会持久化。
 - 会话归档：侧栏会话菜单可归档/恢复；归档会话从活跃列表移入「已归档」区，归档时触发一次记忆沉淀；删除归档会话只删除会话记录，不删除已沉淀记忆。
 - 侧栏包含会话列表、可折叠工作区与角色卡横排；顶栏可切换空间，设置入口位于侧栏底部。
 
@@ -34,6 +34,7 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 - **档案运用**：档案可设为“运用全局配置”，或指定到工作空间与生活空间角色卡；全局开启时“运用到”自动停用。切换档案只改变角色模型配置，不影响提供商。
 - **多模态输入**：开启提供商「支持识图」后，图片附件按视觉模型以 `image_url` 内容发送。
 - **本地模型市场**：Hugging Face 搜索、GGUF 断点续传、官方源失败回退 hf-mirror、ModelScope 备用检索，并内置推荐模型目录。
+- **网络设置**：设置 › 系统管理 › 网络 可统一开关「启用备用下载源」——开启时官方源超时或失败才回退 hf-mirror、jsDelivr 等镜像，关闭后只访问官方源；同一页列出应用全部下载与抓取地址（Hugging Face、hf-mirror、ModelScope、GitHub Raw/jsDelivr/API、Operit 市场与仅在构建期使用的 JitPack）。
 - **角色模型广场**：聚合模之屋、Bowlroll、BOOTH、VRoid Hub 等站点与创作者名录，支持站点搜索和链接导入。
 
 ### Agent 与工具链
@@ -70,14 +71,14 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 - **Shizuku**：授权申请、shell 命令执行、自动开启无障碍；后台/Shizuku 模式优先走 Shizuku，失败回退无障碍。
 - **后台运行方式**：普通屏幕、Aries 风格虚拟屏、本机 freeform 小窗；虚拟屏使用 ImageReader 收帧与定向事件注入。
 - **应用 Shell**：在应用内工作区执行 `/system/bin/sh`，带超时、输出上限与命令前缀限制。
-- **PRoot 容器**：随包 proot 启动器 + rootfs，安装 Alpine / Ubuntu / Debian / 自定义镜像，rootfs 位于 `filesDir/proot/<imageId>/linux`，工作区挂载到容器 `/workspace`。
+- **PRoot 容器**：随包 proot 启动器 + rootfs，安装 Alpine / Ubuntu / Debian / 自定义镜像，rootfs 位于 `filesDir/proot/<imageId>/linux`，工作区挂载到容器 `/workspace`；本机共享存储挂载到 `/sdcard` 与 `/storage`（`/storage/emulated/0` 与 SD 卡路径可用），应用专属外置目录挂载到 `/mnt/iris`。共享存储读写需在「编程管理 › 本机存储挂载」授予「所有文件访问」。
 - **工作区文件工具**：应用内工作区使用 `File` + canonical 路径校验；SAF 工作区使用 `ContentResolver` + `DocumentsContract`。
 
 ### 通知与外观
 
 - 生成完成通知，支持锁屏可见、悬浮提醒与灵动岛样式悬浮层。
 - 主题支持跟随系统、浅色、深色；综合空间强调色与明暗主题实时传入 3D 场景。
-- 设置体系共 7 个分组、37 个入口（含 3 个二级隐藏页），覆盖模型、后端、生成、性能、智能体、上下文、角色、语音、场景、API、MCP、插件、市场、技能、编程、权限、存储、通知与数据管理。
+- 设置体系共 7 个分组、37 个入口（含 3 个二级隐藏页），覆盖模型、后端、生成、性能、智能体、上下文、角色、语音、场景、API、MCP、插件、市场、技能、编程、权限、存储、网络、通知与数据管理。
 
 ### 接入与自动化
 
@@ -269,7 +270,7 @@ app/src/main/
 
 - JDK 17
 - Android SDK Platform 35 + Build Tools
-- 首次构建需要访问 JitPack 与 GitHub Release（下载 sherpa-onnx 1.13.8 完整 AAR）
+- 首次构建需要访问 JitPack 与 GitHub Release（下载 sherpa-onnx 1.13.8 完整 AAR），以及 Maven Central 的 OpenCV 4.14.0 AAR（约 123 MB，APK 只保留 arm64-v8a 的 `libopencv_java4.so`）
 - Gradle 9.1.0（仓库 wrapper 的 `distributionUrl` 指向本地 `/root/gradle/gradle-9.1.0-bin.zip`，其他环境请改成可访问的 Gradle 发行包）
 - Android SDK 路径通过 `local.properties` 的 `sdk.dir` 指定
 
@@ -282,7 +283,7 @@ export GRADLE_USER_HOME=/root/.gradle
 ./gradlew assembleDebug
 ```
 
-产物：`app/build/outputs/apk/debug/app-debug.apk`，当前约 128 MB（完整 sherpa AAR 包含全部 ABI），minSdk 31 / target 35。
+产物：`app/build/outputs/apk/debug/app-debug.apk`，当前约 164 MB（完整 sherpa AAR + OpenCV arm64 库；其他 ABI 的 `libopencv_java4.so` 已在打包时排除），minSdk 31 / target 35。
 
 单元测试：
 
@@ -306,8 +307,8 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 - **记忆关系图**：没有引入 ObjectBox，使用 JSON 复刻 Operit 的节点/边语义；自动连边依据共享标签或同文件夹，手动关系和自动沉淀的模型抽取关系都会写入 `links.json`。
 - **自动沉淀**：归档会话时触发一次当前引擎的结构化记忆抽取；引擎不可用、失败或返回非 JSON 时回退用户陈述规则提取。记忆页“整理最近对话”也可手动触发。删除归档会话不会删除已写入的记忆。自动抽取质量受模型能力影响。
 - **工作区位置**：`workspaceLocation` / `customWorkspacePath` 已持久化，但 Shell、PRoot 与文件工具仍以 `WorkspaceStore` 的活动工作区为准。
-- **角色模型**：VRM/GLB、Live2D、MMD 已接入实际渲染；MMD VMD 动作编排、VRM 表情/动作切换与更多口型细节仍有缺口。TTS 播放已通过 Visualizer 提供真实振幅并驱动 Live2D 口型。
-- **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。
+- **角色模型**：VRM/GLB、Live2D、MMD 已接入实际渲染；MMD VMD 动作编排、VRM 表情/动作切换与更多口型细节仍有缺口。TTS 播放已通过 Visualizer 提供真实振幅并驱动 Live2D 口型；Live2D 另带眨眼、视线游移、头部/身体摆动与呼吸，口型按振幅平滑并叠加音节包络，通话与生活空间共用同一套动作。
+- **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。AR 网格默认是 **IMU 姿态驱动的 3DoF 地平面锚定**（后置相机 + 固定相机高度）；设置 › 交互 可开启实验性 **OpenCV 光流位移**（后置相机 `ImageReader` YUV 灰度帧 + RANSAC 仿射估计平移/尺度，水平视场角由焦距/传感器尺寸估算，尺度变化用于微调相机高度），但仍是平面假设下的近似，没有单应分解、特征地图或 EKF，光照差、快速转动或走动会漂移，可在通话中点「重新定位」；双 Surface 会话失败时会退回纯预览。横屏时退回静态网格。模型尺寸直接绑定地面环的屏幕直径（高度 = 环直径 × 人物高度 / 2.4m），远近变化时与网格严格同比例；脚底位置按模型类型取默认值（Live2D 0.99 / MMD 0.70 / 3D 0.82），可用「脚底微调」修正。开启实验开关后可在通话中点「记录日志」，CSV 写到 `Android/data/com.iris.localai/files/tracking/`（逐帧 IMU、仿射、单应、特征点对与估计位移），用于校准符号和选解。
 - **桌宠与虚拟屏**：桌宠依赖悬浮窗权限；虚拟屏依赖 Shizuku + HiddenApiBypass，freeform 依赖 ROM 支持。
 - **插件兼容**：Operit Compose DSL UI 无法在 WebView 渲染；依赖任意 Java 反射、`Java.implement`、`loadDex/loadJar` 或宿主单例的插件无法等价运行。
 - **本地语音模型**：sherpa-onnx 1.13.8（Apache-2.0），Gradle 坐标 `com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8`，首次构建从 JitPack 下载完整 AAR；官方 release 下载地址：`https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar`。Kokoro/MeloTTS 与 SenseVoice/Paraformer 按各自模型作者的许可使用，首次使用需在设置中下载 pinned revision 的模型文件。

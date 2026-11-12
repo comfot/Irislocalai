@@ -33,10 +33,12 @@ data class HfFile(
 )
 
 /**
- * Hugging Face 搜索与 GGUF 下载。优先官方源，超时/失败自动回退 hf-mirror（国内可用）。
+ * Hugging Face 搜索与 GGUF 下载。优先官方源，超时/失败自动回退 hf-mirror（可在设置 › 网络 关闭备用源）。
  * 下载支持 .part 断点续传，目录为应用私有 models/。
  */
-class HuggingFaceClient {
+class HuggingFaceClient(
+    private val mirrorsEnabled: () -> Boolean = { true },
+) {
 
     suspend fun search(
         query: String,
@@ -217,15 +219,6 @@ class HuggingFaceClient {
         return Result.failure(lastError ?: IOException("没有可用的 Hugging Face 源"))
     }
 
-    private fun bases(source: DownloadSource): List<String> = when (source) {
-        DownloadSource.AUTO -> BASES
-        DownloadSource.HUGGING_FACE -> listOf(HUGGING_FACE)
-        DownloadSource.MIRROR -> listOf(MIRROR)
-    }
-
-    private companion object {
-        const val HUGGING_FACE = "https://huggingface.co"
-        const val MIRROR = "https://hf-mirror.com"
-        val BASES = listOf(HUGGING_FACE, MIRROR)
-    }
+    private fun bases(source: DownloadSource): List<String> =
+        DownloadSources.hfBases(source, mirrorsEnabled())
 }

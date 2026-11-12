@@ -95,6 +95,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     val settings: StateFlow<AppSettings> = graph.settings.settings
 
+    /** AR 视频通话拖动摆放：坐标是屏幕宽/高的比例，参考版用 place_x/place_y 持久化。 */
+    fun updateVideoCallPlacement(offsetX: Float, offsetY: Float) {
+        graph.settings.update {
+            it.copy(
+                videoCallArOffsetX = offsetX.coerceIn(-0.35f, 0.35f),
+                videoCallArOffsetY = offsetY.coerceIn(-0.35f, 0.35f),
+            )
+        }
+    }
+
     val modelProfiles = graph.models.profiles
     val activeModelProfileId = graph.models.activeId
 

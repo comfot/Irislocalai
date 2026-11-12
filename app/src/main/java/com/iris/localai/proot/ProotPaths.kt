@@ -38,6 +38,15 @@ class ProotPaths(private val baseDir: File) {
         /** Rootfs 内工作区文件区的挂载点。 */
         const val ROOTFS_WORKSPACE_DIR = "/workspace"
 
+        /** Rootfs 内共享存储（/storage/emulated/0）的挂载点。 */
+        const val ROOTFS_SHARED_STORAGE = "/sdcard"
+
+        /** Rootfs 内挂载整个 /storage，支持 /storage/emulated/0 与 SD 卡路径。 */
+        const val ROOTFS_STORAGE_ROOT = "/storage"
+
+        /** Rootfs 内应用专属外置目录的挂载点，无需额外权限。 */
+        const val ROOTFS_APP_STORAGE = "/mnt/iris"
+
         private val NAME_REGEX = Regex("[A-Za-z0-9._-]+")
         private const val LINUX_DIR = "linux"
         private const val TEMP_DIR = "tmp"

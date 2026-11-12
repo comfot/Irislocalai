@@ -23,7 +23,7 @@ data class CodeSettings(
     val imageId: String = "alpine-3.21",
     val imagePath: String = "",
     val imageUrl: String = "",
-    val timeoutSeconds: Int = 60,
+    val timeoutSeconds: Int = 120,
     val outputLimit: Int = 20_000,
     val networkEnabled: Boolean = true,
     val shellAuthorization: ToolAuthorization = ToolAuthorization.ASK,

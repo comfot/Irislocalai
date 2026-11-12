@@ -59,7 +59,9 @@ class CharacterPlazaViewModel(application: Application) : AndroidViewModel(appli
             _loading.value = true
             runCatching {
                 withTimeout(30_000) {
-                    withContext(Dispatchers.IO) { CharacterPlazaClient.load() }
+                    withContext(Dispatchers.IO) {
+                        CharacterPlazaClient.load(graph.settings.current.mirrorEnabled)
+                    }
                 }
             }
                 .onSuccess { config ->

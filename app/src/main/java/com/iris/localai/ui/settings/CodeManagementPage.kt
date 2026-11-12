@@ -1,5 +1,10 @@
 package com.iris.localai.ui.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +30,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,9 +38,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.localai.code.CodeImageCatalog
@@ -47,6 +57,33 @@ internal fun CodeManagementPage(viewModel: CodeViewModel = viewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val proot by viewModel.prootState.collectAsStateWithLifecycle()
     var portText by remember(settings.sshPort) { mutableStateOf(settings.sshPort.toString()) }
+    val context = LocalContext.current
+    var storageGranted by remember { mutableStateOf(Environment.isExternalStorageManager()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                storageGranted = Environment.isExternalStorageManager()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    fun requestStorageAccess() {
+        val perApp = Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse("package:${context.packageName}"),
+        )
+        runCatching { context.startActivity(perApp) }
+            .recoverCatching {
+                context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+            .onFailure {
+                Toast.makeText(context, "无法打开存储权限设置", Toast.LENGTH_SHORT).show()
+            }
+    }
 
     LaunchedEffect(settings.imageId) {
         viewModel.refreshProot()
@@ -198,6 +235,46 @@ internal fun CodeManagementPage(viewModel: CodeViewModel = viewModel()) {
             Text(
                 text = "PRoot 仅支持应用内工作区；SAF 文件夹请使用应用 Shell。" +
                     "使用前需开启「启用命令执行」，并把 Shell 执行授权设为允许。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SettingsCard("本机存储挂载") {
+            Text(
+                text = "PRoot 容器启动时会挂载以下目录：",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            InfoRow("共享存储", "/sdcard")
+            InfoRow("应用外置目录", "/mnt/iris")
+            Text(
+                text = context.getExternalFilesDir(null)?.absolutePath ?: "应用外置目录不可用",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = if (storageGranted) "所有文件访问：已授权" else "所有文件访问：未授权",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (storageGranted) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+                if (!storageGranted) {
+                    TextButton(onClick = { requestStorageAccess() }) { Text("去授权") }
+                }
+            }
+            Text(
+                text = "未授权时 /sdcard 只能读写应用自身目录；Android 11+ 需授予「所有文件访问」才能读写下载、图片等共享目录。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

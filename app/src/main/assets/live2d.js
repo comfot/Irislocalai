@@ -53,7 +53,14 @@
   let mouthAmplitude = 0
   let mood = 'neutral'
   let currentMood = ''
-  let mouthPhase = 0
+  const idleState = {
+    gazeX: 0, gazeY: 0, gazeTargetX: 0, gazeTargetY: 0, gazeNext: 0,
+    blinkStart: -1, blinkNext: 2.2,
+    swayX: 0, swayY: 0, swayZ: 0, swayTargetX: 0, swayTargetY: 0, swayTargetZ: 0, swayNext: 0,
+    breath: Math.random() * Math.PI * 2,
+    mouth: 0,
+    mouthForm: 0,
+  }
   let availableExpressions = []
   let availableMotions = []
   let zoom = 1
@@ -302,20 +309,97 @@
     },
   }
 
-  PIXI.Ticker.shared.add(() => {
+  function writeParam(core, id, value) {
+    try { core.setParameterValueById(id, value, 1) } catch (_) { }
+  }
+
+  function moodMouthForm() {
+    if (mood === 'happy') return 0.32
+    if (mood === 'sad') return -0.28
+    if (mood === 'angry') return -0.2
+    if (mood === 'surprised') return 0.08
+    return 0
+  }
+
+  function moodEyeScale() {
+    if (mood === 'happy') return 0.86
+    if (mood === 'sad') return 0.92
+    return 1
+  }
+
+  function mouthTarget(now) {
+    if (!speaking || !options.mouth) return 0
+    if (mouthAmplitude > 0.02) {
+      const wobble = 0.86 + 0.14 * Math.sin(now * 13.0 + 1.7)
+      return Math.min(1, 0.08 + mouthAmplitude * 0.92 * wobble)
+    }
+    // 没有 TTS 振幅时合成带重音的音节包络，避免机械的正弦嘴型。
+    const syllable = Math.abs(Math.sin(now * 9.2)) * (0.55 + 0.45 * Math.abs(Math.sin(now * 2.6)))
+    return 0.06 + syllable * 0.52
+  }
+
+  PIXI.Ticker.shared.add((delta) => {
     if (!model || !model.internalModel || !model.internalModel.coreModel) return
     const core = model.internalModel.coreModel
-    if (speaking && options.mouth) {
-      mouthPhase += 0.3
-      const open = mouthAmplitude > 0.01
-        ? 0.12 + mouthAmplitude * 0.78
-        : 0.18 + 0.5 * Math.abs(Math.sin(mouthPhase))
-      try { core.setParameterValueById('ParamMouthOpenY', open, 1) } catch (_) { }
-    } else {
-      mouthPhase = 0
-      mouthAmplitude = 0
-      try { core.setParameterValueById('ParamMouthOpenY', 0, 1) } catch (_) { }
+    const now = performance.now() / 1000
+    const frames = typeof delta === 'number' ? delta : 1
+    const dt = Math.min(0.05, frames / 60)
+
+    if (now > idleState.blinkNext && idleState.blinkStart < 0) {
+      idleState.blinkStart = now
+      idleState.blinkNext = now + 2.4 + Math.random() * 3.8
     }
+    let eyeOpen = 1
+    if (idleState.blinkStart >= 0) {
+      const t = (now - idleState.blinkStart) / 0.14
+      if (t >= 1) idleState.blinkStart = -1
+      else eyeOpen = 1 - Math.sin(Math.PI * Math.min(1, t)) * 0.9
+    }
+
+    if (now > idleState.gazeNext) {
+      const spread = speaking ? 0.72 : 0.5
+      idleState.gazeTargetX = (Math.random() * 2 - 1) * spread
+      idleState.gazeTargetY = (Math.random() * 2 - 1) * spread * 0.65
+      idleState.gazeNext = now + 1.1 + Math.random() * 2.4
+    }
+    const gazeEase = Math.min(1, dt * 5.5)
+    idleState.gazeX += (idleState.gazeTargetX - idleState.gazeX) * gazeEase
+    idleState.gazeY += (idleState.gazeTargetY - idleState.gazeY) * gazeEase
+
+    if (now > idleState.swayNext) {
+      const amp = speaking ? 13 : 10
+      idleState.swayTargetX = (Math.random() * 2 - 1) * amp
+      idleState.swayTargetY = (Math.random() * 2 - 1) * amp * 1.05
+      idleState.swayTargetZ = (Math.random() * 2 - 1) * (speaking ? 5.2 : 4.2)
+      idleState.swayNext = now + 2.2 + Math.random() * 3.2
+    }
+    const swayEase = Math.min(1, dt * 2.2)
+    idleState.swayX += (idleState.swayTargetX - idleState.swayX) * swayEase
+    idleState.swayY += (idleState.swayTargetY - idleState.swayY) * swayEase
+    idleState.swayZ += (idleState.swayTargetZ - idleState.swayZ) * swayEase
+    idleState.breath += dt * (speaking ? 1.7 : 1.05)
+    const breath = 0.5 + Math.sin(idleState.breath) * 0.5
+
+    const nod = speaking ? Math.sin(now * 8.2) * 2.6 : 0
+    // 头部与视线用绝对写入：参数控制器不会每帧复位，叠加式写入会累积到极限。
+    writeParam(core, 'ParamAngleX', idleState.swayX * 0.9 + Math.sin(now * 0.6) * 1.1 + nod)
+    writeParam(core, 'ParamAngleY', idleState.swayY * 0.7 + idleState.gazeX * 3)
+    writeParam(core, 'ParamAngleZ', idleState.swayZ * 0.9 + Math.sin(now * 0.8) * 1.1)
+    writeParam(core, 'ParamBodyAngleX', idleState.swayX * 0.24 + Math.sin(now * 0.5) * 0.6)
+    writeParam(core, 'ParamBodyAngleZ', idleState.swayZ * 0.35)
+    writeParam(core, 'ParamBreath', breath)
+    writeParam(core, 'ParamEyeLOpen', eyeOpen * moodEyeScale())
+    writeParam(core, 'ParamEyeROpen', eyeOpen * moodEyeScale())
+    writeParam(core, 'ParamEyeBallX', idleState.gazeX)
+    writeParam(core, 'ParamEyeBallY', idleState.gazeY)
+
+    const target = mouthTarget(now)
+    const rate = target > idleState.mouth ? 20 : 10
+    idleState.mouth += (target - idleState.mouth) * Math.min(1, dt * rate)
+    writeParam(core, 'ParamMouthOpenY', idleState.mouth)
+    const formTarget = speaking ? moodMouthForm() + 0.12 : moodMouthForm()
+    idleState.mouthForm += (formTarget - idleState.mouthForm) * Math.min(1, dt * 3)
+    writeParam(core, 'ParamMouthForm', idleState.mouthForm)
   }, PIXI.UPDATE_PRIORITY.LOW)
 
   ;(async () => {

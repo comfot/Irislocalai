@@ -1,5 +1,6 @@
 package com.iris.localai.character
 
+import com.iris.localai.data.DownloadSources
 import com.iris.localai.data.RemoteFetch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -39,21 +40,20 @@ data class CharacterPlazaConfig(
  */
 object CharacterPlazaClient {
 
-    private val CREATOR_URLS = listOf(
-        "https://raw.githubusercontent.com/eghrhegpe/MikuMikuAR/main/creators.json",
-        "https://cdn.jsdelivr.net/gh/eghrhegpe/MikuMikuAR@main/creators.json",
-        "https://api.github.com/repos/eghrhegpe/MikuMikuAR/contents/creators.json",
-    )
-    private val SITE_URLS = listOf(
-        "https://raw.githubusercontent.com/eghrhegpe/MikuMikuAR/main/workshop_sites.json",
-        "https://cdn.jsdelivr.net/gh/eghrhegpe/MikuMikuAR@main/workshop_sites.json",
-        "https://api.github.com/repos/eghrhegpe/MikuMikuAR/contents/workshop_sites.json",
-    )
+    private const val PLAZA_REPO = "eghrhegpe/MikuMikuAR"
+    private const val PLAZA_BRANCH = "main"
+
+    private fun creatorUrls(mirrorsEnabled: Boolean): List<String> =
+        DownloadSources.githubContentCandidates(PLAZA_REPO, PLAZA_BRANCH, "creators.json", mirrorsEnabled)
+
+    private fun siteUrls(mirrorsEnabled: Boolean): List<String> =
+        DownloadSources.githubContentCandidates(PLAZA_REPO, PLAZA_BRANCH, "workshop_sites.json", mirrorsEnabled)
+
     private const val MAX_CONFIG_BYTES = 2L * 1024 * 1024
 
-    suspend fun load(): CharacterPlazaConfig {
-        val creators = fetchParsed(CREATOR_URLS, ::parseCreators)
-        val sites = fetchParsed(SITE_URLS, ::parseSites)
+    suspend fun load(mirrorsEnabled: Boolean = true): CharacterPlazaConfig {
+        val creators = fetchParsed(creatorUrls(mirrorsEnabled), ::parseCreators)
+        val sites = fetchParsed(siteUrls(mirrorsEnabled), ::parseSites)
         return CharacterPlazaConfig(
             sites = (sites.ifEmpty { builtInSites }).distinctBy { it.id },
             creators = creators,

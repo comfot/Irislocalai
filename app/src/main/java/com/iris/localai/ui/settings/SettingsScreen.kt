@@ -347,6 +347,7 @@ private fun SettingsDetail(
             onOpen3D = onOpen3D,
         )
         "live2d-control" -> Live2DControlPage(settings, viewModel)
+        "network" -> NetworkPage(settings, viewModel)
         "model3d-control" -> Model3DControlPage(settings, viewModel)
         "notification" -> NotificationPage(settings, viewModel)
         "pet" -> PetSettingsPage(settings, viewModel)

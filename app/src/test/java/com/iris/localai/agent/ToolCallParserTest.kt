@@ -88,4 +88,24 @@ class ToolCallParserTest {
         assertNull(ToolCallParser.earliestStart(text).takeIf { it >= 0 })
         assertEquals(text, ToolCallParser.stripToolCalls(text))
     }
+
+    @Test
+    fun `detects truncated tool call`() {
+        assertTrue(ToolCallParser.hasUnclosedToolCall("""<tool_call>{"name":"shell","arguments":{"command":"grep -r foo"""))
+        assertTrue(ToolCallParser.hasUnclosedToolCall("""<tool_call>{"name":"shell"""))
+        assertEquals(
+            false,
+            ToolCallParser.hasUnclosedToolCall("""<tool_call>{"name":"shell","arguments":{"command":"pwd"}}</tool_call>"""),
+        )
+        assertEquals(false, ToolCallParser.hasUnclosedToolCall("普通回答"))
+    }
+
+    @Test
+    fun `detects bare command answer`() {
+        val command = "cd '/sdcard/foo'; echo '== x =='; grep -o 'const-string[^,]*, \"[^\"]*\"' a.smali | head -60"
+        assertTrue(ToolCallParser.looksLikeBareCommand(command))
+        assertEquals(false, ToolCallParser.looksLikeBareCommand("cd 是切换目录的命令。"))
+        assertEquals(false, ToolCallParser.looksLikeBareCommand("```\ncd /tmp && ls\n```"))
+        assertEquals(false, ToolCallParser.looksLikeBareCommand(""))
+    }
 }

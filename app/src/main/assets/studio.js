@@ -55,7 +55,8 @@
   }
 
   function isObstacleAt(x, z, radius = PERSON_RADIUS) {
-    if (x < walkArea.minX || x > walkArea.maxX || z < walkArea.minZ || z > walkArea.maxZ) return true
+    if (x - radius < walkArea.minX || x + radius > walkArea.maxX) return true
+    if (z - radius < walkArea.minZ || z + radius > walkArea.maxZ) return true
     for (const box of obstacles) {
       if (x + radius > box.minX && x - radius < box.maxX && z + radius > box.minZ && z - radius < box.maxZ) {
         return true
@@ -65,10 +66,11 @@
   }
 
   function pickWalkTarget(walk) {
-    for (let attempt = 0; attempt < 24; attempt++) {
-      const x = walk.minX + rand() * Math.max(0.1, walk.maxX - walk.minX)
-      const z = walk.minZ + rand() * Math.max(0.1, walk.maxZ - walk.minZ)
-      if (!isObstacleAt(x, z, PERSON_RADIUS + 0.04)) {
+    const radius = walk.radius ?? PERSON_RADIUS
+    for (let attempt = 0; attempt < 48; attempt++) {
+      const x = walk.minX + radius + rand() * Math.max(0.1, walk.maxX - walk.minX - radius * 2)
+      const z = walk.minZ + radius + rand() * Math.max(0.1, walk.maxZ - walk.minZ - radius * 2)
+      if (!isObstacleAt(x, z, radius + 0.04)) {
         walk.targetX = x
         walk.targetZ = z
         return true
@@ -77,16 +79,16 @@
     return false
   }
 
-  function findFreeSpot(x, z) {
-    const clampX = Math.max(walkArea.minX, Math.min(walkArea.maxX, x))
-    const clampZ = Math.max(walkArea.minZ, Math.min(walkArea.maxZ, z))
-    if (!isObstacleAt(clampX, clampZ, PERSON_RADIUS + 0.04)) return { x: clampX, z: clampZ }
-    for (let radius = 0.3; radius <= 2.4; radius += 0.3) {
+  function findFreeSpot(x, z, radius = PERSON_RADIUS) {
+    const clampX = Math.max(walkArea.minX + radius, Math.min(walkArea.maxX - radius, x))
+    const clampZ = Math.max(walkArea.minZ + radius, Math.min(walkArea.maxZ - radius, z))
+    if (!isObstacleAt(clampX, clampZ, radius + 0.04)) return { x: clampX, z: clampZ }
+    for (let ring = 0.3; ring <= 2.4; ring += 0.3) {
       for (let i = 0; i < 12; i++) {
         const angle = (i / 12) * Math.PI * 2
-        const nx = clampX + Math.cos(angle) * radius
-        const nz = clampZ + Math.sin(angle) * radius
-        if (!isObstacleAt(nx, nz, PERSON_RADIUS + 0.04)) return { x: nx, z: nz }
+        const nx = clampX + Math.cos(angle) * ring
+        const nz = clampZ + Math.sin(angle) * ring
+        if (!isObstacleAt(nx, nz, radius + 0.04)) return { x: nx, z: nz }
       }
     }
     return { x: clampX, z: clampZ }
@@ -913,10 +915,12 @@
   function addPerson(group, options) {
     const p = palette()
     const person = new THREE.Group()
-    const spot = findFreeSpot(options.x, options.z)
+    const scale = options.scale ?? 1
+    const radius = PERSON_RADIUS * scale
+    const spot = findFreeSpot(options.x, options.z, radius)
     person.position.set(spot.x, options.y ?? 0, spot.z)
     person.rotation.y = options.facing ?? 0
-    person.scale.setScalar(options.scale ?? 1)
+    person.scale.setScalar(scale)
     group.add(person)
 
     const accent = options.accent ?? accentColor()
@@ -978,6 +982,7 @@
       maxX: walkArea.maxX,
       minZ: walkArea.minZ,
       maxZ: walkArea.maxZ,
+      radius: radius,
       speed: options.walkSpeed ?? 1.0,
       targetX: spot.x,
       targetZ: spot.z,
@@ -1153,6 +1158,220 @@
       }
     }
     return g
+  }
+
+  /** 地毯：底色 + 内嵌边框，纯装饰不参与碰撞。 */
+  function buildRug(group, x, z, width, depth, color, options = {}) {
+    const p = palette()
+    plane(group, width, depth, color, x, 0.085, z, { opacity: options.opacity ?? 0.94, cast: false })
+    plane(group, width - 0.3, depth - 0.3, options.border ?? p.fabricLight, x, 0.09, z, {
+      opacity: 0.5,
+      cast: false,
+    })
+    plane(group, width - 0.52, depth - 0.52, color, x, 0.095, z, { opacity: 0.94, cast: false })
+  }
+
+  /** 壁灯：贴墙底座 + 暖光灯泡。 */
+  function buildWallLamp(group, x, y, z, options = {}) {
+    const p = palette()
+    box(group, 0.12, 0.26, 0.07, p.darkMetal, x, y, z)
+    sphere(group, 0.12, '#ffe2b8', x, y + 0.02, z + (options.out ?? 0.08), { glow: true, detail: 10 })
+  }
+
+  /** 墙面装饰：外框 + 内芯，rotation 为绕 Y 轴朝向。 */
+  function buildWallFrame(group, x, y, z, width, height, options = {}) {
+    const p = palette()
+    const rotation = options.rotation ?? 0
+    const nx = Math.sin(rotation) * 0.035
+    const nz = Math.cos(rotation) * 0.035
+    box(group, width, height, 0.05, options.frame ?? p.woodLight, x, y, z, { rotation: [0, rotation, 0] })
+    box(
+      group,
+      width - 0.12,
+      height - 0.12,
+      0.02,
+      options.color ?? p.paper,
+      x + nx,
+      y,
+      z + nz,
+      { rotation: [0, rotation, 0], glow: options.glow, emissiveIntensity: 0.4 },
+    )
+  }
+
+  /** 户外路灯，自带小碰撞盒。 */
+  function buildLampPost(group, x, z, options = {}) {
+    const p = palette()
+    const height = options.height ?? 2.3
+    cylinder(group, 0.11, 0.15, 0.14, 10, p.darkMetal, x, 0.07, z)
+    cylinder(group, 0.045, 0.06, height, 8, p.darkMetal, x, height / 2 + 0.1, z)
+    box(group, 0.5, 0.06, 0.06, p.darkMetal, x + 0.23, height + 0.08, z)
+    sphere(group, 0.11, '#ffe2b8', x + 0.44, height, z, { glow: true, detail: 10 })
+    addObstacleAt(x, z, 0.36, 0.36)
+  }
+
+  /** 户外长椅：座板 + 靠背 + 金属脚，朝向可选。 */
+  function buildBench(group, x, z, width, options = {}) {
+    const p = palette()
+    const bench = new THREE.Group()
+    bench.position.set(x, 0, z)
+    bench.rotation.y = options.facing ?? 0
+    group.add(bench)
+    for (let i = 0; i < 3; i++) {
+      box(bench, width, 0.06, 0.14, options.color ?? p.woodLight, 0, 0.42, -0.16 + i * 0.16)
+    }
+    for (const dx of [-width / 2 + 0.12, width / 2 - 0.12]) {
+      box(bench, 0.08, 0.42, 0.44, p.darkMetal, dx, 0.21, 0)
+      box(bench, 0.08, 0.52, 0.08, p.darkMetal, dx, 0.68, -0.32)
+    }
+    for (let i = 0; i < 2; i++) {
+      box(bench, width, 0.14, 0.05, options.color ?? p.woodLight, 0, 0.64 + i * 0.2, -0.34)
+    }
+    addObstacleAt(x, z, width + 0.2, 0.78)
+  }
+
+  /** 花坛：石框 + 土 + 花，带碰撞。 */
+  function buildFlowerBed(group, x, z, width, depth, options = {}) {
+    const p = palette()
+    box(group, width, 0.22, depth, p.stone, x, 0.11, z)
+    box(group, width - 0.18, 0.1, depth - 0.18, p.dirt, x, 0.2, z, { cast: false })
+    const colors = ['#ff9aa2', '#f6c177', '#b39ddb', '#ffd166']
+    for (let i = 0; i < Math.max(4, Math.round(width * 2.4)); i++) {
+      const fx = x - width / 2 + 0.22 + (i % 5) * ((width - 0.44) / 5)
+      const fz = z - depth / 2 + 0.22 + Math.floor(i / 5) * ((depth - 0.44) / 2)
+      cylinder(group, 0.02, 0.02, 0.24, 5, p.leaf, fx, 0.34, fz)
+      sphere(group, 0.075, colors[i % colors.length], fx, 0.48, fz, { detail: 8 })
+    }
+    addObstacleAt(x, z, width, depth)
+  }
+
+  /** 绿篱：叶色矮墙 + 顶部球体，带碰撞。 */
+  function buildHedge(group, x, z, width, depth, options = {}) {
+    const p = palette()
+    const height = options.height ?? 0.62
+    box(group, width, height, depth, p.leaf, x, height / 2, z, { roughness: 0.92 })
+    for (let i = 0; i < Math.max(2, Math.round(width / 0.45)); i++) {
+      sphere(group, 0.16, p.leafLight, x - width / 2 + 0.22 + i * 0.45, height + 0.01, z, { detail: 8 })
+    }
+    addObstacleAt(x, z, width, depth)
+  }
+
+  /** 广场喷泉：石池、水面、中心台与发光水柱。 */
+  function buildFountain(group, x, z, options = {}) {
+    const p = palette()
+    const radius = options.radius ?? 1.5
+    cylinder(group, radius, radius, 0.26, 30, p.stone, x, 0.13, z)
+    cylinder(group, radius - 0.2, radius - 0.2, 0.08, 30, p.glass, x, 0.28, z, {
+      glow: true,
+      opacity: 0.72,
+      emissiveIntensity: 0.25,
+    })
+    cylinder(group, 0.34, 0.46, 0.72, 16, p.stone, x, 0.55, z)
+    cylinder(group, 0.76, 0.66, 0.12, 22, p.stone, x, 0.95, z)
+    sphere(group, 0.14, accentColor(), x, 1.08, z, { glow: true, detail: 10 })
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2
+      cylinder(
+        group,
+        0.028,
+        0.028,
+        0.46,
+        5,
+        p.glass,
+        x + Math.cos(angle) * (radius - 0.45),
+        0.53,
+        z + Math.sin(angle) * (radius - 0.45),
+        { opacity: 0.35, cast: false },
+      )
+    }
+    addObstacleAt(x, z, radius * 2 + 0.16, radius * 2 + 0.16)
+  }
+
+  /** 木箱/料箱。 */
+  function buildCrate(group, x, z, options = {}) {
+    const p = palette()
+    const width = options.width ?? 0.62
+    const height = options.height ?? 0.5
+    const depth = options.depth ?? 0.62
+    const color = options.color ?? p.woodLight
+    box(group, width, height, depth, color, x, height / 2 + 0.05, z, { roughness: 0.86 })
+    box(group, width + 0.02, 0.06, 0.04, p.wood, x, height / 2 + 0.05, z + depth / 2 + 0.01)
+    box(group, width + 0.02, 0.06, 0.04, p.wood, x, height * 0.3, z + depth / 2 + 0.01)
+    addObstacleAt(x, z, width + 0.04, depth + 0.04)
+  }
+
+  /** 圆桶（油桶/涂料桶）。 */
+  function buildBarrel(group, x, z, options = {}) {
+    const p = palette()
+    const color = options.color ?? '#7db3ff'
+    cylinder(group, 0.26, 0.26, 0.7, 14, color, x, 0.35, z, { roughness: 0.7 })
+    cylinder(group, 0.29, 0.29, 0.05, 14, p.darkMetal, x, 0.17, z)
+    cylinder(group, 0.29, 0.29, 0.05, 14, p.darkMetal, x, 0.55, z)
+    addObstacleAt(x, z, 0.58, 0.58)
+  }
+
+  /** 成捆钢管，沿 X 轴摆放。 */
+  function buildPipes(group, x, z, length, options = {}) {
+    const p = palette()
+    box(group, length + 0.3, 0.08, 0.62, p.wood, x, 0.04, z)
+    for (let i = 0; i < 3; i++) {
+      cylinder(group, 0.085, 0.085, length, 10, options.color ?? p.metal, x, 0.15 + i * 0.18, z, {
+        rotation: [0, 0, Math.PI / 2],
+      })
+    }
+    addObstacleAt(x, z, length, 0.7)
+  }
+
+  /** 工地集装箱办公室。 */
+  function buildContainer(group, x, z, options = {}) {
+    const p = palette()
+    const width = options.width ?? 2.2
+    const height = options.height ?? 2.05
+    const depth = options.depth ?? 1.8
+    roundBox(group, width, height, depth, 0.05, options.color ?? '#7fb0c9', x, height / 2 + 0.02, z)
+    box(group, width - 0.3, 0.05, depth - 0.3, p.metal, x, height + 0.04, z, { cast: false })
+    box(group, 0.5, height - 0.42, 0.04, p.darkMetal, x, (height - 0.42) / 2 + 0.02, z + depth / 2)
+    box(group, 0.42, 0.3, 0.03, p.glass, x, height - 0.58, z + depth / 2 + 0.02, { glow: true, cast: false })
+    for (const dx of [-0.55, -0.15]) {
+      box(group, 0.3, 0.3, 0.03, p.glass, x + dx, height - 0.6, z + depth / 2 + 0.02, { cast: false })
+    }
+    addObstacleAt(x, z, width + 0.12, depth + 0.12)
+  }
+
+  /** 立式告示牌。 */
+  function buildSignpost(group, x, z, color, options = {}) {
+    const p = palette()
+    cylinder(group, 0.035, 0.035, 1.45, 6, p.metal, x, 0.72, z)
+    box(group, 0.82, 0.52, 0.05, p.paper, x, 1.4, z)
+    box(group, 0.7, 0.1, 0.02, color, x, 1.56, z + 0.04)
+    box(group, 0.52, 0.05, 0.02, p.darkMetal, x, 1.4, z + 0.04)
+    box(group, 0.62, 0.05, 0.02, p.darkMetal, x, 1.3, z + 0.04)
+    addObstacleAt(x, z, 0.32, 0.32)
+  }
+
+  /** 饮水机。 */
+  function buildWaterCooler(group, x, z) {
+    const p = palette()
+    box(group, 0.42, 0.92, 0.42, p.paper, x, 0.46, z)
+    cylinder(group, 0.17, 0.15, 0.44, 12, p.glass, x, 1.12, z, { opacity: 0.75 })
+    box(group, 0.26, 0.06, 0.06, p.metal, x, 0.56, z + 0.23)
+    addObstacleAt(x, z, 0.5, 0.5)
+  }
+
+  /** 排队立柱，可配一条横杆。 */
+  function buildStanchion(group, x, z, options = {}) {
+    const p = palette()
+    cylinder(group, 0.2, 0.23, 0.05, 12, p.metal, x, 0.03, z)
+    cylinder(group, 0.032, 0.032, 0.88, 8, p.metal, x, 0.48, z)
+    sphere(group, 0.055, options.color ?? accentColor(), x, 0.96, z, { detail: 8 })
+  }
+
+  /** 墙面时钟，默认朝 +Z。 */
+  function buildWallClock(group, x, y, z) {
+    const p = palette()
+    cylinder(group, 0.32, 0.32, 0.05, 24, p.paper, x, y, z, { rotation: [Math.PI / 2, 0, 0] })
+    cylinder(group, 0.28, 0.28, 0.02, 24, p.darkMetal, x, y, z + 0.035, { rotation: [Math.PI / 2, 0, 0], cast: false })
+    box(group, 0.02, 0.2, 0.015, p.paper, x, y + 0.1, z + 0.05)
+    box(group, 0.15, 0.02, 0.015, p.paper, x + 0.07, y, z + 0.05, { rotation: [0, 0, 0.3] })
   }
 
   function buildHome() {
@@ -1365,12 +1584,40 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
-    walkArea = { minX: 2.0, maxX: 4.3, minZ: -1.4, maxZ: 3.0 }
-    addObstacle(-3.55, 3.55, -2.75, -1.85)
-    addObstacle(-0.6, 1.4, 0.0, 2.0)
-    addObstacle(-4.7, -2.6, 1.55, 2.45)
-    addObstacle(2.0, 4.2, -1.25, 0.7)
+    walkArea = { minX: -4.45, maxX: 4.45, minZ: 0.55, maxZ: 3.55 }
+    addObstacle(-3.6, 3.6, -2.72, -1.28)
+    addObstacle(-1.12, 1.92, -0.52, 2.52)
+    addObstacle(-4.75, -2.55, 1.5, 2.5)
+    addObstacle(2.0, 4.2, -1.3, 0.72)
+    addObstacle(2.05, 3.35, 1.0, 1.8)
+    addObstacle(1.62, 2.08, 2.87, 3.33)
+    addObstacle(4.05, 4.62, 2.62, 3.3)
+    addObstacle(4.3, 4.8, 1.28, 1.92)
     buildRoom(g, { width: 10, depth: 8, height: 2.8, board: true, shelf: true })
+
+    // 木地板、地毯与吊灯
+    for (let i = 0; i < 10; i++) {
+      plane(g, 9.7, 0.78, i % 2 ? p.floor : p.floorDark, 0, 0.075, -3.6 + i * 0.8, { cast: false })
+    }
+    buildRug(g, 0.4, 1.0, 4.8, 3.4, p.fabricLight, { border: accentColor() })
+    buildRug(g, -3.5, 2.9, 2.2, 1.2, p.fabric, { opacity: 0.9 })
+    buildWallLamp(g, 2.4, 2.18, -3.9)
+    buildWallLamp(g, -3.7, 2.18, -3.9)
+
+    // 后墙装饰、时钟与侧墙相框
+    buildWallFrame(g, 3.3, 1.95, -3.94, 0.72, 0.54, { color: '#d7e6ff' })
+    buildWallFrame(g, 4.2, 2.15, -3.94, 0.5, 0.62, { color: '#ffe6c7' })
+    buildWallFrame(g, -4.92, 1.9, 2.4, 0.85, 0.65, { rotation: Math.PI / 2 })
+    buildWallFrame(g, -4.92, 1.9, 3.15, 0.55, 0.55, { rotation: Math.PI / 2, color: '#ffe0e6' })
+    buildWallClock(g, 4.55, 2.15, -3.94)
+
+    // 饮水机、回收箱与沙发边灯
+    buildWaterCooler(g, 4.55, 1.6)
+    cylinder(g, 0.26, 0.24, 0.5, 12, p.metal, -4.55, 0.25, 3.5, { opacity: 1 })
+    cylinder(g, 0.29, 0.27, 0.05, 12, p.darkMetal, -4.55, 0.52, 3.5)
+    cylinder(g, 0.035, 0.045, 1.5, 8, p.darkMetal, -4.55, 0.75, 0.65)
+    sphere(g, 0.17, '#ffe2b8', -4.55, 1.56, 0.65, { glow: true, detail: 12 })
+    addObstacleAt(-4.55, 0.65, 0.42, 0.42)
 
     // 后墙窗与工作台
     const deskXs = [-2.7, -0.9, 0.9, 2.7]
@@ -1384,6 +1631,19 @@
         box(g, 0.34, 0.06, 0.25, p.darkMetal, x - 0.42, 0.84, -2.15)
         box(g, 0.16, 0.1, 0.16, p.paper, x + 0.42, 0.86, -2.2)
       }
+    })
+
+    // 键盘、鼠标、杯子与便签
+    deskXs.forEach((x, index) => {
+      box(g, 0.34, 0.03, 0.12, p.darkMetal, x, 0.82, -2.02)
+      box(g, 0.07, 0.03, 0.1, p.paper, x + 0.24, 0.82, -2.0)
+      if (index !== 2) {
+        cylinder(g, 0.045, 0.04, 0.1, 10, p.paper, x - 0.34, 0.84, -2.05)
+      }
+      box(g, 0.1, 0.02, 0.1, index === 1 ? '#ffe08a' : '#cfe3ff', x + 0.5, 0.8, -2.3, {
+        rotation: [0, 0.3, 0],
+        cast: false,
+      })
     })
 
     // 中央会议桌
@@ -1407,6 +1667,7 @@
     box(g, 0.06, 0.34, 0.06, p.metal, -3.1, 0.17, 0.75)
     const cup = cylinder(g, 0.06, 0.05, 0.12, 12, p.paper, -3.55, 0.46, 0.75)
     cup.rotation.x = 0.2
+    box(g, 0.34, 0.03, 0.24, p.paper, -3.45, 0.42, 0.75, { cast: false })
 
     // 玻璃沙盒与控制台
     const glassMat = surface(state.dark ? '#7fb5cf' : '#bfe3ea', {
@@ -1445,15 +1706,15 @@
     // 人物
     const characterNode = addPerson(g, {
       x: 0.4,
-      z: 2.35,
+      z: 2.9,
       facing: Math.PI,
       accent: accentColor(),
       scale: 1.02,
     })
     addPerson(g, {
-      x: -2.7,
-      z: -1.25,
-      facing: Math.PI,
+      x: -2.2,
+      z: 1.0,
+      facing: Math.PI * 0.72,
       accent: new THREE.Color(state.dark ? '#7bd6c0' : '#4aa88f'),
       trousers: p.darkMetal,
       scale: 0.96,
@@ -1506,6 +1767,17 @@
     roundBox(b, w + 0.3, 0.22, d + 0.3, 0.08, p.wallLow, 0, 0.11, 0, { pick: options.pick })
     if (options.roof !== false) {
       roundBox(b, w + 0.25, 0.18, d + 0.25, 0.08, options.roofColor ?? p.stone, 0, h + 0.09, 0)
+      if (options.roofUnit !== false) {
+        roundBox(b, w * 0.26, 0.3, d * 0.24, 0.04, p.metal, w * 0.2, h + 0.32, -d * 0.12)
+        cylinder(b, 0.05, 0.05, 0.36, 8, p.darkMetal, -w * 0.22, h + 0.36, d * 0.14)
+        cylinder(b, 0.12, 0.12, 0.05, 10, p.stone, -w * 0.22, h + 0.55, d * 0.14)
+      }
+    }
+    const levels = options.floors ?? 2
+    // 楼层腰线，让盒子有层次
+    for (let floor = 1; floor < levels; floor++) {
+      const y = 0.8 + floor * ((h - 0.8) / levels) - 0.34
+      roundBox(b, w + 0.18, 0.1, d + 0.18, 0.04, p.wallLow, 0, y, 0, { pick: options.pick })
     }
     const floors = options.floors ?? 2
     for (let floor = 0; floor < floors; floor++) {
@@ -1537,6 +1809,18 @@
     }
     if (options.door !== false) {
       box(b, 0.5, 0.9, 0.04, p.darkMetal, 0, 0.45, d / 2 + 0.03, { pick: options.pick })
+      box(b, 0.9, 0.12, 0.6, p.stone, 0, 0.06, d / 2 + 0.36, { pick: options.pick })
+      box(b, 0.7, 0.12, 0.4, p.stone, 0, 0.18, d / 2 + 0.24, { pick: options.pick })
+      roundBox(b, 1.1, 0.12, 0.5, 0.04, options.awning ?? p.wallLow, 0, 1.5, d / 2 + 0.24, {
+        pick: options.pick,
+      })
+      sphere(b, 0.07, '#ffe2b8', 0.55, 1.24, d / 2 + 0.1, { glow: true, detail: 8 })
+      box(b, w * 0.36, 0.22, 0.04, options.awning ?? accentColor(), 0, h - 0.42, d / 2 + 0.04, {
+        glow: true,
+        emissiveIntensity: 0.3,
+        pick: options.pick,
+        cast: false,
+      })
     }
     return b
   }
@@ -1545,6 +1829,13 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
+    walkArea = { minX: -4.0, maxX: 4.0, minZ: -2.35, maxZ: 4.85 }
+    addObstacle(-2.7, 2.7, -6.4, -2.8)
+    addObstacle(-10.9, -6.3, 3.3, 7.1)
+    addObstacle(-10.7, -6.5, -4.9, -1.9)
+    addObstacle(6.3, 11.7, -7.5, -2.9)
+    addObstacle(6.6, 9.8, 3.9, 6.5)
+    addObstacle(-2.1, 2.1, 5.3, 8.3)
 
     roundBox(g, 27, 0.32, 19, 0.4, p.lawn, 0, -0.16, 0, { receive: true })
     plane(g, 26.2, 18.2, p.lawn, 0, 0.01, 0, { opacity: 0, cast: false })
@@ -1552,10 +1843,7 @@
     plane(g, 26.4, 1.7, p.path, 0, 0.025, 0.5, { cast: false })
     plane(g, 1.7, 18.2, p.path, 0, 0.025, 1.0, { cast: false })
     cylinder(g, 2.7, 2.7, 0.05, 30, p.path, 0, 0.03, 0.6)
-    cylinder(g, 1.35, 1.35, 0.06, 24, p.glass, 0, 0.04, 0.6, {
-      glow: true,
-      opacity: 0.5,
-    })
+    buildFountain(g, 0, 0.6, { radius: 1.35 })
     line(g, [
       new THREE.Vector3(-11, 0.06, 0.5),
       new THREE.Vector3(-2.6, 0.06, 0.5),
@@ -1677,13 +1965,20 @@
     for (let i = 0; i < 3; i++) {
       cone(site, 0.16, 0.36, '#f07b3f', -2.2 + i * 0.5, 0.18, 1.0, { pick: 'site', segments: 8 })
     }
-    addPerson(site, {
-      x: -0.7,
-      z: 1.0,
-      facing: 0.5,
+    addPerson(g, {
+      x: -1.6,
+      z: 2.4,
+      facing: -0.4,
+      accent: new THREE.Color('#4aa88f'),
+      scale: 0.94,
+    })
+    addPerson(g, {
+      x: 3.1,
+      z: -1.2,
+      facing: Math.PI * 0.72,
       accent: '#e0a63a',
       helmet: true,
-      scale: 0.94,
+      scale: 0.93,
     })
 
     // 值班室：带钟楼的小屋
@@ -1735,11 +2030,24 @@
     for (const [x, z] of [[-4.8, 2.6], [4.8, 2.9], [-5.0, 5.8], [5.4, 6.4]]) {
       buildPlant(g, x, z, 0.45)
     }
-    for (const [x, z] of [[-3.4, 1.5], [3.4, 1.5], [-3.6, 4.2], [3.8, 4.2]]) {
-      cylinder(g, 0.045, 0.045, 2.3, 6, p.darkMetal, x, 1.15, z)
-      const lamp = sphere(g, 0.1, '#ffe2b8', x, 2.35, z, { glow: true, detail: 8 })
-      lamp.userData.lamp = true
+    // 广场座椅、花坛与路灯
+    for (let i = 0; i < 4; i++) {
+      const angle = Math.PI / 4 + i * Math.PI / 2
+      const bx = Math.cos(angle) * 3.45
+      const bz = 0.6 + Math.sin(angle) * 3.45
+      buildBench(g, bx, bz, 1.35, { facing: Math.atan2(-bx, 0.6 - bz) })
     }
+    buildFlowerBed(g, -4.5, 2.4, 1.2, 0.9)
+    buildFlowerBed(g, 4.5, 2.4, 1.2, 0.9)
+    buildFlowerBed(g, -1.7, 5.1, 1.5, 0.8)
+    buildFlowerBed(g, 1.7, 5.1, 1.5, 0.8)
+    buildHedge(g, -4.7, -0.6, 1.0, 2.3, { height: 0.55 })
+    buildHedge(g, 4.7, -0.6, 1.0, 2.3, { height: 0.55 })
+    buildSignpost(g, -1.5, 3.7, accentColor(), {})
+    for (const [x, z] of [[-3.4, 1.5], [3.4, 1.5], [-3.6, 4.2], [3.8, 4.2]]) {
+      buildLampPost(g, x, z, { height: 2.6 })
+    }
+    addObstacleAt(3.2, 3.2, 0.7, 0.7)
     // 停在前台旁的配送小车
     const cart = new THREE.Group()
     cart.position.set(-2.8, 0, 5.2)
@@ -1805,13 +2113,38 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
-    walkArea = { minX: -2.0, maxX: 4.6, minZ: -2.6, maxZ: 3.2 }
-    addObstacle(-5.45, 1.65, -2.86, -2.44)
-    addObstacle(-2.15, -0.45, 0.65, 1.55)
-    addObstacle(1.25, 2.95, 1.45, 2.35)
-    addObstacle(-4.81, -4.39, 1.2, 3.6)
-    addObstacle(4.29, 4.71, -1.7, 0.7)
+    walkArea = { minX: -2.0, maxX: 4.6, minZ: -2.4, maxZ: 3.35 }
+    addObstacle(-5.45, 1.65, -2.9, -2.4)
+    addObstacle(-2.2, -0.4, 0.6, 2.15)
+    addObstacle(1.2, 3.0, 1.4, 2.9)
+    addObstacle(-4.85, -4.35, 1.2, 3.6)
+    addObstacle(4.25, 4.75, -2.05, 1.05)
+    addObstacle(1.45, 4.15, -2.55, -1.65)
+    addObstacle(1.0, 2.0, -1.6, -1.0)
+    addObstacle(-2.45, -1.75, -0.95, -0.3)
+    addObstacle(3.9, 4.5, 2.0, 2.6)
     buildRoom(g, { width: 11, depth: 8.6, height: 3.3, windowWidth: 3.4, windowX: 0.8, windowY: 1.9 })
+
+    // 木地板、阅读区地毯与吊灯
+    for (let i = 0; i < 11; i++) {
+      plane(g, 10.7, 0.75, i % 2 ? p.floor : p.floorDark, 0, 0.075, -3.8 + i * 0.76, { cast: false })
+    }
+    buildRug(g, 0.45, 1.5, 3.1, 3.3, p.fabricLight, { border: accentColor() })
+    buildRug(g, 3.6, 0.3, 1.7, 4.2, p.fabric, { opacity: 0.9 })
+    buildWallLamp(g, -3.2, 2.9, -4.12)
+    buildWallLamp(g, 3.5, 2.9, -4.12)
+
+    // 窗帘与墙面装饰
+    roundBox(g, 0.42, 2.3, 0.12, 0.05, p.fabric, -1.02, 1.9, -4.14)
+    roundBox(g, 0.42, 2.3, 0.12, 0.05, p.fabric, 2.62, 1.9, -4.14)
+    cylinder(g, 0.02, 0.02, 4.0, 6, p.metal, 0.8, 3.05, -4.14, { rotation: [0, 0, Math.PI / 2] })
+    buildWallFrame(g, -5.42, 2.3, -2.6, 0.9, 0.7, { rotation: Math.PI / 2, color: '#e7f0ff' })
+    buildWallFrame(g, -5.42, 2.3, -1.4, 0.6, 0.8, { rotation: Math.PI / 2, color: '#ffe9d6' })
+    buildWallClock(g, 3.9, 2.75, -4.22)
+    // 指引牌与绿植
+    buildSignpost(g, 4.05, -2.75, accentColor(), {})
+    addObstacleAt(3.9, 3.0, 0.95, 0.95)
+    buildPlant(g, -4.55, -0.2, 0.8)
 
     // 书架区：三排
     for (const x of [-4.0, -1.9, 0.2]) {
@@ -1838,7 +2171,25 @@
       const shade = cone(g, 0.16, 0.16, '#3f7a5b', x + 0.55, 1.23, z - 0.25, { segments: 12, glow: true })
       shade.rotation.z = 0.4
       sphere(g, 0.06, '#ffe2b8', x + 0.62, 1.15, z - 0.25, { glow: true, detail: 8 })
+      // 椅背与桌上书堆
+      box(g, 0.4, 0.34, 0.05, p.fabricLight, x - 0.5, 0.62, z + 0.98)
+      box(g, 0.4, 0.34, 0.05, p.fabricLight, x + 0.5, 0.62, z + 0.98)
+      box(g, 0.22, 0.05, 0.3, '#7db3ff', x - 0.06, 0.85, z + 0.2)
+      box(g, 0.2, 0.04, 0.26, '#f6c177', x - 0.04, 0.89, z + 0.22, { rotation: [0, 0.12, 0] })
     }
+
+    // 窗边阅读角：扶手椅、地球仪与小几
+    const chair = new THREE.Group()
+    chair.position.set(3.9, 0, 3.0)
+    chair.rotation.y = -0.7
+    g.add(chair)
+    roundBox(chair, 0.8, 0.32, 0.75, 0.1, p.fabric, 0, 0.32, 0)
+    roundBox(chair, 0.8, 0.55, 0.2, 0.08, p.fabricLight, 0, 0.62, -0.3)
+    roundBox(chair, 0.18, 0.36, 0.7, 0.08, p.fabricLight, -0.4, 0.5, 0)
+    roundBox(chair, 0.18, 0.36, 0.7, 0.08, p.fabricLight, 0.4, 0.5, 0)
+    cylinder(g, 0.03, 0.03, 0.8, 8, p.wood, 4.55, 0.4, 2.45)
+    sphere(g, 0.22, '#7db3ff', 4.55, 0.92, 2.45, { detail: 14 })
+    addObstacleAt(4.55, 2.45, 0.5, 0.5)
 
     // 借阅台、扫描仪与书车
     roundBox(g, 2.5, 0.9, 0.8, 0.08, p.wood, 2.8, 0.45, -2.1)
@@ -1926,12 +2277,23 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
-    walkArea = { minX: -2.1, maxX: 2.1, minZ: -1.8, maxZ: 1.8 }
-    addObstacle(-0.9, 2.1, -4.25, -2.15)
-    addObstacle(4.8, 5.4, -2.4, -1.8)
+    walkArea = { minX: -5.75, maxX: 5.75, minZ: -1.1, maxZ: 4.15 }
+    addObstacle(-1.6, 2.8, -4.9, -1.22)
+    addObstacle(4.75, 5.45, -2.45, -1.75)
 
     roundBox(g, 15, 0.3, 10.5, 0.35, p.dirt, 0, -0.15, 0, { receive: true })
     plane(g, 14.2, 9.8, p.dirt, 0, 0.02, 0.1, { cast: false })
+    // 车辙、湿泥与碎石
+    plane(g, 12.4, 0.5, state.dark ? '#4b3b2c' : '#c9ae8a', 0, 0.03, -0.7, { opacity: 0.7, cast: false })
+    plane(g, 12.4, 0.5, state.dark ? '#4b3b2c' : '#c9ae8a', 0, 0.03, 3.1, { opacity: 0.55, cast: false })
+    plane(g, 1.6, 1.2, p.glass, -3.2, 0.035, -0.4, { opacity: 0.3, glow: true, cast: false })
+    plane(g, 1.1, 0.9, p.glass, 2.6, 0.035, 3.4, { opacity: 0.26, glow: true, cast: false })
+    for (let i = 0; i < 14; i++) {
+      sphere(g, 0.04 + rand() * 0.03, p.stone, -6.4 + rand() * 12.8, 0.05, -4.2 + rand() * 8.8, {
+        detail: 6,
+        cast: false,
+      })
+    }
 
     // 围挡
     const fence = [[-7.0, 0, 0, 9.8], [7.0, 0, 0, 9.8], [0, -5.0, 14.2, 0], [0, 5.0, 14.2, 0]]
@@ -1940,12 +2302,20 @@
         box(g, w, 0.05, 0.06, p.metal, x, 1.15, z)
         box(g, w, 0.05, 0.06, p.metal, x, 0.6, z)
         for (let i = -w / 2; i <= w / 2; i += 1.6) box(g, 0.08, 1.2, 0.08, p.darkMetal, x + i, 0.6, z)
+        // 顶部警示条
+        for (let i = -w / 2; i < w / 2; i += 0.6) {
+          box(g, 0.3, 0.06, 0.02, i % 1.2 < 0.01 ? '#f2b544' : '#3d4a5c', x + i + 0.15, 1.22, z + 0.04, {
+            cast: false,
+          })
+        }
       } else {
         box(g, 0.06, 0.05, d, p.metal, x, 1.15, z)
         box(g, 0.06, 0.05, d, p.metal, x, 0.6, z)
         for (let i = -d / 2; i <= d / 2; i += 1.6) box(g, 0.08, 1.2, 0.08, p.darkMetal, x, 0.6, z + i)
       }
     })
+    buildSignpost(g, 5.9, 4.1, '#f07b3f', {})
+    buildSignpost(g, -5.9, 4.1, '#e0a63a', {})
 
     // 街区网格，区块代表工作区文件夹
     const zones = [
@@ -1957,16 +2327,22 @@
     ]
     zones.forEach((zone) => {
       roundBox(g, zone.w, 0.04, zone.d, 0.06, p.path, zone.x, 0.04, zone.z)
+      box(g, zone.w - 0.34, 0.07, zone.d - 0.34, p.wood, zone.x, 0.08, zone.z)
       const count = 3 + Math.floor(rand() * 5)
       for (let i = 0; i < count; i++) {
         const bx = zone.x - zone.w / 2 + 0.55 + (i % 3) * (zone.w / 3.4)
         const bz = zone.z - zone.d / 2 + 0.6 + Math.floor(i / 3) * 0.82
         const height = 0.3 + rand() * 0.95
-        box(g, 0.62, height, 0.62, zone.color, bx, height / 2 + 0.08, bz, {
+        box(g, 0.62, height, 0.62, zone.color, bx, height / 2 + 0.12, bz, {
           pick: 'site',
           roughness: 0.7,
         })
+        box(g, 0.64, 0.05, 0.64, p.woodLight, bx, height + 0.14, bz, { pick: 'site', cast: false })
+        box(g, 0.22, 0.05, 0.44, p.paper, bx, height + 0.18, bz, { cast: false })
       }
+      box(g, 0.74, 0.16, 0.04, zone.color, zone.x, 0.32, zone.z + zone.d / 2 - 0.08, { cast: false })
+      box(g, 0.5, 0.03, 0.02, p.paper, zone.x, 0.32, zone.z + zone.d / 2 - 0.06, { cast: false })
+      addObstacleAt(zone.x, zone.z, zone.w + 0.2, zone.d + 0.2)
     })
 
     // 在建主楼与脚手架
@@ -1988,6 +2364,18 @@
       for (let j = 0; j < 4; j++) {
         box(g, 0.85, 0.04, 0.04, '#d9a13c', x + 0.42, 0.7 + j * 0.8, -1.35)
       }
+      if (i % 2 === 0) {
+        box(g, 1.0, 0.04, 0.04, '#d9a13c', x + 0.42, 1.9, -1.35, { rotation: [0, 0, 0.55] })
+      }
+    }
+    // 脚手架防护网与跳板
+    box(g, 4.5, 2.6, 0.02, state.dark ? '#3f6b5a' : '#9fc7a8', 0.6, 1.55, -1.28, {
+      opacity: 0.35,
+      cast: false,
+      doubleSide: true,
+    })
+    for (const y of [0.72, 1.52, 2.32]) {
+      box(g, 4.4, 0.06, 0.34, p.woodLight, 0.6, y, -1.16, { cast: false })
     }
     for (const y of [0.6, 1.5, 2.4]) {
       box(g, 4.6, 0.04, 0.05, '#d9a13c', 0.6, y, -4.75)
@@ -2013,26 +2401,53 @@
     cylinder(crane, 0.04, 0.04, 3.0, 6, p.darkMetal, -5.3, 4.5, 0)
     box(crane, 0.28, 0.3, 0.28, p.metal, -5.3, 2.95, 0)
     cylinder(crane, 0.02, 0.02, 1.8, 5, p.darkMetal, -5.3, 4.1, 0)
+    // 吊钩与吊具
+    box(crane, 0.5, 0.12, 0.5, p.darkMetal, -5.3, 1.55, 0)
+    for (const dz of [-0.5, 0.5]) {
+      cylinder(crane, 0.02, 0.02, 1.4, 5, p.darkMetal, -5.3, 2.2, dz, { rotation: [0.4, 0, 0] })
+    }
+    box(crane, 1.0, 0.34, 0.8, p.woodLight, -5.3, 1.3, 0, { pick: 'site' })
 
-    // 材料、路锥、工人
+    // 材料、路锥与工人
     for (let i = 0; i < 5; i++) {
       box(g, 1.1, 0.14, 0.5, p.woodLight, -5.2, 0.2 + (i % 2) * 0.15, 3.4 + i * 0.1)
     }
+    addObstacle(-5.7, -4.55, 3.25, 3.95)
+    buildPipes(g, -0.3, 3.75, 2.2)
+    buildBarrel(g, 1.9, 3.7, { color: '#7db3ff' })
+    buildBarrel(g, 2.45, 3.75, { color: '#f6c177' })
+    buildCrate(g, 4.45, 3.6, { width: 0.7, height: 0.55, color: '#c8843d' })
+    buildCrate(g, 3.8, 3.5, { width: 0.5, height: 0.4, color: p.woodLight })
+    buildContainer(g, -5.7, 0.6, { width: 2.0, depth: 1.5, color: state.dark ? '#4d6b7d' : '#8fb9c9' })
     for (let i = 0; i < 4; i++) {
       cone(g, 0.16, 0.38, '#f07b3f', -5.4 + i * 0.6, 0.2, 2.0, { segments: 8 })
     }
+    addObstacle(-5.65, -3.5, 1.8, 2.2)
+    // 警示围栏与照明
+    for (const x of [-2.2, 2.9]) {
+      for (let i = 0; i < 3; i++) {
+        cylinder(g, 0.04, 0.04, 0.9, 6, p.darkMetal, x + i * 0.9, 0.45, 2.9)
+        box(g, 0.9, 0.08, 0.04, i % 2 ? '#f2b544' : '#3d4a5c', x + i * 0.9 + 0.45, 0.78, 2.9, {
+          cast: false,
+        })
+      }
+    }
+    addObstacle(-2.4, -0.2, 2.82, 2.98)
+    addObstacle(2.7, 4.9, 2.82, 2.98)
+    buildLampPost(g, -6.2, 1.2, { height: 2.8 })
+    buildLampPost(g, 6.2, 1.2, { height: 2.8 })
     addPerson(g, {
-      x: -1.9,
-      z: 2.8,
-      facing: 0.3,
+      x: -2.6,
+      z: 3.4,
+      facing: 0.5,
       accent: '#e0a63a',
       helmet: true,
-      scale: 1.0,
+      scale: 0.94,
     })
     addPerson(g, {
-      x: 4.2,
-      z: 2.9,
-      facing: -0.5,
+      x: 3.2,
+      z: 3.5,
+      facing: -0.6,
       accent: new THREE.Color('#7db3ff'),
       helmet: true,
       scale: 0.95,
@@ -2066,11 +2481,24 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
-    walkArea = { minX: -3.0, maxX: 3.6, minZ: -2.4, maxZ: 3.0 }
-    addObstacle(-1.5, 0.5, -2.9, -2.2)
-    addObstacle(3.2, 4.2, 1.7, 2.7)
-    addObstacle(3.7, 4.5, -3.1, -2.3)
+    walkArea = { minX: -4.0, maxX: 4.3, minZ: -1.45, maxZ: 3.45 }
+    addObstacle(-2.75, 1.75, -2.95, -2.1)
+    addObstacle(-0.9, -0.1, -1.95, -1.2)
+    addObstacle(2.55, 4.85, 2.0, 2.45)
+    addObstacle(3.5, 4.7, -3.15, -2.25)
+    addObstacle(0.9, 2.9, 2.65, 3.55)
+    addObstacle(3.55, 4.25, -0.35, 0.55)
+    addObstacle(0.85, 1.35, -1.8, -1.3)
     buildRoom(g, { width: 10.5, depth: 8, height: 2.9, windowWidth: 2.2, windowX: 3.1, windowY: 1.8 })
+
+    // 地面、地毯与灯带
+    for (let i = 0; i < 10; i++) {
+      plane(g, 10.2, 0.76, i % 2 ? p.floor : p.floorDark, 0, 0.075, -3.6 + i * 0.8, { cast: false })
+    }
+    buildRug(g, -0.5, -0.9, 4.6, 1.4, p.fabricLight, { opacity: 0.9, border: p.fabric })
+    buildRug(g, 1.9, 2.0, 2.4, 1.4, p.fabricLight, { opacity: 0.9 })
+    buildWallLamp(g, -3.8, 2.2, -3.9)
+    buildWallLamp(g, 2.1, 2.35, -3.9)
 
     // 监控墙
     for (let i = 0; i < 3; i++) {
@@ -2100,10 +2528,34 @@
     box(g, 0.9, 0.05, 0.3, p.darkMetal, 0.2, 0.92, -2.4)
     box(g, 0.28, 0.24, 0.3, p.darkMetal, 1.25, 1.0, -2.5)
     sphere(g, 0.04, accentColor(), 1.25, 1.14, -2.35, { glow: true, detail: 8 })
-    // 椅子
+    // 桌面键盘、鼠标、杯子、对讲机与值班记录
+    for (const x of [-1.4, 0.2]) {
+      box(g, 0.34, 0.03, 0.12, p.darkMetal, x, 0.9, -2.62, { cast: false })
+      box(g, 0.07, 0.03, 0.1, p.paper, x + 0.26, 0.9, -2.6, { cast: false })
+      cylinder(g, 0.045, 0.04, 0.1, 10, p.paper, x - 0.32, 0.95, -2.7)
+    }
+    box(g, 0.3, 0.04, 0.22, p.paper, 1.0, 0.92, -2.62, { cast: false })
+    box(g, 0.1, 0.14, 0.06, p.darkMetal, 1.5, 1.02, -2.45)
+    cylinder(g, 0.02, 0.02, 0.3, 6, p.metal, 1.5, 1.22, -2.45)
+    // 椅背、坐垫与扶手
     roundBox(g, 0.55, 0.08, 0.5, 0.06, p.fabric, -0.5, 0.46, -1.55)
     roundBox(g, 0.5, 0.6, 0.08, 0.06, p.fabricLight, -0.5, 0.75, -1.32)
     box(g, 0.06, 0.45, 0.06, p.metal, -0.5, 0.22, -1.55)
+    for (const dx of [-0.26, 0.26]) {
+      box(g, 0.05, 0.06, 0.4, p.darkMetal, -0.5 + dx, 0.62, -1.5)
+    }
+    // 备用椅与收纳柜
+    roundBox(g, 0.5, 0.08, 0.46, 0.06, p.fabric, 1.1, 0.44, -1.55)
+    roundBox(g, 0.46, 0.5, 0.07, 0.05, p.fabricLight, 1.1, 0.68, -1.36)
+    box(g, 0.05, 0.42, 0.05, p.metal, 1.1, 0.21, -1.55)
+    box(g, 0.9, 0.7, 0.45, p.woodLight, -2.2, 0.35, -3.6)
+    for (let i = 0; i < 2; i++) {
+      box(g, 0.8, 0.2, 0.03, p.wood, -2.2, 0.2 + i * 0.3, -3.37)
+      box(g, 0.1, 0.03, 0.02, p.metal, -2.2, 0.2 + i * 0.3, -3.35)
+    }
+    cylinder(g, 0.045, 0.045, 0.5, 8, p.darkMetal, -2.9, 1.05, -3.7)
+    const consoleLamp = sphere(g, 0.14, '#ffe2b8', -2.9, 1.35, -3.7, { glow: true, detail: 10 })
+    consoleLamp.scale.set(1, 0.7, 1)
 
     // 服务器机柜
     roundBox(g, 1.0, 2.1, 0.8, 0.05, p.darkMetal, 4.1, 1.05, -2.7)
@@ -2133,24 +2585,37 @@
         new THREE.Vector3(3.0 + i * 0.6, 1.8, 2.12),
       ], p.metal, { opacity: 0.4 })
     }
-    // 时钟
-    cylinder(g, 0.42, 0.42, 0.06, 24, p.paper, -4.65, 2.1, 1.8, { rotation: [Math.PI / 2, 0, 0] })
-    cylinder(g, 0.36, 0.36, 0.02, 24, p.darkMetal, -4.62, 2.1, 1.81, { rotation: [Math.PI / 2, 0, 0] })
-    box(g, 0.03, 0.26, 0.02, p.paper, -4.55, 2.2, 1.84)
-    box(g, 0.02, 0.2, 0.02, p.paper, -4.55, 2.1, 1.84, { rotation: [0, 0, 1.1] })
-
     // 咖啡机、折叠床、植物
     roundBox(g, 0.7, 1.0, 0.55, 0.05, p.metal, -4.35, 0.52, 2.9)
     box(g, 0.3, 0.3, 0.1, p.darkMetal, -4.35, 0.6, 2.6)
     const cup = cylinder(g, 0.07, 0.05, 0.12, 8, p.paper, -4.35, 0.2, 2.55)
+    for (let i = 0; i < 3; i++) {
+      cylinder(g, 0.055, 0.045, 0.09, 8, '#f6c177', -4.5, 1.06, 2.75 + i * 0.14)
+    }
     roundBox(g, 1.9, 0.16, 0.72, 0.05, p.fabric, 1.9, 0.28, 3.1)
     roundBox(g, 0.6, 0.16, 0.5, 0.05, p.paper, 1.0, 0.4, 2.95, { rotation: [0, 0.3, 0] })
+    roundBox(g, 0.7, 0.1, 0.5, 0.05, p.fabricLight, 2.5, 0.4, 2.9, { rotation: [0, -0.2, 0] })
+    box(g, 0.05, 0.5, 0.05, p.darkMetal, 1.05, 0.28, 3.35)
+    buildWaterCooler(g, 3.9, 0.1)
+    cylinder(g, 0.03, 0.04, 1.5, 8, p.darkMetal, 3.35, 0.85, 3.15)
+    sphere(g, 0.16, '#ffe2b8', 3.35, 1.65, 3.15, { glow: true, detail: 12 })
+    addObstacleAt(3.35, 3.15, 0.4, 0.4)
     buildPlant(g, 4.5, 3.4, 1.0)
     buildPlant(g, -4.8, 3.4, 0.9)
 
+    // 左侧墙面：值班制度牌与相框
+    buildWallFrame(g, -5.16, 1.9, 0.4, 0.9, 0.62, { rotation: Math.PI / 2, color: '#f2f6ff' })
+    buildWallFrame(g, -5.16, 1.9, 1.5, 0.62, 0.8, { rotation: Math.PI / 2, color: '#ffe9d0' })
+    for (let i = 0; i < 4; i++) {
+      box(g, 0.03, 0.1, 0.5, i % 2 ? accentColor() : p.darkMetal, -5.1, 1.45 + i * 0.14, 0.4, {
+        cast: false,
+      })
+    }
+    buildWallClock(g, 3.9, 2.4, -3.9)
+
     addPerson(g, {
-      x: -0.5,
-      z: -1.15,
+      x: 0.9,
+      z: -1.05,
       facing: Math.PI,
       accent: accentColor(),
       scale: 0.98,
@@ -2181,7 +2646,7 @@
         id: 'duty',
         title: '定时任务',
         detail: '暂无计划任务',
-        at: { x: -4.65, y: 2.9, z: 1.8 },
+        at: { x: 3.9, y: 2.9, z: -3.9 },
       },
     ]
     return frames.duty
@@ -2191,10 +2656,24 @@
     const p = palette()
     const g = new THREE.Group()
     root.add(g)
-    walkArea = { minX: -3.4, maxX: 3.6, minZ: -0.9, maxZ: 2.4 }
-    addObstacle(-3.2, -1.8, 1.9, 2.7)
-    addObstacle(-3.6, 3.6, -2.9, -2.0)
+    walkArea = { minX: -4.2, maxX: 4.2, minZ: -3.35, maxZ: 2.6 }
+    addObstacle(-2.7, 2.7, -2.9, -2.0)
+    addObstacle(-4.05, -0.95, 1.9, 2.75)
+    addObstacle(-0.35, 0.35, -3.35, -2.85)
+    addObstacle(0.05, 0.75, 2.2, 2.8)
+    addObstacle(3.8, 4.4, 2.3, 2.95)
+    addObstacle(-4.75, -4.1, 0.15, 0.75)
+    addObstacle(1.35, 1.65, 1.95, 2.25)
+    addObstacle(2.55, 2.85, 1.95, 2.25)
     buildRoom(g, { width: 10.5, depth: 8, height: 3.0, windowWidth: 1.8, windowX: -3.4, windowY: 1.8 })
+
+    // 地面、等候区地毯与灯带
+    for (let i = 0; i < 10; i++) {
+      plane(g, 10.2, 0.76, i % 2 ? p.floor : p.floorDark, 0, 0.075, -3.6 + i * 0.8, { cast: false })
+    }
+    buildRug(g, -1.0, 1.7, 3.6, 1.8, p.fabricLight, { border: accentColor() })
+    buildWallLamp(g, -3.7, 2.2, -3.9)
+    buildWallLamp(g, 1.0, 2.2, -3.9)
 
     // 长前台
     roundBox(g, 5.0, 1.0, 0.65, 0.06, p.wood, 0, 0.5, -2.4)
@@ -2202,6 +2681,23 @@
     box(g, 4.8, 0.62, 0.04, p.woodLight, 0, 0.42, -2.05, { pick: 'desk' })
     box(g, 0.62, 0.38, 0.04, p.darkMetal, 0.7, 1.28, -2.47)
     box(g, 0.56, 0.32, 0.01, p.glass, 0.7, 1.28, -2.44, { glow: true })
+    box(g, 0.5, 0.28, 0.02, state.dark ? accentColor() : '#cfe3ff', 0.7, 1.28, -2.4, {
+      glow: true,
+      emissiveIntensity: 0.45,
+      cast: false,
+    })
+    box(g, 0.09, 0.18, 0.12, p.darkMetal, 0.7, 1.16, -2.5)
+    box(g, 0.3, 0.03, 0.1, p.darkMetal, 0.7, 1.09, -2.28, { cast: false })
+    // 服务铃、电话与花
+    cylinder(g, 0.09, 0.09, 0.03, 14, p.metal, -0.9, 1.09, -2.3)
+    sphere(g, 0.055, accentColor(), -0.9, 1.15, -2.3, { glow: true, detail: 8 })
+    box(g, 0.26, 0.08, 0.18, p.darkMetal, 1.65, 1.11, -2.35, { rotation: [0, -0.2, 0] })
+    cylinder(g, 0.08, 0.06, 0.18, 10, p.glass, 1.45, 1.16, -2.45)
+    sphere(g, 0.11, '#ff9aa2', 1.45, 1.31, -2.45, { detail: 10 })
+    box(g, 0.28, 0.4, 0.02, p.paper, -1.45, 1.25, -2.1, { cast: false })
+    for (let i = 0; i < 3; i++) {
+      box(g, 0.2, 0.03, 0.01, p.darkMetal, -1.45, 1.35 - i * 0.08, -2.08, { cast: false })
+    }
     box(g, 0.6, 0.04, 0.42, p.metal, -1.3, 1.09, -2.3)
     cylinder(g, 0.045, 0.045, 0.5, 8, p.darkMetal, 2.05, 1.3, -2.45)
     const deskLamp = sphere(g, 0.1, '#ffe2b8', 2.05, 1.6, -2.45, { glow: true, detail: 10 })
@@ -2232,6 +2728,33 @@
     for (const dx of [-1.25, 0, 1.25]) {
       box(g, 0.08, 0.42, 0.38, p.metal, -2.5 + dx, 0.22, 2.3)
     }
+    roundBox(g, 0.6, 0.14, 0.4, 0.05, p.fabric, -3.4, 0.57, 2.3)
+    roundBox(g, 0.6, 0.14, 0.4, 0.05, p.fabric, -1.6, 0.57, 2.3)
+    // 边几、杂志与饮茶角
+    roundBox(g, 0.62, 0.52, 0.56, 0.05, p.woodLight, 0.4, 0.26, 2.5)
+    box(g, 0.3, 0.04, 0.22, '#7db3ff', 0.36, 0.54, 2.5, { rotation: [0, 0.2, 0] })
+    box(g, 0.26, 0.03, 0.2, '#f6c177', 0.46, 0.58, 2.46, { rotation: [0, -0.15, 0] })
+    buildWaterCooler(g, 4.1, 2.6)
+    buildPlant(g, 3.35, 2.95, 0.55)
+    // 排队立柱与绳带
+    buildStanchion(g, 1.5, 2.1)
+    buildStanchion(g, 2.7, 2.1)
+    cylinder(g, 0.015, 0.015, 1.2, 5, p.darkMetal, 2.1, 0.86, 2.1, { rotation: [0, 0, Math.PI / 2], cast: false })
+    // 衣帽架与雨伞桶
+    cylinder(g, 0.05, 0.07, 1.7, 8, p.wood, -4.4, 0.85, 0.45)
+    for (let i = 0; i < 3; i++) {
+      const angle = (i / 3) * Math.PI * 2
+      box(g, 0.28, 0.05, 0.05, p.metal, -4.4 + Math.cos(angle) * 0.15, 1.62, 0.45 + Math.sin(angle) * 0.15, {
+        rotation: [0, -angle, 0],
+      })
+    }
+    cylinder(g, 0.16, 0.14, 0.5, 10, p.metal, -1.9, 0.25, 3.2, { opacity: 1 })
+    buildPlant(g, -2.6, 3.4, 0.8)
+    // 墙面相框、时钟与指引牌
+    buildWallFrame(g, 1.9, 1.95, -3.92, 0.7, 0.5, { color: '#dfeaff' })
+    buildWallFrame(g, 2.7, 2.15, -3.92, 0.5, 0.6, { color: '#ffe6d2' })
+    buildWallClock(g, 3.6, 2.3, -3.92)
+    buildSignpost(g, 4.4, 3.3, accentColor(), {})
     // 入口门框与前台招牌
     box(g, 0.1, 2.4, 0.1, p.metal, 4.3, 1.2, 3.6)
     box(g, 0.1, 2.4, 0.1, p.metal, 5.5, 1.2, 3.6)
@@ -2244,15 +2767,15 @@
     plane(g, 2.4, 1.1, p.path, 4.9, 0.02, 3.1, { cast: false })
 
     addPerson(g, {
-      x: 0,
-      z: -3.1,
+      x: -0.9,
+      z: -3.0,
       facing: 0,
       accent: accentColor(),
       scale: 1.0,
     })
     addPerson(g, {
-      x: 4.3,
-      z: 2.8,
+      x: 3.5,
+      z: 1.9,
       facing: Math.PI + 0.4,
       accent: new THREE.Color('#7db3ff'),
       scale: 0.96,
@@ -2301,6 +2824,7 @@
   function buildPlace() {
     clearScene()
     obstacles = []
+    walkArea = { minX: -4, maxX: 4, minZ: -3, maxZ: 3 }
     root = new THREE.Group()
     scene.add(root)
     const frame = (builders[currentPlace] || buildStudio)()
@@ -2554,14 +3078,15 @@
                 const step = Math.min(distance, walk.speed * dt)
                 const nextX = group.position.x + (dx / distance) * step
                 const nextZ = group.position.z + (dz / distance) * step
-                if (!isObstacleAt(nextX, nextZ)) {
+                const radius = walk.radius ?? PERSON_RADIUS
+                if (!isObstacleAt(nextX, nextZ, radius)) {
                   group.position.x = nextX
                   group.position.z = nextZ
                   moving = true
-                } else if (!isObstacleAt(nextX, group.position.z)) {
+                } else if (!isObstacleAt(nextX, group.position.z, radius)) {
                   group.position.x = nextX
                   moving = true
-                } else if (!isObstacleAt(group.position.x, nextZ)) {
+                } else if (!isObstacleAt(group.position.x, nextZ, radius)) {
                   group.position.z = nextZ
                   moving = true
                 } else {
@@ -2604,18 +3129,19 @@
       pulseMats.forEach((material, index) => {
         material.emissiveIntensity = 0.55 + Math.sin(t * 1.3 + index * 0.7) * 0.18
       })
-      // 人物之间保持最小间距，避免多个居民叠在一起。
+      // 人物之间保持最小间距，避免多个居民叠在一起，体型大的角色间距也更大。
       const people = animateFns
         .filter((item) => item.kind === 'person')
-        .map((item) => item.data.body.parent)
+        .map((item) => item.data)
       for (let i = 0; i < people.length; i++) {
         for (let j = i + 1; j < people.length; j++) {
-          const a = people[i]
-          const b = people[j]
+          const a = people[i].body.parent
+          const b = people[j].body.parent
           const dx = b.position.x - a.position.x
           const dz = b.position.z - a.position.z
           const distance = Math.hypot(dx, dz)
-          const minDistance = 0.52
+          const minDistance = (people[i].walk?.radius ?? PERSON_RADIUS) +
+            (people[j].walk?.radius ?? PERSON_RADIUS) + 0.02
           if (distance > 0.0001 && distance < minDistance) {
             const push = (minDistance - distance) / 2
             const nx = dx / distance
@@ -2624,11 +3150,11 @@
             const az = a.position.z - nz * push
             const bx = b.position.x + nx * push
             const bz = b.position.z + nz * push
-            if (!isObstacleAt(ax, az)) {
+            if (!isObstacleAt(ax, az, people[i].walk?.radius ?? PERSON_RADIUS)) {
               a.position.x = ax
               a.position.z = az
             }
-            if (!isObstacleAt(bx, bz)) {
+            if (!isObstacleAt(bx, bz, people[j].walk?.radius ?? PERSON_RADIUS)) {
               b.position.x = bx
               b.position.z = bz
             }

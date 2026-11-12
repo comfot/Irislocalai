@@ -98,6 +98,14 @@ class SettingsRepository(
             .putBoolean(KEY_L2D_IDLE, next.l2dIdleMotionEnabled)
             .putBoolean(KEY_L2D_TAP, next.l2dTapMotionEnabled)
             .putBoolean(KEY_L2D_MOUTH, next.l2dMouthSyncEnabled)
+            .putString(KEY_VIDEO_CALL_STAGE, next.videoCallStage.name)
+            .putFloat(KEY_VIDEO_CALL_AR_HEIGHT, next.videoCallArHeight)
+            .putFloat(KEY_VIDEO_CALL_AR_OFFSET_X, next.videoCallArOffsetX)
+            .putFloat(KEY_VIDEO_CALL_AR_OFFSET_Y, next.videoCallArOffsetY)
+            .putBoolean(KEY_VIDEO_CALL_AR_GRID, next.videoCallArGrid)
+            .putFloat(KEY_VIDEO_CALL_AR_CAMERA_HEIGHT, next.videoCallArCameraHeight)
+            .putFloat(KEY_VIDEO_CALL_AR_FOOT, next.videoCallArFootOffset)
+            .putBoolean(KEY_VIDEO_CALL_AR_VISUAL, next.videoCallArVisualTracking)
             .putString(KEY_MOTION_SOURCE, next.motionSource.name)
             .putString(KEY_VRM_MOTION_ENGINE, next.vrmMotionEngine.name)
             .putString(KEY_MOTION_ENDPOINT, next.motionEndpoint)
@@ -115,6 +123,7 @@ class SettingsRepository(
             .putFloat(KEY_MMD_RENDER_SCALE, next.mmdRenderScale)
             .putBoolean(KEY_AUTO_LOAD, next.autoLoadLastModel)
             .putInt(KEY_VISION_SIDE, next.visionQualitySide)
+            .putBoolean(KEY_MIRROR_ENABLED, next.mirrorEnabled)
             .putString(KEY_DOWNLOAD_SOURCE, next.downloadSource.name)
             .putBoolean(KEY_FLASH_ATTENTION, next.flashAttention)
             .putInt(KEY_KV_TYPE, next.kvCacheType)
@@ -239,6 +248,17 @@ class SettingsRepository(
         l2dIdleMotionEnabled = prefs.getBoolean(KEY_L2D_IDLE, true),
         l2dTapMotionEnabled = prefs.getBoolean(KEY_L2D_TAP, true),
         l2dMouthSyncEnabled = prefs.getBoolean(KEY_L2D_MOUTH, true),
+        videoCallStage = enumOf(
+            prefs.getString(KEY_VIDEO_CALL_STAGE, null),
+            VideoCallStage.ROOM,
+        ),
+        videoCallArHeight = prefs.getFloat(KEY_VIDEO_CALL_AR_HEIGHT, 1.6f),
+        videoCallArOffsetX = prefs.getFloat(KEY_VIDEO_CALL_AR_OFFSET_X, 0f),
+        videoCallArOffsetY = prefs.getFloat(KEY_VIDEO_CALL_AR_OFFSET_Y, 0f),
+        videoCallArGrid = prefs.getBoolean(KEY_VIDEO_CALL_AR_GRID, true),
+        videoCallArCameraHeight = prefs.getFloat(KEY_VIDEO_CALL_AR_CAMERA_HEIGHT, 1.35f),
+        videoCallArFootOffset = prefs.getFloat(KEY_VIDEO_CALL_AR_FOOT, 0f),
+        videoCallArVisualTracking = prefs.getBoolean(KEY_VIDEO_CALL_AR_VISUAL, false),
         motionSource = enumOf(prefs.getString(KEY_MOTION_SOURCE, null), MotionSource.NONE),
         vrmMotionEngine = enumOf(
             prefs.getString(KEY_VRM_MOTION_ENGINE, null),
@@ -259,6 +279,7 @@ class SettingsRepository(
         mmdRenderScale = prefs.getFloat(KEY_MMD_RENDER_SCALE, 1f),
         autoLoadLastModel = prefs.getBoolean(KEY_AUTO_LOAD, true),
         visionQualitySide = prefs.getInt(KEY_VISION_SIDE, 1024),
+        mirrorEnabled = prefs.getBoolean(KEY_MIRROR_ENABLED, true),
         downloadSource = enumOf(prefs.getString(KEY_DOWNLOAD_SOURCE, null), DownloadSource.AUTO),
         flashAttention = prefs.getBoolean(KEY_FLASH_ATTENTION, true),
         kvCacheType = prefs.getInt(KEY_KV_TYPE, 0),
@@ -429,6 +450,14 @@ class SettingsRepository(
         const val KEY_L2D_IDLE = "l2d_idle_motion"
         const val KEY_L2D_TAP = "l2d_tap_motion"
         const val KEY_L2D_MOUTH = "l2d_mouth_sync"
+        const val KEY_VIDEO_CALL_STAGE = "video_call_stage"
+        const val KEY_VIDEO_CALL_AR_HEIGHT = "video_call_ar_height"
+        const val KEY_VIDEO_CALL_AR_OFFSET_X = "video_call_ar_offset_x"
+        const val KEY_VIDEO_CALL_AR_OFFSET_Y = "video_call_ar_offset_y"
+        const val KEY_VIDEO_CALL_AR_GRID = "video_call_ar_grid"
+        const val KEY_VIDEO_CALL_AR_CAMERA_HEIGHT = "video_call_ar_camera_height"
+        const val KEY_VIDEO_CALL_AR_FOOT = "video_call_ar_foot_offset"
+        const val KEY_VIDEO_CALL_AR_VISUAL = "video_call_ar_visual_tracking"
         const val KEY_MOTION_SOURCE = "motion_source"
         const val KEY_VRM_MOTION_ENGINE = "vrm_motion_engine"
         const val KEY_MOTION_ENDPOINT = "motion_endpoint"
@@ -447,6 +476,7 @@ class SettingsRepository(
         const val KEY_AUTO_LOAD = "auto_load_last_model"
         const val KEY_VISION_SIDE = "vision_quality_side"
         const val KEY_DOWNLOAD_SOURCE = "download_source"
+        const val KEY_MIRROR_ENABLED = "mirror_enabled"
         const val KEY_FLASH_ATTENTION = "flash_attention"
         const val KEY_KV_TYPE = "kv_cache_type"
         const val KEY_BATCH_SIZE = "batch_size"

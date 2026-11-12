@@ -123,6 +123,33 @@ object ToolCallParser {
         return out.toString()
     }
 
+    /** 输出里有 <tool_call> 起始但 JSON 没闭合，通常是被输出长度截断。 */
+    fun hasUnclosedToolCall(text: String): Boolean {
+        val start = text.lastIndexOf(TOOL_CALL_START, ignoreCase = true)
+        if (start < 0) return false
+        val brace = text.indexOf('{', start + TOOL_CALL_START.length)
+        if (brace < 0) return true
+        return jsonObjectEnd(text, brace) <= brace
+    }
+
+    /** 整段回答只是一条命令（模型忘了包 <tool_call>），只用于提示，不自动执行。 */
+    fun looksLikeBareCommand(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() || trimmed.length > 600) return false
+        if (trimmed.contains(TOOL_CALL_START, ignoreCase = true) || trimmed.contains("```")) return false
+        if ('\n' in trimmed) return false
+        // 只把带路径、管道、分号、赋值或引号的单行当成命令，避开“cd 是切换目录”这类普通回答。
+        if (trimmed.none { it == '/' || it == '|' || it == ';' || it == '=' || it == '\'' || it == '"' || it == '-' }) {
+            return false
+        }
+        return BARE_COMMAND.matches(trimmed)
+    }
+
+    private val BARE_COMMAND = Regex(
+        "(?:cd|ls|grep|rg|find|cat|head|tail|sed|awk|cp|mv|rm|mkdir|touch|chmod|chown|git|python|python3|node|npm|sh|bash|pwd|mount|df)\\s+[\\s\\S]*",
+        setOf(RegexOption.IGNORE_CASE),
+    )
+
     private fun jsonObjectEnd(text: String, start: Int): Int {
         var depth = 0
         var inString = false

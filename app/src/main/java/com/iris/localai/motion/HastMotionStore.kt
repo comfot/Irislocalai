@@ -1,6 +1,7 @@
 package com.iris.localai.motion
 
 import android.content.Context
+import com.iris.localai.data.DownloadSources
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -17,7 +18,10 @@ import org.json.JSONObject
  * 解析成 53 骨骼四元数轨道，供 WebView 通过虚拟 URL 播放。
  * 只读取动作数据，不运行其 0.8B 语言模型或 three-vrm 运行时。
  */
-class HastMotionStore(context: Context) {
+class HastMotionStore(
+    context: Context,
+    private val mirrorsEnabled: () -> Boolean = { true },
+) {
 
     private val appContext = context.applicationContext
     private val root = File(appContext.filesDir, "hast")
@@ -233,7 +237,7 @@ class HastMotionStore(context: Context) {
     private fun fetch(path: String): String = String(fetchBytes(path), Charsets.UTF_8)
 
     private fun fetchBytes(path: String): ByteArray {
-        val hosts = listOf("https://huggingface.co", "https://hf-mirror.com")
+        val hosts = DownloadSources.hfHosts(mirrorsEnabled())
         var lastError: Exception? = null
         for (host in hosts) {
             try {
@@ -260,9 +264,16 @@ class HastMotionStore(context: Context) {
         @Volatile
         private var instance: HastMotionStore? = null
 
-        fun get(context: Context): HastMotionStore =
+        /** 首个调用方（AppGraph）决定镜像策略，后续调用复用单例。 */
+        fun get(
+            context: Context,
+            mirrorsEnabled: (() -> Boolean)? = null,
+        ): HastMotionStore =
             instance ?: synchronized(this) {
-                instance ?: HastMotionStore(context.applicationContext).also { store ->
+                instance ?: HastMotionStore(
+                    context.applicationContext,
+                    mirrorsEnabled ?: { true },
+                ).also { store ->
                     instance = store
                     if (store.isReady() && store.catalog().isEmpty()) {
                         Thread { store.warmUp() }.apply { isDaemon = true }.start()

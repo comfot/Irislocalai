@@ -53,6 +53,8 @@ class AgentLoop(
         val thinkFilter = ThinkTagFilter(startInThink)
         var step = 0
         var finished = false
+        var unclosedRetried = false
+        var bareCommandRetried = false
 
         suspend fun emitTagged(text: String) {
             if (text.isEmpty()) return
@@ -117,6 +119,27 @@ class AgentLoop(
 
             val call = ToolCallParser.parse(output.toString())
             if (call == null) {
+                val text = output.toString()
+                if (!unclosedRetried && ToolCallParser.hasUnclosedToolCall(text)) {
+                    unclosedRetried = true
+                    conversation += PromptMessage(PromptMessage.ASSISTANT, text)
+                    conversation += PromptMessage(
+                        PromptMessage.USER,
+                        "上一条回复的工具调用没有闭合，通常是被输出长度截断。请重新输出一个完整的 " +
+                            "<tool_call>{\"name\":\"工具名\",\"arguments\":{...}}</tool_call>，不要输出其他内容。",
+                    )
+                    continue
+                }
+                if (!bareCommandRetried && step > 0 && ToolCallParser.looksLikeBareCommand(text)) {
+                    bareCommandRetried = true
+                    conversation += PromptMessage(PromptMessage.ASSISTANT, text)
+                    conversation += PromptMessage(
+                        PromptMessage.USER,
+                        "请把上面的命令改用 shell 工具执行：只输出一个 " +
+                            "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"…\"}}</tool_call>，不要输出其他内容。",
+                    )
+                    continue
+                }
                 if (emitted < output.length) {
                     val tail = output.substring(emitted)
                     val thought = thinkFilter.feed(tail)
@@ -126,6 +149,11 @@ class AgentLoop(
                     if (thought.text.isNotEmpty()) {
                         emitBody(thought.text)
                     }
+                }
+                if (ToolCallParser.looksLikeBareCommand(text)) {
+                    val note = "\n\n（检测到命令写在正文里，没有作为工具调用执行。需要执行时请重试。）"
+                    visible.append(note)
+                    this@flow.emit(AgentEvent.Delta(note))
                 }
                 finished = true
                 break
@@ -235,6 +263,7 @@ class AgentLoop(
         appendLine("需要调用工具时，只输出一个工具调用块，不要附加解释：")
         appendLine("""<tool_call>{"name":"工具名","arguments":{...}}</tool_call>""")
         appendLine("除上述工具调用块外，不要使用 DSML、<invoke> 或其他标签。")
+        appendLine("shell 等工具的命令必须放进上面的工具调用块；不要把命令只写在正文或代码块里，那样不会执行。")
         appendLine("不要在正文输出 <think>、</think> 或 Thinking Process 等思考标记。")
         appendLine("如需角色状态卡，可使用 <maintext>正文</maintext> 和 <Status_block>...</Status_block>，状态项写成“- 键：值”；不要使用其他 HTML/XML 标签。")
         appendLine("工具结果会以 tool 消息返回；拿到结果后直接用自然语言回答用户。")

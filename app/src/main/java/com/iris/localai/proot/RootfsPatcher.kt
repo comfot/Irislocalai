@@ -133,7 +133,18 @@ class RootfsPatcher {
     }
 
     private fun ensureTempDirs(rootfsDir: File) {
-        listOf("tmp", "var/tmp", "root", "workspace", "dev", "proc", "sys").forEach { path ->
+        listOf(
+            "tmp",
+            "var/tmp",
+            "root",
+            "workspace",
+            "dev",
+            "proc",
+            "sys",
+            "sdcard",
+            "storage",
+            "mnt/iris",
+        ).forEach { path ->
             File(rootfsDir, path).mkdirs()
         }
         listOf(File(rootfsDir, "tmp"), File(rootfsDir, "var/tmp")).forEach { dir ->

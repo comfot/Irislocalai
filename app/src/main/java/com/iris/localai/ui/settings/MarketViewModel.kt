@@ -173,11 +173,15 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
         _selectedRepo.value = null
         _files.value = emptyList()
         viewModelScope.launch {
+            val mirrorsEnabled = graph.settings.current.mirrorEnabled
             val primary = client.search(query, graph.settings.current.downloadSource)
             val primaryItems = primary.getOrNull().orEmpty()
             val primaryError = primary.exceptionOrNull()
             if (primaryItems.isNotEmpty()) {
                 _results.value = primaryItems.distinctBy { it.id }
+            } else if (!mirrorsEnabled) {
+                _error.value = primaryError?.let { "搜索失败：${it.message ?: "网络错误"}（备用源已关闭）" }
+                    ?: "Hugging Face 未返回结果（备用源已关闭）"
             } else {
                 val fallback = modelScope.search(query)
                 fallback.onSuccess { items ->

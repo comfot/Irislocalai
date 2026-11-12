@@ -56,6 +56,20 @@ data class AppSettings(
     val l2dIdleMotionEnabled: Boolean = true,
     val l2dTapMotionEnabled: Boolean = true,
     val l2dMouthSyncEnabled: Boolean = true,
+    val videoCallStage: VideoCallStage = VideoCallStage.ROOM,
+    /** AR 网格模式下人物高度倍率，原版默认 1.6。 */
+    val videoCallArHeight: Float = 1.6f,
+    /** AR 网格模式下人物水平/垂直偏移，按屏幕尺寸比例。 */
+    val videoCallArOffsetX: Float = 0f,
+    val videoCallArOffsetY: Float = 0f,
+    /** AR 网格是否显示地面网格与地面环（原版 `grid` 键）。 */
+    val videoCallArGrid: Boolean = true,
+    /** AR 锚定时假设的相机高度（米），用于把屏幕点反投影到地面。 */
+    val videoCallArCameraHeight: Float = 1.35f,
+    /** AR 模型脚底微调：在按模型类型估算的脚底比例上再向上/下调整。 */
+    val videoCallArFootOffset: Float = 0f,
+    /** 实验性：用 OpenCV 稀疏光流估计相机在地面上的位移。 */
+    val videoCallArVisualTracking: Boolean = false,
     val motionSource: MotionSource = MotionSource.NONE,
     val vrmMotionEngine: VrmMotionEngine = VrmMotionEngine.HAST_SEC,
     val motionEndpoint: String = "",
@@ -80,6 +94,8 @@ data class AppSettings(
     // 模型与加载
     val autoLoadLastModel: Boolean = true,
     val visionQualitySide: Int = 1024,
+    /** 官方源失败时是否回退 hf-mirror、jsDelivr 等备用源。 */
+    val mirrorEnabled: Boolean = true,
     val downloadSource: DownloadSource = DownloadSource.AUTO,
     val flashAttention: Boolean = true,
     val kvCacheType: Int = 0,

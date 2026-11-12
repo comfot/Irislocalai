@@ -16,6 +16,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +31,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.iris.localai.data.AppSettings
+import com.iris.localai.data.VideoCallStage
 import com.iris.localai.pet.PetOverlayController
 
 @Composable
@@ -174,6 +176,82 @@ internal fun InteractionPage(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        SettingsCard(title = "视频通话") {
+            Text("形象展示方式", style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                VideoCallStage.entries.forEach { stage ->
+                    FilterChip(
+                        selected = settings.videoCallStage == stage,
+                        onClick = { viewModel.update { it.copy(videoCallStage = stage) } },
+                        label = { Text(stage.label) },
+                    )
+                }
+            }
+            if (settings.videoCallStage == VideoCallStage.AR_GRID) {
+                SliderRow(
+                    title = "人物大小",
+                    value = settings.videoCallArHeight,
+                    range = 0.8f..2.4f,
+                    steps = 15,
+                    format = { "%.0f%%".format(it / 1.6f * 100) },
+                    onCommit = { value -> viewModel.update { it.copy(videoCallArHeight = value) } },
+                )
+                SliderRow(
+                    title = "左右位置",
+                    value = settings.videoCallArOffsetX,
+                    range = -0.3f..0.3f,
+                    steps = 11,
+                    format = { "%.0f%%".format(it * 100) },
+                    onCommit = { value -> viewModel.update { it.copy(videoCallArOffsetX = value) } },
+                )
+                SliderRow(
+                    title = "上下位置",
+                    value = settings.videoCallArOffsetY,
+                    range = -0.3f..0.3f,
+                    steps = 11,
+                    format = { "%.0f%%".format(it * 100) },
+                    onCommit = { value -> viewModel.update { it.copy(videoCallArOffsetY = value) } },
+                )
+                SettingsSwitchRow(
+                    title = "显示地面网格",
+                    summary = "关闭后只保留相机画面、模型与接触阴影",
+                    checked = settings.videoCallArGrid,
+                ) { enabled -> viewModel.update { it.copy(videoCallArGrid = enabled) } }
+                SliderRow(
+                    title = "相机高度（米）",
+                    value = settings.videoCallArCameraHeight,
+                    range = 0.8f..2.2f,
+                    steps = 13,
+                    format = { "%.1f m".format(it) },
+                    onCommit = { value -> viewModel.update { it.copy(videoCallArCameraHeight = value) } },
+                )
+                SettingsSwitchRow(
+                    title = "视觉位移跟踪（实验）",
+                    summary = "用 OpenCV 稀疏光流估计走动位移，会额外耗电，漂移时在通话中点「重新定位」",
+                    checked = settings.videoCallArVisualTracking,
+                ) { enabled -> viewModel.update { it.copy(videoCallArVisualTracking = enabled) } }
+                SliderRow(
+                    title = "脚底微调",
+                    value = settings.videoCallArFootOffset,
+                    range = 0f..0.25f,
+                    steps = 9,
+                    format = { "%.0f%%".format(it * 100) },
+                    onCommit = { value -> viewModel.update { it.copy(videoCallArFootOffset = value) } },
+                )
+                Text(
+                    text = "AR 网格用相机画面做背景，模型站在透视网格上；Live2D、VRM/GLB 与 MMD 都可以用这种模式，3D 模型会自动按上半身取景。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    text = "房间背景使用场景图或视频，模型全屏展示，适合固定的陪伴场景。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         SettingsCard(title = "发送与手势") {

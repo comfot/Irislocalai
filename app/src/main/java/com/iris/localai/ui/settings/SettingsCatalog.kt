@@ -108,7 +108,7 @@ object SettingsCatalog {
                 SettingsEntry("storage", "存储与外置文件", "模型、素材、角色卡与设置镜像", Icons.Outlined.Folder),
                 SettingsEntry("notification", "通知", "生成完成与后台提醒", Icons.Outlined.Notifications),
                 SettingsEntry("interaction", "交互", "发送方式与手势", Icons.Outlined.Gesture),
-                SettingsEntry("network", "网络", "代理、超时与下载源", Icons.Outlined.Wifi),
+                SettingsEntry("network", "网络", "备用下载源与全部下载地址", Icons.Outlined.Wifi),
                 SettingsEntry("integration", "接入与自动化", "外部应用与自动化触发", Icons.Outlined.Link),
                 SettingsEntry("security", "安全", "本地数据与 API 鉴权", Icons.Outlined.Shield),
                 SettingsEntry("about", "关于", "版本、许可与技术栈", Icons.Outlined.Info),

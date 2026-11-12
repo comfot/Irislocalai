@@ -29,3 +29,9 @@ enum class CharacterLayout(val label: String) {
     GRID("缩略图"),
     LIST("列表"),
 }
+
+/** 视频通话的舞台形式：房间背景或相机透视网格。 */
+enum class VideoCallStage(val label: String) {
+    ROOM("房间背景"),
+    AR_GRID("AR 网格"),
+}
