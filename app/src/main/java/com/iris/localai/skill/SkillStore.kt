@@ -51,6 +51,40 @@ class SkillStore(context: Context) {
         refresh()
         upgradeKnowledgeSkill()
         ensureOperationSkill()
+        ensureThemeSkill()
+    }
+
+    /** 首次启动或升级后补充主题创作技能；用户删除后不再重建。 */
+    private fun ensureThemeSkill() {
+        if (prefs.getBoolean(KEY_THEME_SKILL, false)) return
+        prefs.edit().putBoolean(KEY_THEME_SKILL, true).apply()
+        if (_skills.value.any { it.id == "theme-authoring" }) return
+        save(
+            Skill(
+                id = "theme-authoring",
+                name = "主题创作",
+                description = "生成可导入的应用主题预设 JSON",
+                instructions = "## 主题创作\n\n" +
+                    "主题预设是 IRIS LocalAI 的外观 JSON（schema 1），由用户在 设置 › 主题 右上角导入。\n\n" +
+                    "格式：\n" +
+                    "{\n  \"app\": \"IRIS LocalAI\",\n  \"schema\": 1,\n  \"name\": \"雾青玻璃\",\n" +
+                    "  \"style\": \"glass\",\n  \"accent\": \"teal\",\n  \"themeMode\": \"system\",\n" +
+                    "  \"bubbleStyle\": \"rounded\",\n  \"roleChatCard\": true\n}\n\n" +
+                    "可用取值：\n" +
+                    "- style：standard / glass / eink\n" +
+                    "- accent：teal / blue / violet / amber / rose\n" +
+                    "- themeMode：system / light / dark\n" +
+                    "- bubbleStyle：rounded / square / outlined / minimal\n" +
+                    "- roleChatCard：true / false\n\n" +
+                    "规则：\n" +
+                    "1. 先确认风格意图；玻璃适合半透明亮边，墨水屏只用黑白灰，此时 accent 会被忽略。\n" +
+                    "2. 只输出上述字段，不要添加未定义字段。\n" +
+                    "3. 生成后用 write_file 保存到工作区（例如 themes/<name>.json），并提示用户在 设置 › 主题 右上角导入。\n" +
+                    "4. 不要声称已经替用户应用主题，除非用户确认已导入。",
+                triggers = listOf("主题", "配色", "强调色", "液态玻璃", "墨水屏", "气泡样式", "theme"),
+                enabled = true,
+            ),
+        )
     }
 
     /** 首次启动或升级后补充操作空间技能；用户删除后不再重建。 */
@@ -319,5 +353,6 @@ class SkillStore(context: Context) {
         const val KEY_CHAT = "inject_chat"
         const val KEY_AGENT = "inject_agent"
         const val KEY_OPERATION_SKILL = "operation_skill_seeded"
+        const val KEY_THEME_SKILL = "theme_skill_seeded"
     }
 }

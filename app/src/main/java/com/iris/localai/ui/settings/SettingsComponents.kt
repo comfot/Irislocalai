@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.iris.localai.engine.EngineState
 import com.iris.localai.server.ApiState
+import com.iris.localai.ui.theme.IrisCard
 
 @Composable
 internal fun SettingsPage(content: @Composable ColumnScope.() -> Unit) {
@@ -51,12 +52,7 @@ internal fun SettingsCard(
     title: String? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    IrisCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),

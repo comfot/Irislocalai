@@ -46,6 +46,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.localai.data.Space
 import com.iris.localai.engine.EngineState
 import com.iris.localai.pet.PetOverlayController
+import com.iris.localai.ui.settings.PluginUiDialogHost
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,6 +67,7 @@ fun ChatScreen(
     val workspaces by viewModel.workspaces.collectAsStateWithLifecycle()
     val activeWorkspace by viewModel.activeWorkspace.collectAsStateWithLifecycle()
     val pluginSidebarEntries by viewModel.pluginSidebarEntries.collectAsStateWithLifecycle()
+    val pluginUiTarget by viewModel.pluginUiTarget.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -244,6 +246,33 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    pluginUiTarget?.let { target ->
+        PluginUiDialogHost(
+            plugin = target.plugin,
+            moduleId = target.moduleId,
+            title = target.title,
+            renderUi = { viewModel.renderPluginUi(target.plugin, target.moduleId) },
+            dispatchUiEvent = { eventId, value ->
+                viewModel.dispatchPluginUiEvent(target.plugin, target.moduleId, eventId, value)
+            },
+            callUiController = { controllerId, interfaceName, methodName, args ->
+                viewModel.callPluginUiController(
+                    target.plugin,
+                    target.moduleId,
+                    controllerId,
+                    interfaceName,
+                    methodName,
+                    args,
+                )
+            },
+            callUiHandler = { eventId, payload ->
+                viewModel.callPluginUiHandler(target.plugin, target.moduleId, eventId, payload)
+            },
+            uiInvalidations = viewModel.pluginUiInvalidations,
+            onDismiss = viewModel::closePluginUi,
+        )
     }
 }
 

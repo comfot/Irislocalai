@@ -6,7 +6,6 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Badge
 import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
@@ -25,7 +24,6 @@ import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Security
-import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Storefront
@@ -97,8 +95,8 @@ object SettingsCatalog {
         SettingsSection(
             title = "界面与外观",
             entries = listOf(
-                SettingsEntry("theme", "主题", "跟随系统、浅色或深色", Icons.Outlined.Palette),
-                SettingsEntry("component", "组件", "气泡、字体与布局", Icons.Outlined.Widgets),
+                SettingsEntry("theme", "主题", "明暗、界面风格与强调色", Icons.Outlined.Palette),
+                SettingsEntry("component", "组件", "气泡样式与角色对话卡片", Icons.Outlined.Widgets),
             ),
         ),
         SettingsSection(
@@ -110,9 +108,7 @@ object SettingsCatalog {
                 SettingsEntry("interaction", "交互", "发送方式与手势", Icons.Outlined.Gesture),
                 SettingsEntry("network", "网络", "备用下载源与全部下载地址", Icons.Outlined.Wifi),
                 SettingsEntry("integration", "接入与自动化", "外部应用与自动化触发", Icons.Outlined.Link),
-                SettingsEntry("security", "安全", "本地数据与 API 鉴权", Icons.Outlined.Shield),
                 SettingsEntry("about", "关于", "版本、许可与技术栈", Icons.Outlined.Info),
-                SettingsEntry("developer", "开发者选项", "日志、诊断与实验开关", Icons.Outlined.Build),
                 SettingsEntry(
                     "pet",
                     "桌宠穿透",

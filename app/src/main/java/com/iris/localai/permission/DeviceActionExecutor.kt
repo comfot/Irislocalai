@@ -16,7 +16,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import java.io.File
 
-/** 操作通道执行器：Shizuku 优先，失败回退无障碍；没有虚拟屏隔离。 */
+/** 操作通道执行器：Shizuku 优先，失败回退无障碍；虚拟屏可选，文本输入暂不可用。 */
 class DeviceActionExecutor(
     private val context: Context,
     private val permissions: DevicePermissionStore,

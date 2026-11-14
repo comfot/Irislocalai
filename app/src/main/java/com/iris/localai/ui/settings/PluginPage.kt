@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -35,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.localai.plugin.InstalledPlugin
+import com.iris.localai.plugin.resolveUiModuleId
 import kotlinx.coroutines.delay
 
 @Composable
@@ -52,6 +54,8 @@ internal fun PluginPage(
     val context = LocalContext.current
     var showUrlDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<InstalledPlugin?>(null) }
+    var envTarget by remember { mutableStateOf<InstalledPlugin?>(null) }
+    var openUi by remember { mutableStateOf<Triple<InstalledPlugin, String, String>?>(null) }
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -73,7 +77,7 @@ internal fun PluginPage(
     SettingsPage {
         SettingsCard("插件") {
             Text(
-                text = "支持 Operit ToolPkg（manifest.json / manifest.hjson + main 注册 + 子包 METADATA）。导入后声明的工具会进入智能体工具表；同一插件内支持 CommonJS require、ToolPkg.ipc 与 WebAssembly 标量调用。",
+                text = "支持 Operit ToolPkg（manifest.json / manifest.hjson + main 注册 + 子包 METADATA）。导入后声明的工具会进入智能体工具表；加载时会自动转译 NativeInterface.callTool / toolCall 到宿主工具表，可直接调用已启用工具；同一插件内支持 CommonJS require、ToolPkg.ipc 与 WebAssembly 标量调用。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -94,7 +98,7 @@ internal fun PluginPage(
                 ) { Text("插件市场") }
             }
             Text(
-                text = "沙箱限制：插件只能读写自身目录/配置目录与访问公网 HTTP；Java 仅提供 File/Files/Base64/MessageDigest/集合等白名单兼容层，任意 Java 反射与接口代理不可用；Operit Compose DSL UI 无法渲染。请只安装可信来源的插件。",
+                text = "沙箱限制：插件只能读写自身目录/配置目录与访问公网 HTTP；Java 仅提供 File/Files/Base64/MessageDigest/集合等白名单兼容层，任意 Java 反射与接口代理不可用；Compose DSL UI 可通过兼容渲染器打开（常用组件支持，复杂组件会降级）。插件内嵌套调用自身工具暂不支持。请只安装可信来源的插件。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -143,6 +147,9 @@ internal fun PluginPage(
                         )
                     }
                     StatusPill(if (plugin.enabled) "已启用" else "已停用")
+                    IconButton(onClick = { envTarget = plugin }) {
+                        Icon(Icons.Outlined.Key, contentDescription = "环境变量")
+                    }
                     IconButton(onClick = { pendingDelete = plugin }) {
                         Icon(Icons.Outlined.Delete, contentDescription = "删除插件")
                     }
@@ -187,11 +194,26 @@ internal fun PluginPage(
                         color = MaterialTheme.colorScheme.primary,
                     )
                     registered.ui.forEach { ui ->
-                        Text(
-                            text = "UI：${ui.title.ifBlank { ui.id }}（${ui.type}，Compose DSL 无法渲染）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "UI：${ui.title.ifBlank { ui.id }}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = ui.type,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    openUi = Triple(plugin, registered.resolveUiModuleId(ui), ui.title.ifBlank { ui.id })
+                                },
+                                enabled = plugin.enabled,
+                            ) { Text("打开") }
+                        }
                     }
                     registered.aiProviders.forEach { provider ->
                         Text(
@@ -259,6 +281,24 @@ internal fun PluginPage(
                 showUrlDialog = false
                 viewModel.installUrl(url)
             },
+        )
+    }
+
+    openUi?.let { (plugin, moduleId, title) ->
+        PluginUiDialog(
+            plugin = plugin,
+            moduleId = moduleId,
+            title = title,
+            viewModel = viewModel,
+            onDismiss = { openUi = null },
+        )
+    }
+
+    envTarget?.let { plugin ->
+        PluginEnvDialog(
+            plugin = plugin,
+            viewModel = viewModel,
+            onDismiss = { envTarget = null },
         )
     }
 

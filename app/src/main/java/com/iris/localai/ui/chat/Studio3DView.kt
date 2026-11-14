@@ -3,6 +3,8 @@ package com.iris.localai.ui.chat
 import android.content.Context
 import android.graphics.Color
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
@@ -13,6 +15,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
@@ -20,9 +24,13 @@ import com.iris.localai.IrisApp
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+
+private const val PLACE_CHANNEL = "IRIS_PLACE:"
+private val STUDIO_PLACES = setOf("studio", "home", "campus", "library", "site", "duty", "desk")
 
 internal sealed interface StudioStatus {
     data object Loading : StudioStatus
@@ -82,23 +90,29 @@ internal class Studio3DController {
     }
 }
 
-private class StudioBridge(
+internal class StudioBridge(
     private val controller: Studio3DController,
     private val onPlaceSelected: (String) -> Unit,
 ) {
+    private val main = Handler(Looper.getMainLooper())
+
     @JavascriptInterface
     fun onPlaceSelected(place: String) {
-        onPlaceSelected(place)
+        if (place.isBlank()) return
+        main.post {
+            runCatching { onPlaceSelected(place) }
+                .onFailure { Log.e("Studio3D", "place select failed: $place", it) }
+        }
     }
 
     @JavascriptInterface
     fun onReady() {
-        controller.markReady()
+        main.post { runCatching { controller.markReady() } }
     }
 
     @JavascriptInterface
     fun onError(message: String) {
-        controller.markFailed(message)
+        main.post { runCatching { controller.markFailed(message) } }
     }
 }
 
@@ -114,6 +128,9 @@ internal fun Studio3DView(
     modifier: Modifier = Modifier,
 ) {
     val latestCallback = rememberUpdatedState(onPlaceSelected)
+    val callbackRef = remember { AtomicReference(onPlaceSelected) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    SideEffect { callbackRef.set(latestCallback.value) }
 
     AndroidView(
         factory = { context ->
@@ -129,9 +146,17 @@ internal fun Studio3DView(
                 settings.allowUniversalAccessFromFileURLs = true
                 webChromeClient = object : WebChromeClient() {
                     override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                        val text = message.message()
+                        if (text.startsWith(PLACE_CHANNEL)) {
+                            val id = text.removePrefix(PLACE_CHANNEL).trim()
+                            if (id in STUDIO_PLACES) {
+                                mainHandler.post { callbackRef.get()(id) }
+                            }
+                            return true
+                        }
                         Log.d(
                             "Studio3D",
-                            "${message.message()} (${message.sourceId()}:${message.lineNumber()})",
+                            "$text (${message.sourceId()}:${message.lineNumber()})",
                         )
                         return true
                     }
@@ -169,7 +194,7 @@ internal fun Studio3DView(
                 }
                 controller.attach(this)
                 addJavascriptInterface(
-                    StudioBridge(controller) { id -> latestCallback.value(id) },
+                    StudioBridge(controller) { id -> callbackRef.get()(id) },
                     "StudioBridge",
                 )
                 fun load() {

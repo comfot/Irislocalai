@@ -6,6 +6,17 @@ import com.iris.localai.storage.AppStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
  * SharedPreferences 持久化 + StateFlow 暴露。项目不引入 DI 框架，由 AppGraph 手动装配，
@@ -50,6 +61,57 @@ class SettingsRepository(
         active.export().getOrThrow()
     }
 
+    /** 备份用：当前全部偏好，排除 [SettingsMirror.SECRET_KEYS] 中的密钥字段。 */
+    fun snapshotForBackup(): JsonObject = buildJsonObject {
+        prefs.all.forEach { (key, value) ->
+            if (key in SettingsMirror.SECRET_KEYS) return@forEach
+            when (value) {
+                is Boolean -> put(key, value)
+                is Int -> put(key, value)
+                is Long -> put(key, value)
+                is Float -> put(key, value)
+                is String -> put(key, value)
+                is Set<*> -> putJsonArray(key) {
+                    value.filterIsInstance<String>().forEach { add(it) }
+                }
+            }
+        }
+    }
+
+    /** 写回备份中的偏好并按类型转为 SharedPreferences 值；密钥字段保持本机现状。 */
+    fun restoreFromBackup(json: JsonObject) {
+        val editor = prefs.edit()
+        json.forEach { (key, element) ->
+            if (key in SettingsMirror.SECRET_KEYS) return@forEach
+            when (element) {
+                is JsonArray -> editor.putStringSet(
+                    key,
+                    element.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toSet(),
+                )
+                is JsonPrimitive -> when {
+                    element.isString -> editor.putString(key, element.content)
+                    element.booleanOrNull != null -> editor.putBoolean(key, element.booleanOrNull == true)
+                    element.floatOrNull != null && element.content.contains('.') ->
+                        editor.putFloat(key, element.floatOrNull!!)
+                    element.longOrNull != null -> {
+                        val number = element.longOrNull!!
+                        if (number in Int.MIN_VALUE..Int.MAX_VALUE) editor.putInt(key, number.toInt())
+                        else editor.putLong(key, number)
+                    }
+                }
+                else -> Unit
+            }
+        }
+        editor.apply()
+        reloadFromPrefs()
+    }
+
+    /** 外部写入偏好后重新读取内存状态，不覆盖未出现在偏好里的密钥。 */
+    fun reloadFromPrefs() {
+        _settings.value = read()
+        mirror?.export()
+    }
+
     private fun persist(next: AppSettings) {
         prefs.edit()
             .putString(KEY_MODEL_PATH, next.modelPath)
@@ -66,6 +128,10 @@ class SettingsRepository(
             .putString(KEY_SYSTEM_PROMPT, next.systemPrompt)
             .putString(KEY_SPACE, next.space.id)
             .putString(KEY_THEME, next.themeMode.name)
+            .putString(KEY_THEME_STYLE, next.themeStyle.name)
+            .putString(KEY_THEME_ACCENT, next.themeAccent.name)
+            .putString(KEY_BUBBLE_STYLE, next.bubbleStyle.name)
+            .putBoolean(KEY_ROLE_CHAT_CARD, next.roleChatCardEnabled)
             .putString(KEY_USER_NAME, next.userName)
             .putString(KEY_USER_AVATAR, next.userAvatarPath)
             .putString(KEY_USER_NARRATIVE, next.userNarrative)
@@ -213,6 +279,10 @@ class SettingsRepository(
         systemPrompt = prefs.getString(KEY_SYSTEM_PROMPT, "") ?: "",
         space = Space.of(prefs.getString(KEY_SPACE, Space.COMPOSITE.id)),
         themeMode = enumOf(prefs.getString(KEY_THEME, null), ThemeMode.SYSTEM),
+        themeStyle = enumOf(prefs.getString(KEY_THEME_STYLE, null), ThemeStyle.STANDARD),
+        themeAccent = enumOf(prefs.getString(KEY_THEME_ACCENT, null), ThemeAccent.TEAL),
+        bubbleStyle = enumOf(prefs.getString(KEY_BUBBLE_STYLE, null), BubbleStyle.ROUNDED),
+        roleChatCardEnabled = prefs.getBoolean(KEY_ROLE_CHAT_CARD, true),
         userName = prefs.getString(KEY_USER_NAME, "你") ?: "你",
         userAvatarPath = prefs.getString(KEY_USER_AVATAR, "") ?: "",
         userNarrative = prefs.getString(KEY_USER_NARRATIVE, "") ?: "",
@@ -418,6 +488,10 @@ class SettingsRepository(
         const val KEY_SYSTEM_PROMPT = "system_prompt"
         const val KEY_SPACE = "space"
         const val KEY_THEME = "theme"
+        const val KEY_THEME_STYLE = "theme_style"
+        const val KEY_THEME_ACCENT = "theme_accent"
+        const val KEY_BUBBLE_STYLE = "bubble_style"
+        const val KEY_ROLE_CHAT_CARD = "role_chat_card"
         const val KEY_USER_NAME = "user_name"
         const val KEY_USER_AVATAR = "user_avatar"
         const val KEY_USER_NARRATIVE = "user_narrative"

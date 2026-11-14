@@ -114,7 +114,7 @@ internal class SettingsMirror(
         statePrefs.edit().putLong(KEY_LAST_WRITE, target.lastModified()).apply()
     }
 
-    private companion object {
+    internal companion object {
         const val STATE_PREFS = "iris_storage"
         const val KEY_LAST_WRITE = "settings_mirror_write_at"
         const val MAX_BYTES = 2L * 1024 * 1024

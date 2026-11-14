@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -125,7 +126,7 @@ internal fun WorkFilePickerDialog(
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "支持文本与图片；图片需在模型设置开启「支持识图」。单文件最多 8000 字符或 12 MB。",
+                    text = "支持文本、图片与二进制文件（如 ZIP）；文本最多 8000 字符，普通文件最大 32 MB，图片最大 12 MB。图片需在模型设置开启「支持识图」。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -195,6 +196,7 @@ internal fun WorkFilePickerDialog(
                             imageVector = when {
                                 entry.isDir -> Icons.Outlined.Folder
                                 isImageFile(entry.name) -> Icons.Outlined.Image
+                                isArchiveFile(entry.name) -> Icons.Outlined.FolderZip
                                 else -> Icons.Outlined.Description
                             },
                             contentDescription = null,
@@ -238,6 +240,9 @@ private fun formatFileSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
 }
+
+private fun isArchiveFile(name: String): Boolean =
+    name.substringAfterLast('.', "").lowercase() in setOf("zip", "7z", "rar", "tar", "gz", "tgz", "xz", "bz2")
 
 private val imageFileExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
 

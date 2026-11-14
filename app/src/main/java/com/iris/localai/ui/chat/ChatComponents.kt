@@ -40,6 +40,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -72,6 +73,8 @@ import com.iris.localai.agent.ChatMessage
 import com.iris.localai.agent.AssistantDisplay
 import com.iris.localai.agent.AssistantMessageParser
 import com.iris.localai.agent.StatusCardData
+import com.iris.localai.data.BubbleStyle
+import com.iris.localai.ui.theme.IrisCard
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
 import com.iris.localai.data.Space
@@ -90,6 +93,9 @@ internal fun ChatMessageList(
     messages: List<ChatMessage>,
     running: Boolean,
     modifier: Modifier = Modifier,
+    bubbleStyle: BubbleStyle = BubbleStyle.ROUNDED,
+    showRoleChatCard: Boolean = true,
+    renderPluginXml: suspend (String, String) -> String? = { _, _ -> null },
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -112,6 +118,9 @@ internal fun ChatMessageList(
                 MessageBubble(
                     message = message,
                     isGenerating = running && message.id == messages.last().id,
+                    bubbleStyle = bubbleStyle,
+                    showRoleChatCard = showRoleChatCard,
+                    renderPluginXml = renderPluginXml,
                 )
             }
         }
@@ -135,7 +144,13 @@ internal fun ChatMessageList(
 }
 
 @Composable
-internal fun MessageBubble(message: ChatMessage, isGenerating: Boolean) {
+internal fun MessageBubble(
+    message: ChatMessage,
+    isGenerating: Boolean,
+    bubbleStyle: BubbleStyle = BubbleStyle.ROUNDED,
+    showRoleChatCard: Boolean = true,
+    renderPluginXml: suspend (String, String) -> String? = { _, _ -> null },
+) {
     val isUser = message.role == ChatRole.USER
     val display = remember(message.text, isUser) {
         if (isUser) AssistantDisplay(message.text, null)
@@ -150,41 +165,50 @@ internal fun MessageBubble(message: ChatMessage, isGenerating: Boolean) {
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
         if (displayText.isNotBlank() || showTyping) {
+            val visual = bubbleVisual(isUser = isUser, style = bubbleStyle)
             Surface(
-                color = if (isUser) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
-                },
-                contentColor = if (isUser) {
-                    MaterialTheme.colorScheme.onPrimary
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-                shape = RoundedCornerShape(18.dp),
+                color = visual.color,
+                contentColor = visual.contentColor,
+                shape = visual.shape,
+                border = visual.border,
                 modifier = Modifier.widthIn(max = 340.dp),
             ) {
-                Text(
-                    text = if (showTyping) typingLabel else displayText,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                )
+                if (showTyping) {
+                    Text(
+                        text = typingLabel,
+                        modifier = Modifier.padding(visual.padding),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                } else if (isUser) {
+                    Text(
+                        text = displayText,
+                        modifier = Modifier.padding(visual.padding),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                } else {
+                    PluginMarkupContent(
+                        text = displayText,
+                        modifier = Modifier.padding(visual.padding),
+                        renderPluginXml = renderPluginXml,
+                    ) { text ->
+                        Text(text = text, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
             }
         }
-        display.status?.let { status ->
-            AssistantStatusCard(status)
+        if (showRoleChatCard) {
+            display.status?.let { status ->
+                AssistantStatusCard(status)
+            }
         }
         message.steps.forEach { step -> AgentStepCard(step) }
     }
 }
 
 @Composable
-private fun AssistantStatusCard(data: StatusCardData) {
+internal fun AssistantStatusCard(data: StatusCardData) {
     var expanded by remember { mutableStateOf(false) }
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(14.dp),
-        tonalElevation = 1.dp,
+    IrisCard(
         modifier = Modifier
             .padding(top = 6.dp)
             .widthIn(max = 340.dp),
@@ -298,21 +322,36 @@ internal fun SelectorChip(
     label: String,
     options: List<ChipOption>,
     onSelect: (String) -> Unit,
+    compact: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
 
     Box {
-        AssistChip(
-            onClick = { expanded = true },
-            label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            leadingIcon = {
+        if (compact) {
+            IconButton(
+                onClick = { expanded = true },
+                modifier = Modifier.size(40.dp),
+            ) {
                 Icon(
                     imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+                    contentDescription = label,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
                 )
-            },
-        )
+            }
+        } else {
+            AssistChip(
+                onClick = { expanded = true },
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+            )
+        }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { option ->
                 DropdownMenuItem(

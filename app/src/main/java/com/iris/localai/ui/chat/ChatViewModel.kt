@@ -38,7 +38,10 @@ import com.iris.localai.motion.MotionCategory
 import com.iris.localai.pet.PetChatBus
 import com.iris.localai.pet.PetDestination
 import com.iris.localai.pet.PetNavigator
+import com.iris.localai.plugin.InstalledPlugin
 import com.iris.localai.plugin.PluginHookDescriptor
+import com.iris.localai.plugin.resolveUiModuleId
+import com.iris.localai.plugin.uiRouteModuleId
 import com.iris.localai.scene.SceneConfig
 import com.iris.localai.workspace.Workspace
 import com.iris.localai.workspace.WorkspaceFs
@@ -61,6 +64,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.URLConnection
 import java.util.UUID
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -222,6 +226,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val pluginMenuItems: StateFlow<List<PluginHookDescriptor>> = _pluginMenuItems.asStateFlow()
     private val _pluginSidebarEntries = MutableStateFlow<List<PluginHookDescriptor>>(emptyList())
     val pluginSidebarEntries: StateFlow<List<PluginHookDescriptor>> = _pluginSidebarEntries.asStateFlow()
+    private val _pluginUiTarget = MutableStateFlow<PluginUiTarget?>(null)
+    val pluginUiTarget: StateFlow<PluginUiTarget?> = _pluginUiTarget.asStateFlow()
+    val pluginUiInvalidations = graph.pluginRuntime.uiInvalidations
     private var pluginMenuLoading = false
     private var pluginSidebarLoading = false
 
@@ -933,10 +940,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     .onFailure { _attachmentError.value = it.message ?: "读取图片失败" }
             } else {
                 val result = withContext(Dispatchers.IO) {
-                    WorkspaceFs(getApplication(), workspace).readTextFile(path)
+                    runCatching {
+                        val bytes = WorkspaceFs(getApplication(), workspace)
+                            .readBytes(path, MAX_FILE_BYTES.toLong())
+                            .getOrThrow()
+                        if (AttachmentClassifier.looksLikeText(bytes)) {
+                            LoadedAttachment.Text(
+                                displayName,
+                                decodeAttachmentText(textSlice(bytes)),
+                            )
+                        } else {
+                            LoadedAttachment.File(
+                                ChatAttachment(
+                                    name = displayName,
+                                    path = path,
+                                    kind = AttachmentKind.FILE,
+                                    mimeType = fileMime(displayName),
+                                    sizeBytes = bytes.size.toLong(),
+                                ),
+                            )
+                        }
+                    }
                 }
-                result.onSuccess { content ->
-                    addAttachment(name = displayName, path = path, text = content)
+                result.onSuccess { loaded ->
+                    when (loaded) {
+                        is LoadedAttachment.Text -> addAttachment(loaded.name, path, loaded.content)
+                        is LoadedAttachment.File -> addFileAttachment(loaded.attachment)
+                        is LoadedAttachment.Image -> addImageAttachment(loaded.attachment)
+                    }
                 }.onFailure { error ->
                     _attachmentError.value = error.message ?: "读取文件失败"
                 }
@@ -957,6 +988,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 when (loaded) {
                     is LoadedAttachment.Text -> addAttachment(loaded.name, "", loaded.content)
                     is LoadedAttachment.Image -> addImageAttachment(loaded.attachment)
+                    is LoadedAttachment.File -> addFileAttachment(loaded.attachment)
                 }
             }.onFailure { error ->
                 _attachmentError.value = error.message ?: "读取文件失败"
@@ -992,6 +1024,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _attachmentError.value = null
     }
 
+    private fun addFileAttachment(attachment: ChatAttachment) {
+        if (_attachments.value.size >= MAX_ATTACHMENTS) {
+            _attachmentError.value = "最多附加 $MAX_ATTACHMENTS 个文件"
+            return
+        }
+        _attachmentError.value = null
+        _attachments.update { it + attachment }
+    }
+
     private fun addImageAttachment(attachment: ChatAttachment) {
         if (_attachments.value.size >= MAX_ATTACHMENTS) {
             _attachmentError.value = "最多附加 $MAX_ATTACHMENTS 个文件"
@@ -1018,6 +1059,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private fun saveFileAttachment(name: String, mime: String, bytes: ByteArray): ChatAttachment {
+        require(bytes.isNotEmpty()) { "文件为空：$name" }
+        val ext = name.substringAfterLast('.', "")
+            .lowercase()
+            .filter { it.isLetterOrDigit() }
+            .take(10)
+        val file = File(attachmentsDir, "${UUID.randomUUID()}${if (ext.isNotEmpty()) ".$ext" else ""}")
+        file.writeBytes(bytes)
+        return ChatAttachment(
+            name = name,
+            path = file.absolutePath,
+            kind = AttachmentKind.FILE,
+            mimeType = mime.ifBlank { fileMime(name) },
+            sizeBytes = bytes.size.toLong(),
+        )
+    }
+
+    private fun textSlice(bytes: ByteArray): ByteArray =
+        if (bytes.size > MAX_ATTACHMENT_BYTES) bytes.copyOf(MAX_ATTACHMENT_BYTES) else bytes
+
+    private fun fileMime(name: String): String =
+        runCatching { URLConnection.guessContentTypeFromName(name) }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: "application/octet-stream"
+
     private fun readDeviceFile(uri: Uri): LoadedAttachment {
         val resolver = getApplication<Application>().contentResolver
         val name = resolver.query(
@@ -1031,13 +1097,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment?.substringAfterLast('/') ?: "设备文件"
         val mime = resolver.getType(uri).orEmpty()
 
-        if (mime.startsWith("image/") || isImageName(name)) {
+        if (isSupportedImage(name, mime)) {
             val bytes = readUriBytes(uri, MAX_IMAGE_BYTES, name)
             return LoadedAttachment.Image(saveImageAttachment(name, mime, bytes))
         }
-        val bytes = readUriBytes(uri, MAX_ATTACHMENT_BYTES, name)
-        if (bytes.any { it == 0.toByte() }) error("暂不支持二进制文件：$name")
-        return LoadedAttachment.Text(name, String(bytes, Charsets.UTF_8))
+        val bytes = readUriBytes(uri, MAX_FILE_BYTES, name)
+        if (!AttachmentClassifier.looksLikeText(bytes)) {
+            return LoadedAttachment.File(saveFileAttachment(name, mime, bytes))
+        }
+        return LoadedAttachment.Text(name, decodeAttachmentText(textSlice(bytes)))
     }
 
     private fun readUriBytes(uri: Uri, limit: Int, name: String): ByteArray {
@@ -1136,6 +1204,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             else -> "（图片已随消息发送，请直接查看图片内容。）"
                         },
                     )
+                } else if (attachment.kind == AttachmentKind.FILE) {
+                    append("【附件文件：${attachment.name}")
+                    if (attachment.path.isNotBlank()) append("（${attachment.path}）")
+                    append("】\n")
+                    if (attachment.sizeBytes > 0) {
+                        append("大小：${formatFileSize(attachment.sizeBytes)}\n")
+                    }
+                    append("（二进制文件，未直接读取内容；需要处理时用工作区或 Shell 工具访问该路径。）")
                 } else {
                     append("【附件：${attachment.name}")
                     if (attachment.path.isNotBlank()) append("（${attachment.path}）")
@@ -1237,6 +1313,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun isImageName(name: String): Boolean =
         name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
 
+    private fun isSupportedImage(name: String, mime: String): Boolean =
+        isImageName(name) || mime.substringBefore(';').lowercase() in SUPPORTED_IMAGE_MIMES
+
+    private fun decodeAttachmentText(bytes: ByteArray): String {
+        if (bytes.size >= 2) {
+            val first = bytes[0].toInt() and 0xFF
+            val second = bytes[1].toInt() and 0xFF
+            if (first == 0xFF && second == 0xFE) {
+                return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+            }
+            if (first == 0xFE && second == 0xFF) {
+                return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+            }
+        }
+        return String(bytes, Charsets.UTF_8)
+    }
+
     private fun mimeForName(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
         "png" -> "image/png"
         "webp" -> "image/webp"
@@ -1257,6 +1350,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             "heic", "heif" -> "heic"
             else -> "jpg"
         }
+    }
+
+    private fun formatFileSize(bytes: Long): String = when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+        else -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
     }
 
     private fun isVisionEnabled(profile: ModelProfile): Boolean {
@@ -1606,16 +1705,67 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun runPluginSidebarEntry(entry: PluginHookDescriptor) {
+        val plugin = graph.plugins.plugins.value.firstOrNull { it.id == entry.pluginId }
+        val moduleId = graph.pluginRuntime.registrationFor(entry.pluginId)
+            ?.resolveUiModuleId(entry)
+            ?: entry.uiRouteModuleId()
+        if (plugin != null && plugin.enabled && moduleId.isNotBlank()) {
+            _pluginUiTarget.value = PluginUiTarget(
+                plugin = plugin,
+                moduleId = moduleId,
+                title = entry.title.ifBlank { entry.id },
+            )
+            return
+        }
         viewModelScope.launch {
             val result = graph.pluginRuntime.invokeNavigationEntry(entry)
             val message = when {
                 !result.isNullOrBlank() -> result.take(300)
-                entry.route.isNotBlank() -> "该入口使用 Compose DSL 路由，本应用无法渲染"
                 else -> "插件入口没有可执行的 action"
             }
             Toast.makeText(getApplication(), message, Toast.LENGTH_LONG).show()
         }
     }
+
+    fun closePluginUi() {
+        _pluginUiTarget.value = null
+    }
+
+    suspend fun renderPluginUi(plugin: InstalledPlugin, moduleId: String): Result<String> =
+        graph.pluginRuntime.renderUi(plugin, moduleId)
+
+    suspend fun renderPluginXml(tagName: String, xmlContent: String): String? =
+        graph.pluginRuntime.renderXml(tagName, xmlContent)
+
+    suspend fun dispatchPluginUiEvent(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        eventId: String,
+        valueJson: String?,
+    ): Result<String> = graph.pluginRuntime.dispatchUiEvent(plugin, moduleId, eventId, valueJson)
+
+    suspend fun callPluginUiController(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        controllerId: String,
+        interfaceName: String,
+        methodName: String,
+        argsJson: String,
+    ): String = graph.pluginRuntime.callUiController(
+        plugin,
+        moduleId,
+        controllerId,
+        interfaceName,
+        methodName,
+        argsJson,
+    )
+
+    suspend fun callPluginUiHandler(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        eventId: String,
+        payloadJson: String,
+    ): String = graph.pluginRuntime.callUiHandler(plugin, moduleId, eventId, payloadJson)
 
     fun runPluginMenuItem(item: PluginHookDescriptor, message: ChatMessage, index: Int) {        val chatId = store.find(_currentId.value)?.id ?: return
         viewModelScope.launch {
@@ -1651,6 +1801,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
+data class PluginUiTarget(
+    val plugin: InstalledPlugin,
+    val moduleId: String,
+    val title: String,
+)
+
 private val codeToolIds = setOf(
     "shell",
     "workspace",
@@ -1665,12 +1821,23 @@ private const val MAX_ATTACHMENTS = 5
 private const val MAX_ATTACHMENT_CHARS = 8_000
 private const val MAX_ATTACHMENT_TOTAL_CHARS = 24_000
 private const val MAX_ATTACHMENT_BYTES = 256 * 1024
+private const val MAX_FILE_BYTES = 32 * 1024 * 1024
 private const val MAX_PROMPT_IMAGES = 3
 private const val MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
+private val SUPPORTED_IMAGE_MIMES = setOf(
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+    "image/heic",
+    "image/heif",
+)
 
 private sealed interface LoadedAttachment {
     data class Text(val name: String, val content: String) : LoadedAttachment
     data class Image(val attachment: ChatAttachment) : LoadedAttachment
+    data class File(val attachment: ChatAttachment) : LoadedAttachment
 }

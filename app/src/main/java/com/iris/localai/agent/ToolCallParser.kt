@@ -145,9 +145,36 @@ object ToolCallParser {
         return BARE_COMMAND.matches(trimmed)
     }
 
+    /**
+     * 从正文里取出模型本来想执行的单行命令：
+     * - 整段就是命令；
+     * - 或唯一一个 ```sh / ```bash / ``` 代码块里只有一条命令。
+     */
+    fun bareShellCommand(text: String): String? {
+        val trimmed = text.trim()
+        if (looksLikeBareCommand(trimmed)) return trimmed
+        val blocks = FENCED_COMMAND.findAll(trimmed).toList()
+        if (blocks.size != 1) return null
+        val command = blocks.first().groupValues[1].trim()
+        return command.takeIf { looksLikeBareCommand(it) }
+    }
+
+    /** 是否有足够明确的命令特征；用于避免把普通说明句自动执行。 */
+    fun isStrongShellCommand(command: String): Boolean {
+        if (command.any { it == '/' || it == '|' || it == ';' || it == '>' || it == '&' }) return true
+        val head = command.substringBefore(' ').lowercase()
+        return head in STRONG_COMMANDS
+    }
+
     private val BARE_COMMAND = Regex(
-        "(?:cd|ls|grep|rg|find|cat|head|tail|sed|awk|cp|mv|rm|mkdir|touch|chmod|chown|git|python|python3|node|npm|sh|bash|pwd|mount|df)\\s+[\\s\\S]*",
+        "(?:cd|ls|grep|rg|find|cat|head|tail|sed|awk|cp|mv|rm|mkdir|touch|chmod|chown|git|python|python3|node|npm|sh|bash|pwd|mount|df|unzip|zip|tar|7z|curl|wget)\\s+[\\s\\S]*",
         setOf(RegexOption.IGNORE_CASE),
+    )
+
+    private val FENCED_COMMAND = Regex("(?is)```(?:sh|bash|shell|zsh)?\\s*\n(.*?)```")
+
+    private val STRONG_COMMANDS = setOf(
+        "unzip", "zip", "tar", "7z", "curl", "wget", "git", "python", "python3", "node", "npm",
     )
 
     private fun jsonObjectEnd(text: String, start: Int): Int {

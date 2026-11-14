@@ -973,6 +973,39 @@ class MemoryStore(
         File(dir, KNOWLEDGE).writeText(json)
     }
 
+    /** 备份用：记忆目录下的已知 JSON 文件。 */
+    fun snapshotFiles(): Map<String, ByteArray> = FILE_NAMES.mapNotNull { name ->
+        File(dir, name).takeIf { it.isFile }?.let { name to it.readBytes() }
+    }.toMap()
+
+    /** 用备份内容覆盖记忆文件；先整体校验，任一文件格式错误则不写入。 */
+    fun restoreFiles(files: Map<String, ByteArray>) {
+        val selected = files.filterKeys { it in FILE_NAMES }
+        selected.forEach { (name, bytes) ->
+            require(bytes.size <= MAX_BACKUP_FILE_BYTES) { "记忆文件过大：$name" }
+            require(
+                runCatching {
+                    Json.parseToJsonElement(String(bytes, Charsets.UTF_8)).jsonArray
+                }.isSuccess,
+            ) { "记忆文件格式错误：$name" }
+        }
+        selected.forEach { (name, bytes) -> File(dir, name).writeBytes(bytes) }
+        reload()
+    }
+
+    /** 从磁盘重新加载全部记忆数据，供备份恢复后刷新界面。 */
+    fun reload() {
+        vectorCache.clear()
+        _diary.value = loadDiary()
+        _memories.value = loadMemories()
+        _knowledge.value = loadKnowledge()
+        _links.value = loadLinks()
+        usageDays.clear()
+        usageDays.addAll(loadDateSet(usageFile))
+        handledDiaryDays.clear()
+        handledDiaryDays.addAll(loadDateSet(handledFile))
+    }
+
     private fun loadDiary(): List<DiaryEntry> {
         val text = File(dir, DIARY).takeIf { it.isFile }?.readText().orEmpty()
         return runCatching {
@@ -1127,6 +1160,8 @@ class MemoryStore(
         const val LINKS = "links.json"
         const val USAGE = "usage_days.json"
         const val HANDLED_DIARY = "diary_handled.json"
+        val FILE_NAMES = listOf(DIARY, MEMORIES, KNOWLEDGE, LINKS, USAGE, HANDLED_DIARY)
+        const val MAX_BACKUP_FILE_BYTES = 32L * 1024 * 1024
         const val UNCATEGORIZED = "未分类"
         const val DAY_MS = 86_400_000L
         const val HALF_LIFE_DAYS = 14f

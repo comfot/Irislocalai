@@ -1,5 +1,6 @@
 package com.iris.localai.ui.chat
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Mic
@@ -43,9 +45,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -57,6 +60,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,8 +70,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.data.AppSettings
 import com.iris.localai.data.ModelProfile
 import com.iris.localai.data.ProviderKind
+import com.iris.localai.data.ThemeStyle
 import com.iris.localai.agent.AttachmentKind
 import com.iris.localai.skill.Skill
+import com.iris.localai.ui.theme.LocalIrisThemeStyle
 import com.iris.localai.agent.Tool
 import com.iris.localai.workspace.Workspace
 
@@ -102,6 +109,9 @@ fun WorkSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) {
                     viewModel.runPluginMenuItem(item, message, index)
                 },
                 modifier = Modifier.weight(1f),
+                bubbleStyle = settings.bubbleStyle,
+                showRoleChatCard = settings.roleChatCardEnabled,
+                renderPluginXml = viewModel::renderPluginXml,
             )
         }
         WorkComposer(
@@ -273,78 +283,34 @@ private fun WorkComposer(
     val attachmentError by viewModel.attachmentError.collectAsStateWithLifecycle()
 
     val activeModel = modelProfiles.firstOrNull { it.id == activeModelId }
+    val themeStyle = LocalIrisThemeStyle.current
 
-    Surface(tonalElevation = 3.dp) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Surface(
+        tonalElevation = 3.dp,
+        shape = RoundedCornerShape(22.dp),
+        border = when (themeStyle) {
+            ThemeStyle.E_INK -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ThemeStyle.LIQUID_GLASS -> BorderStroke(
+                1.dp,
+                Color.White.copy(alpha = if (MaterialTheme.colorScheme.onBackground.luminance() > 0.5f) 0.24f else 0.55f),
+            )
+            ThemeStyle.STANDARD -> null
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+        ) {
             if (running) {
                 LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(2.dp),
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                SelectorChip(
-                    icon = Icons.Outlined.Folder,
-                    label = activeWorkspace?.name ?: "选择工作区",
-                    options = workspaces.map {
-                        ChipOption(it.id, it.name, it.path.ifBlank { "应用内工作区" })
-                    },
-                    onSelect = { id -> viewModel.setActiveWorkspace(id) },
-                )
-                SelectorChip(
-                    icon = Icons.Outlined.Memory,
-                    label = activeModel?.name ?: "默认配置",
-                    options = modelProfiles.map {
-                        ChipOption(it.id, it.name, viewModel.modelProfileSummary(it.id))
-                    },
-                    onSelect = viewModel::setActiveModelProfile,
-                )
-                AssistChip(
-                    onClick = {
-                        viewModel.updateSettings { it.copy(agentMode = !it.agentMode) }
-                    },
-                    label = { Text(if (settings.agentMode) "工具模式" else "对话模式") },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = if (settings.agentMode) {
-                                Icons.Outlined.Bolt
-                            } else {
-                                Icons.Outlined.ChatBubbleOutline
-                            },
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                )
-                AssistChip(
-                    onClick = { showConfig = true },
-                    label = {
-                        Text(
-                            "配置 " + (
-                                skills.count { it.enabled } +
-                                    tools.count { it.name in settings.enabledToolIds }
-                                ),
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Tune,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
-                )
-            }
-
-            Spacer(Modifier.height(8.dp))
 
             if (attachments.isNotEmpty() || attachmentError != null) {
                 Row(
@@ -366,10 +332,10 @@ private fun WorkComposer(
                             },
                             leadingIcon = {
                                 Icon(
-                                    imageVector = if (attachment.kind == AttachmentKind.IMAGE) {
-                                        Icons.Outlined.Image
-                                    } else {
-                                        Icons.Outlined.AttachFile
+                                    imageVector = when {
+                                        attachment.kind == AttachmentKind.IMAGE -> Icons.Outlined.Image
+                                        AttachmentClassifier.isArchiveFileName(attachment.name) -> Icons.Outlined.FolderZip
+                                        else -> Icons.Outlined.AttachFile
                                     },
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp),
@@ -404,40 +370,122 @@ private fun WorkComposer(
                         }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
             }
 
-            Row(verticalAlignment = Alignment.Bottom) {
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = viewModel::onInputChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("描述任务，点回形针附加文件") },
-                    minLines = 1,
-                    maxLines = 5,
-                    shape = RoundedCornerShape(22.dp),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { viewModel.send() }),
-                )
-                Spacer(Modifier.width(4.dp))
-                IconButton(onClick = { showFiles = true }) {
+            TextField(
+                value = input,
+                onValueChange = viewModel::onInputChange,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(
+                        text = "描述任务，点回形针附加文件",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                minLines = 1,
+                maxLines = 5,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { viewModel.send() }),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    SelectorChip(
+                        icon = Icons.Outlined.Folder,
+                        label = activeWorkspace?.name ?: "选择工作区",
+                        options = workspaces.map {
+                            ChipOption(it.id, it.name, it.path.ifBlank { "应用内工作区" })
+                        },
+                        onSelect = { id -> viewModel.setActiveWorkspace(id) },
+                        compact = true,
+                    )
+                    SelectorChip(
+                        icon = Icons.Outlined.Memory,
+                        label = activeModel?.name ?: "默认配置",
+                        options = modelProfiles.map {
+                            ChipOption(it.id, it.name, viewModel.modelProfileSummary(it.id))
+                        },
+                        onSelect = viewModel::setActiveModelProfile,
+                        compact = true,
+                    )
+                    IconButton(
+                        onClick = {
+                            viewModel.updateSettings { it.copy(agentMode = !it.agentMode) }
+                        },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (settings.agentMode) {
+                                Icons.Outlined.Bolt
+                            } else {
+                                Icons.Outlined.ChatBubbleOutline
+                            },
+                            contentDescription = if (settings.agentMode) "切换为对话模式" else "切换为工具模式",
+                            tint = if (settings.agentMode) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    IconButton(
+                        onClick = { showConfig = true },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Tune,
+                            contentDescription = "技能与工具配置",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = { showFiles = true },
+                    modifier = Modifier.size(36.dp),
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.AttachFile,
                         contentDescription = "添加文件",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
                     )
                 }
-                IconButton(onClick = { showVoice = true }) {
+                IconButton(
+                    onClick = { showVoice = true },
+                    modifier = Modifier.size(36.dp),
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.Mic,
                         contentDescription = "语音输入",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
                     )
                 }
                 FilledIconButton(
                     onClick = {
                         if (running) viewModel.stop() else viewModel.send()
                     },
+                    modifier = Modifier.size(40.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = if (running) {
                             MaterialTheme.colorScheme.surfaceVariant
@@ -458,6 +506,7 @@ private fun WorkComposer(
                             Icons.AutoMirrored.Filled.Send
                         },
                         contentDescription = if (running) "停止" else "发送",
+                        modifier = Modifier.size(20.dp),
                     )
                 }
             }

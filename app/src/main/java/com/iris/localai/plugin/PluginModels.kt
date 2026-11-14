@@ -120,6 +120,29 @@ data class PluginHookDescriptor(
     val surface: String = "",
 )
 
+fun PluginHookDescriptor.uiRouteModuleId(): String {
+    val routeId = route.trim()
+    val marker = ":ui:"
+    val routeCandidate = if (routeId.contains(marker)) {
+        routeId.substringAfterLast(marker).trim()
+    } else {
+        routeId
+    }
+    val candidate = routeCandidate.ifBlank { screen.trim().ifBlank { id.trim() } }
+    return candidate.removeSuffix("_entry").removeSuffix("_nav").ifBlank { id.trim() }
+}
+
+fun PluginRegistrations.resolveUiModuleId(entry: PluginHookDescriptor): String {
+    val direct = entry.uiRouteModuleId()
+    val screens = ui.filter { it.type == "ui_route" || it.type == "toolbox_ui" }
+    if (screens.any { it.id == direct }) return direct
+    screens.firstOrNull { it.uiRouteModuleId() == direct }?.let { return it.id }
+    if (entry.route.isNotBlank()) {
+        screens.firstOrNull { it.route == entry.route }?.let { return it.id }
+    }
+    return screens.singleOrNull()?.id ?: direct
+}
+
 data class PluginRegistrations(
     val hooks: List<PluginHookDescriptor> = emptyList(),
     val ui: List<PluginHookDescriptor> = emptyList(),

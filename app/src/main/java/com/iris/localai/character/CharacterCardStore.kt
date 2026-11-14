@@ -105,6 +105,15 @@ class CharacterCardStore(
         refresh()
     }
 
+    /** 恢复备份中的收藏：只改被恢复的卡，未出现在备份里的卡保留原收藏状态。 */
+    fun restoreFavorites(restoredIds: Set<String>, favorites: Set<String>) {
+        val current = favoriteIds()
+        current.removeAll(restoredIds)
+        current.addAll(favorites.filter { it in restoredIds })
+        prefs.edit().putStringSet(KEY_FAVORITES, current.toSet()).apply()
+        refresh()
+    }
+
     fun delete(id: String): Boolean {
         if (!isSafeId(id)) return false
         val removed = storage.readDirs("characters").fold(false) { acc, dirRoot ->

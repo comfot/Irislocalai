@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,6 +46,7 @@ import com.iris.localai.agent.Conversation
 import com.iris.localai.data.AppSettings
 import com.iris.localai.engine.EngineState
 import com.iris.localai.server.ApiState
+import com.iris.localai.ui.theme.IrisCard
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,6 +64,7 @@ fun SettingsScreen(
     var entryId by rememberSaveable { mutableStateOf<String?>(null) }
     var previousEntryId by rememberSaveable { mutableStateOf<String?>(null) }
     var marketSectionName by rememberSaveable { mutableStateOf(MarketSection.MODELS.name) }
+    var showThemePreset by rememberSaveable { mutableStateOf(false) }
     val entry = SettingsCatalog.find(entryId)
 
     LaunchedEffect(navigationRequestId, initialEntryId) {
@@ -112,6 +115,13 @@ fun SettingsScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                 },
+                actions = {
+                    if (entry?.id == "theme") {
+                        IconButton(onClick = { showThemePreset = true }) {
+                            Icon(Icons.Outlined.Palette, contentDescription = "主题预设")
+                        }
+                    }
+                },
             )
         },
     ) { padding ->
@@ -157,9 +167,18 @@ fun SettingsScreen(
                         previousEntryId = "space"
                         entryId = "studio-space"
                     },
+                    onOpenThemePreset = { showThemePreset = true },
                 )
             }
         }
+    }
+
+    if (showThemePreset) {
+        ThemePresetDialog(
+            settings = settings,
+            viewModel = viewModel,
+            onDismiss = { showThemePreset = false },
+        )
     }
 }
 
@@ -240,12 +259,7 @@ private fun SettingsSectionCard(
     section: SettingsSection,
     onEntry: (SettingsEntry) -> Unit,
 ) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    IrisCard(modifier = Modifier.fillMaxWidth()) {
         Column {
             Text(
                 text = section.title,
@@ -326,6 +340,7 @@ private fun SettingsDetail(
     onOpenLive2D: () -> Unit,
     onOpen3D: () -> Unit,
     onOpenStudioSpace: () -> Unit,
+    onOpenThemePreset: () -> Unit,
 ) {
     when (entry.id) {
         "model" -> ModelSettingsPage(settings, viewModel) { onOpenMarket(MarketSection.MODELS) }
@@ -359,7 +374,8 @@ private fun SettingsDetail(
         "mcp" -> McpPage()
         "plugin" -> PluginPage(onOpenMarket = { onOpenMarket(MarketSection.PLUGINS) })
         "market" -> MarketPage(initialSection = initialMarketSection)
-        "theme" -> ThemePage(settings, viewModel)
+        "theme" -> ThemePage(settings, viewModel, onOpenThemePreset)
+        "component" -> ComponentPage(settings, viewModel)
         "space" -> SpacePage(
             settings,
             conversations,
@@ -371,7 +387,7 @@ private fun SettingsDetail(
         "permission" -> PermissionPage(viewModel)
         "storage" -> StoragePage(viewModel)
         "about" -> AboutPage()
-        "backup" -> BackupPage(settings, viewModel)
+        "backup" -> BackupPage(viewModel)
         "restore" -> RestorePage(viewModel)
         else -> PlaceholderPage(entry)
     }

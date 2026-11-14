@@ -78,6 +78,7 @@ class FetchUrlTool : Tool {
     private fun isPrivateHost(host: String?): Boolean {
         val name = host?.lowercase() ?: return true
         if (name.isEmpty()) return true
+        if (name == "127.0.0.1" || name == "localhost" || name == "::1" || name == "[::1]") return false
         if (name == "localhost" || name.endsWith(".localhost")) return true
         if (name.contains(':')) return true
         val numbers = name.split('.').mapNotNull { it.toIntOrNull() }

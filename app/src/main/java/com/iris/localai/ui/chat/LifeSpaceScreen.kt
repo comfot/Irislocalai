@@ -265,6 +265,9 @@ fun LifeSpaceScreen(
                         messages = messages,
                         running = running,
                         modifier = Modifier.weight(1f),
+                        bubbleStyle = settings.bubbleStyle,
+                        showRoleChatCard = settings.roleChatCardEnabled,
+                        renderPluginXml = viewModel::renderPluginXml,
                     )
                 }
 

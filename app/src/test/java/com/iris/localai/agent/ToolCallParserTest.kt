@@ -2,6 +2,7 @@ package com.iris.localai.agent
 
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -73,6 +74,23 @@ class ToolCallParserTest {
             call?.arguments?.get("command")?.jsonPrimitive?.content,
         )
         assertEquals("先检查环境。", ToolCallParser.stripToolCalls("先检查环境。\n$text"))
+    }
+
+    @Test
+    fun `extracts bare command from body and fenced block`() {
+        val command = "ls -la /mnt/iris 2>&1; echo \"== attachments ==\"; ls -la /mnt/iris/attachments 2>&1 | head -30"
+        assertEquals(command, ToolCallParser.bareShellCommand(command))
+        assertTrue(ToolCallParser.isStrongShellCommand(command))
+        assertEquals(
+            "unzip /sdcard/a.zip",
+            ToolCallParser.bareShellCommand("```bash\nunzip /sdcard/a.zip\n```"),
+        )
+    }
+
+    @Test
+    fun `does not treat explanation as command`() {
+        assertNull(ToolCallParser.bareShellCommand("cd 是切换目录"))
+        assertFalse(ToolCallParser.isStrongShellCommand("cd"))
     }
 
     @Test

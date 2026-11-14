@@ -4,7 +4,7 @@ import com.iris.localai.data.Space
 
 enum class ChatRole { USER, ASSISTANT }
 
-enum class AttachmentKind { TEXT, IMAGE }
+enum class AttachmentKind { TEXT, IMAGE, FILE }
 
 /** 随用户消息一起发送的附件；文本内容拼入提示词，图片以多模态内容发送。 */
 data class ChatAttachment(
@@ -15,6 +15,7 @@ data class ChatAttachment(
     val kind: AttachmentKind = AttachmentKind.TEXT,
     val mimeType: String = "",
     val imagePath: String = "",
+    val sizeBytes: Long = 0L,
 )
 
 data class ChatMessage(

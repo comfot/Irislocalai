@@ -57,6 +57,7 @@ import com.iris.localai.data.ModelProfileStore
 import com.iris.localai.data.ModelRole
 import com.iris.localai.data.ProviderKind
 import com.iris.localai.data.SettingsRepository
+import com.iris.localai.data.ToolPermission
 import com.iris.localai.engine.Backend
 import com.iris.localai.engine.EngineManager
 import com.iris.localai.engine.InferenceEngine
@@ -88,12 +89,14 @@ import com.iris.localai.permission.DevicePermissionStore
 import com.iris.localai.permission.VirtualDisplayController
 import com.iris.localai.plugin.PluginRuntime
 import com.iris.localai.plugin.PluginStore
+import com.iris.localai.plugin.PluginTerminalHost
 import com.iris.localai.plugin.PluginToolInstaller
 import com.iris.localai.scene.SceneStore
 import com.iris.localai.scene.StudioAvatarStore
 import com.iris.localai.scene.StudioModelStore
 import com.iris.localai.skill.SkillStore
 import com.iris.localai.storage.AppStorage
+import com.iris.localai.storage.BackupService
 import com.iris.localai.server.ApiService
 import com.iris.localai.voice.TtsController
 import com.iris.localai.voice.CloudVoiceClient
@@ -135,6 +138,7 @@ class AppGraph(
         profileProvider = { models.active() },
         providerProvider = { profile -> models.providerFor(profile, ModelRole.EMBEDDING) },
     )
+    val backup = BackupService(context, settings, models, characters, worldBooks, memory)
     val scenes = SceneStore(context, storage)
     val studioAvatars = StudioAvatarStore(context)
     val studioModels = StudioModelStore(context, storage)
@@ -244,7 +248,13 @@ class AppGraph(
     }
     val mcpServer = McpServerService(mcp, tools)
     val plugins = PluginStore(context)
-    val pluginRuntime = PluginRuntime(context) { plugins.plugins.value }
+    val pluginTerminal = PluginTerminalHost(context, code)
+    val pluginRuntime = PluginRuntime(
+        context,
+        { plugins.plugins.value },
+        tools,
+        pluginTerminal,
+    ) { name -> settings.current.toolPermissions[name] ?: ToolPermission.ALLOW }
     val pluginTools = PluginToolInstaller(
         store = plugins,
         registry = tools,

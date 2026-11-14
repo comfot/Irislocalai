@@ -16,15 +16,16 @@ import com.iris.localai.data.ModelProfile
 import com.iris.localai.data.OperationSurfaceMode
 import com.iris.localai.data.ToolPermission
 import com.iris.localai.server.ApiAuth
+import com.iris.localai.storage.BackupCategory
+import com.iris.localai.storage.BackupOutcome
+import com.iris.localai.storage.BackupPreview
 import com.iris.localai.workspace.Workspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
+import kotlinx.coroutines.withContext
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -38,6 +39,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val skills = graph.skills.skills
     val workspaces = graph.workspaces.workspaces
     val characters = graph.characters.cards
+    val worldBooks = graph.worldBooks.books
+    val memoryDiary = graph.memory.diary
+    val memoryItems = graph.memory.memories
+    val memoryKnowledge = graph.memory.knowledge
     val activeWorkspaceId = graph.workspaces.activeId
     val storage = graph.storage
 
@@ -272,105 +277,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun backupJson(): String {
-        val settings = graph.settings.current
-        return buildJsonObject {
-            put("app", "IRIS LocalAI")
-            put("schema", 1)
-            putJsonObject("settings") {
-                put("modelPath", settings.modelPath)
-                put("backend", settings.backend.name)
-                put("contextLength", settings.contextLength)
-                put("threads", settings.threads)
-                put("temperature", settings.temperature)
-                put("topP", settings.topP)
-                put("maxNewTokens", settings.maxNewTokens)
-                put("apiPort", settings.apiPort)
-                put("systemPrompt", settings.systemPrompt)
-                put("space", settings.space.id)
-                put("themeMode", settings.themeMode.name)
-                put("userName", settings.userName)
-                put("userAvatarPath", settings.userAvatarPath)
-                put("userNarrative", settings.userNarrative)
-                put("userVisualTags", settings.userVisualTags)
-                put("modelProfileId", graph.models.active().id)
-                put("modelProfileName", graph.models.active().name)
-                put("permissionMode", settings.permissionMode.name)
-                put("operateBackgroundMode", settings.operateBackgroundMode)
-                put("operateShizukuMode", settings.operateShizukuMode)
-                put("mcp", settings.enabledMcpIds.joinToString(","))
-                put("characterId", settings.characterId)
-                put("characterModel", settings.characterModel.name)
-                put("characterLayout", settings.characterLayout.name)
-                put("autoLoadLastModel", settings.autoLoadLastModel)
-                put("visionQualitySide", settings.visionQualitySide)
-                put("downloadSource", settings.downloadSource.name)
-                put("flashAttention", settings.flashAttention)
-                put("kvCacheType", settings.kvCacheType)
-                put("batchSize", settings.batchSize)
-                put("useMmap", settings.useMmap)
-                put("warmup", settings.warmup)
-                put("backendAuto", settings.backendAuto)
-                put("backendFallback", settings.backendFallback)
-                put("deepThinking", settings.deepThinking)
-                put("thinkingBudget", settings.thinkingBudget)
-                put("topK", settings.topK)
-                put("minP", settings.minP)
-                put("repeatPenalty", settings.repeatPenalty)
-                put("repeatLastN", settings.repeatLastN)
-                put("presencePenalty", settings.presencePenalty)
-                put("frequencyPenalty", settings.frequencyPenalty)
-                put("seedEnabled", settings.seedEnabled)
-                put("seedValue", settings.seedValue)
-                put("useProfileGenerationParams", settings.useProfileGenerationParams)
-                put("resourceTier", settings.resourceTier)
-                put("idleUnloadMinutes", settings.idleUnloadMinutes)
-                put("backgroundGeneration", settings.backgroundGeneration)
-                put("thermalLimitC", settings.thermalLimitC)
-                put("thermalCutoffC", settings.thermalCutoffC)
-                put("keepScreenOn", settings.keepScreenOn)
-                put("perfOverlay", settings.perfOverlay)
-                put("agentMode", settings.agentMode)
-                put("agentMaxSteps", settings.agentMaxSteps)
-                put("planFirst", settings.planFirst)
-                put("lazyTools", settings.lazyTools)
-                put("enabledToolIds", settings.enabledToolIds.joinToString(","))
-                put(
-                    "toolPermissions",
-                    settings.toolPermissions.entries.joinToString(",") {
-                        "${it.key}=${it.value.name}"
-                    },
-                )
-                put("workspaceLocation", settings.workspaceLocation.name)
-                put("customWorkspacePath", settings.customWorkspacePath)
-                put("contextStrategy", settings.contextStrategy.name)
-                put("contextKeepTurns", settings.contextKeepTurns)
-                put("summaryTriggerPercent", settings.summaryTriggerPercent)
-                put("autoCompact", settings.autoCompact)
-                put("knowledgeInChat", settings.knowledgeInChat)
-                put("memoryEnabled", settings.memoryEnabled)
-                put("memoryInjectChat", settings.memoryInjectChat)
-                put("memoryInjectAgent", settings.memoryInjectAgent)
-                put("memorySuggest", settings.memorySuggest)
-                put("memoryAutoDiary", settings.memoryAutoDiary)
-                put("memoryAutoSave", settings.memoryAutoSave)
-                put("ttsEngine", settings.ttsEngine.name)
-                put("ttsLocalModelId", settings.ttsLocalModelId)
-                put("ttsSpeed", settings.ttsSpeed)
-                put("autoSpeak", settings.autoSpeak)
-                put("sttEngine", settings.sttEngine.name)
-                put("sttLocalModelId", settings.sttLocalModelId)
-                put("sttLanguage", settings.sttLanguage)
-                put("ttsCloudProvider", settings.ttsCloudProvider.name)
-                put("ttsCloudEndpoint", settings.ttsCloudEndpoint)
-                put("ttsCloudModel", settings.ttsCloudModel)
-                put("ttsCloudVoice", settings.ttsCloudVoice)
-                put("ttsCloudStyle", settings.ttsCloudStyle)
-                put("ttsCloudVoiceSample", settings.ttsCloudVoiceSample)
-                put("sttCloudProvider", settings.sttCloudProvider.name)
-                put("sttCloudEndpoint", settings.sttCloudEndpoint)
-                put("sttCloudModel", settings.sttCloudModel)
-            }
-        }.toString()
-    }
+    suspend fun writeBackup(uri: Uri, categories: Set<BackupCategory>): Result<BackupOutcome> =
+        withContext(Dispatchers.IO) { graph.backup.write(uri, categories) }
+
+    suspend fun inspectBackup(uri: Uri): Result<BackupPreview> =
+        withContext(Dispatchers.IO) { graph.backup.inspect(uri) }
+
+    suspend fun restoreBackup(uri: Uri, categories: Set<BackupCategory>): Result<BackupOutcome> =
+        withContext(Dispatchers.IO) { graph.backup.restore(uri, categories) }
 }

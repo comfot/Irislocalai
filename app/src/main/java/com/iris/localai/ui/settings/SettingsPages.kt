@@ -1,8 +1,6 @@
 package com.iris.localai.ui.settings
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,7 +8,9 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -51,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -66,13 +69,19 @@ import com.iris.localai.data.AppSettings
 import com.iris.localai.data.OperationSurfaceMode
 import com.iris.localai.data.PermissionMode
 import com.iris.localai.data.Space
+import com.iris.localai.data.ThemeAccent
 import com.iris.localai.data.ThemeMode
+import com.iris.localai.data.ThemeStyle
 import com.iris.localai.data.ToolPermission
 import com.iris.localai.server.ApiState
 import com.iris.localai.workspace.Workspace
 
 @Composable
-internal fun ThemePage(settings: AppSettings, viewModel: SettingsViewModel) {
+internal fun ThemePage(
+    settings: AppSettings,
+    viewModel: SettingsViewModel,
+    onOpenPreset: () -> Unit,
+) {
     SettingsPage {
         SettingsCard("外观模式") {
             ThemeMode.entries.forEach { mode ->
@@ -88,19 +97,116 @@ internal fun ThemePage(settings: AppSettings, viewModel: SettingsViewModel) {
                 )
             }
         }
-        SettingsCard("预览") {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
+        SettingsCard("界面风格") {
+            ThemeStyle.entries.forEach { style ->
+                OptionRow(
+                    selected = settings.themeStyle == style,
+                    title = style.label,
+                    summary = style.summary,
+                    onClick = { viewModel.update { it.copy(themeStyle = style) } },
+                )
+            }
+            if (settings.themeStyle == ThemeStyle.E_INK) {
                 Text(
-                    text = "强调色与气泡样式",
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.padding(16.dp),
+                    text = "墨水屏会忽略强调色，改用黑白灰与细描边。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
+        SettingsCard("强调色") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                ThemeAccent.entries.forEach { accent ->
+                    AccentChoice(
+                        accent = accent,
+                        selected = settings.themeAccent == accent,
+                    ) {
+                        viewModel.update { it.copy(themeAccent = accent) }
+                    }
+                }
+            }
+            Text(
+                text = if (settings.themeStyle == ThemeStyle.E_INK) {
+                    "墨水屏下强调色不生效。"
+                } else {
+                    "当前：${settings.themeAccent.label}"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        SettingsCard("主题预设") {
+            Text(
+                text = "预设是可导入/导出的 JSON，包含界面风格、强调色、明暗模式、气泡样式与角色对话开关。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onClick = onOpenPreset) {
+                Text("打开主题预设")
+            }
+        }
+        SettingsCard("预览") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(
+                    MaterialTheme.colorScheme.primary,
+                    MaterialTheme.colorScheme.primaryContainer,
+                    MaterialTheme.colorScheme.surface,
+                    MaterialTheme.colorScheme.surfaceVariant,
+                ).forEach { color ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(color),
+                    )
+                }
+            }
+            Text(
+                text = "主色 / 主色容器 / 卡片 / 次要表面",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccentChoice(
+    accent: ThemeAccent,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val dark = MaterialTheme.colorScheme.onBackground.luminance() > 0.5f
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(Color(accent.primary(dark)))
+                .then(
+                    if (selected) {
+                        Modifier.border(2.dp, MaterialTheme.colorScheme.onBackground, CircleShape)
+                    } else {
+                        Modifier
+                    },
+                ),
+        )
+        Text(accent.label, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -464,7 +570,7 @@ internal fun PermissionPage(viewModel: SettingsViewModel) {
             OptionRow(
                 selected = settings.operateBackgroundMode,
                 title = "后台执行",
-                summary = "使用 Shizuku 系统命令；虚拟屏隔离尚未接入",
+                summary = "使用 Shizuku 系统命令；可配合虚拟屏或本机小窗，虚拟屏暂不支持文本输入",
                 onClick = { viewModel.setOperateMode(true, settings.operateShizukuMode) },
             )
             OptionRow(
@@ -632,76 +738,6 @@ private fun AppIconHeader() {
 }
 
 @Composable
-internal fun BackupPage(settings: AppSettings, viewModel: SettingsViewModel) {
-    val context = LocalContext.current
-    val json = remember(settings) { viewModel.backupJson() }
-
-    SettingsPage {
-        SettingsCard("导出设置") {
-            Text(
-                text = "把当前设置序列化为 JSON 并复制到剪贴板。会话为内存数据，暂不包含在导出中。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Button(onClick = { copyToClipboard(context, json) }) {
-                Text("复制 JSON")
-            }
-        }
-        SettingsCard("导出内容") {
-            OutlinedTextField(
-                value = json,
-                onValueChange = {},
-                modifier = Modifier.fillMaxWidth(),
-                readOnly = true,
-                maxLines = 12,
-                textStyle = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-@Composable
-internal fun RestorePage(viewModel: SettingsViewModel) {
-    var showConfirm by remember { mutableStateOf(false) }
-
-    SettingsPage {
-        SettingsCard("恢复默认设置") {
-            Text(
-                text = "会清空模型路径、采样、主题、空间与用户名等偏好；内存中的会话不会删除。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Button(onClick = { showConfirm = true }) {
-                Text("恢复默认")
-            }
-        }
-        SettingsCard("从备份恢复") {
-            Text(
-                text = "界面占位：后续解析备份 JSON 并校验 schema 后再写回设置。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-
-    if (showConfirm) {
-        AlertDialog(
-            onDismissRequest = { showConfirm = false },
-            title = { Text("恢复默认设置？") },
-            text = { Text("已保存的偏好会被清空，应用回到初始状态。") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.reset()
-                        showConfirm = false
-                    },
-                ) { Text("恢复") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirm = false }) { Text("取消") }
-            },
-        )
-    }
-}
-
-@Composable
 internal fun PlaceholderPage(entry: SettingsEntry) {
     SettingsPage {
         SettingsCard {
@@ -747,17 +783,10 @@ private fun planFor(id: String): String = when (id) {
     "market" -> "模型与扩展的下载源、校验与更新。"
     "skill" -> "SKILL.md 安装、触发词与按需加载。"
     "code" -> "代码执行沙盒与工作区文件管理。"
-    "component" -> "气泡样式、字体、间距与背景图。"
     "notification" -> "生成完成、后台任务与定时提醒。"
     "interaction" -> "回车发送、长按菜单与手势操作。"
     "network" -> "代理、超时、镜像源与下载策略。"
     "integration" -> "外部 Intent、自动化触发与深链。"
-    "security" -> "API Key、数据库加密与日志脱敏。"
-    "developer" -> "日志级别、诊断导出与实验开关。"
     else -> "此页面已接入导航，具体能力待后续实现。"
 }
 
-private fun copyToClipboard(context: Context, text: String) {
-    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    manager.setPrimaryClip(ClipData.newPlainText("IRIS LocalAI settings", text))
-}

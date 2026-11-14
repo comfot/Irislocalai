@@ -22,6 +22,7 @@
   let cameraGoal
   let cameraView
   let currentPlace = null
+  let pickToken = 0
   let paused = false
   let dragging = false
   let pointerId = null
@@ -331,28 +332,76 @@
     return ''
   }
 
+  // YSM 模型会把 GUI 层、变身形态、表情备份一起塞进同一份 geometry，由动画控制器用
+  // scale 控制显隐；渲染端不跑控制器，只能按结构推断默认状态，否则会全部叠在一起。
+  const AUXILIARY_ROOT = /^(backgrounds?|gui|colou?rpalette)$/i
+  const ALTERNATE_FORM_ROOT = /(fox|wolf|cat|dog|beast|animal|mount|vehicle|form|state|变身|形态)/i
+  const FACE_OVERLAY_ROOT = /^(expression|mouth|face|emotion)(s|_\d+)?$/i
+
+  function resolveHiddenBones(source) {
+    const byName = new Map()
+    const children = new Map()
+    for (const bone of source) {
+      const name = bone.name || ''
+      byName.set(name, bone)
+      const parent = bone.parent || ''
+      if (!children.has(parent)) children.set(parent, [])
+      children.get(parent).push(name)
+    }
+    const hidden = new Set()
+    const hideTree = (name) => {
+      if (!name || hidden.has(name)) return
+      hidden.add(name)
+      for (const child of children.get(name) || []) hideTree(child)
+    }
+    const cubeCount = (name) => {
+      let total = 0
+      const stack = [name]
+      while (stack.length) {
+        const current = stack.pop()
+        const bone = byName.get(current)
+        total += bone && bone.cubes ? bone.cubes.length : 0
+        for (const child of children.get(current) || []) stack.push(child)
+      }
+      return total
+    }
+
+    // 1. GUI / 背景 / 调色板辅助分支。
+    for (const bone of source) {
+      const name = bone.name || ''
+      if (AUXILIARY_ROOT.test(name)) hideTree(name)
+    }
+
+    // 2. 形态分支：同一父骨骼下若有体量相当的普通分支，则默认隐藏 FOX 等变身形态。
+    for (const bone of source) {
+      const name = bone.name || ''
+      if (hidden.has(name) || !ALTERNATE_FORM_ROOT.test(name)) continue
+      const siblings = (children.get(bone.parent || '') || []).filter((item) => item !== name)
+      const own = cubeCount(name)
+      const rival = siblings.reduce((best, item) => Math.max(best, cubeCount(item)), 0)
+      if (own > 0 && rival >= own * 0.5) hideTree(name)
+    }
+
+    // 3. 表情/嘴型备份：Expression、Mouth 这类容器下只留第一套，其余整支隐藏。
+    for (const [parent, kids] of children) {
+      if (!FACE_OVERLAY_ROOT.test(parent || '')) continue
+      let kept = false
+      for (const name of kids) {
+        if (hidden.has(name)) continue
+        if (kept) hideTree(name)
+        else kept = true
+      }
+    }
+
+    return hidden
+  }
+
   function parseBedrockGeometry(raw) {
     const holder = raw && raw['minecraft:geometry']
     const geometry = Array.isArray(holder) ? holder[0] : (holder || raw || {})
     const description = geometry.description || {}
     const source = Array.isArray(geometry.bones) ? geometry.bones : []
-    const hidden = new Set()
-    const isHidden = (name) => /colou?rpalette/i.test(name) || /^background$/i.test(name)
-    for (const bone of source) {
-      if (isHidden(bone.name || '')) hidden.add(bone.name)
-    }
-    // 隐藏的辅助骨骼可能还有子骨骼，一并排除。
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const bone of source) {
-        if (hidden.has(bone.name)) continue
-        if (hidden.has(bone.parent)) {
-          hidden.add(bone.name)
-          changed = true
-        }
-      }
-    }
+    const hidden = resolveHiddenBones(source)
     return {
       textureWidth: Number(description.texture_width) || 64,
       textureHeight: Number(description.texture_height) || 64,
@@ -585,7 +634,9 @@
       (ref) => fetchYsmJson(resolveYsmAsset(base, ref)),
       (ref) => loadYsmTexture(resolveYsmAsset(base, ref)),
     )
-    return { ...asset, mirrorX: false }
+    // YSM 的模型空间与 three.js 手性相反，未加密工程同样需要镜像，否则
+    // 骨骼旋转会把头发、耳朵和尾巴甩到身体另一侧。
+    return { ...asset, mirrorX: true }
   }
 
   async function loadYsmFromFiles(files) {
@@ -686,7 +737,7 @@
     attributes.needsUpdate = true
   }
 
-  function buildYsmCube(asset, cube) {
+  function buildYsmCube(asset, cube, bonePivot) {
     const size = Array.isArray(cube.size) ? cube.size : [0, 0, 0]
     const inflate = cube.inflate
     const ix = Array.isArray(inflate) ? Number(inflate[0]) || 0 : Number(inflate) || 0
@@ -722,14 +773,36 @@
     const mesh = new THREE.Mesh(geometry, asset.material)
     mesh.castShadow = true
     mesh.receiveShadow = true
+    const mirror = asset.mirrorX ? -1 : 1
+    const origin = Array.isArray(cube.origin) ? cube.origin : [0, 0, 0]
+    const bone = Array.isArray(bonePivot) ? bonePivot : [0, 0, 0]
+    const center = new THREE.Vector3(
+      mirror * (origin[0] + size[0] / 2 - bone[0]),
+      origin[1] + size[1] / 2 - bone[1],
+      origin[2] + size[2] / 2 - bone[2],
+    )
     if (Array.isArray(cube.rotation)) {
-      const mirror = asset.mirrorX ? -1 : 1
       mesh.rotation.order = 'ZYX'
       mesh.rotation.set(
         mirror * (Number(cube.rotation[0]) || 0) * DEG,
         mirror * (Number(cube.rotation[1]) || 0) * DEG,
         (Number(cube.rotation[2]) || 0) * DEG,
       )
+      // Bedrock 的 cube 旋转是绕 cube.pivot（绝对坐标），不是绕自身中心；
+      // 绕中心会把头发、袖子等长方块扬到身体外。
+      const pivot = Array.isArray(cube.pivot) ? cube.pivot : null
+      const localPivot = pivot
+        ? new THREE.Vector3(
+            mirror * (pivot[0] - bone[0]),
+            pivot[1] - bone[1],
+            pivot[2] - bone[2],
+          )
+        : center.clone()
+      const quaternion = new THREE.Quaternion().setFromEuler(mesh.rotation)
+      const offset = center.clone().sub(localPivot).applyQuaternion(quaternion)
+      mesh.position.copy(localPivot).add(offset)
+    } else {
+      mesh.position.copy(center)
     }
     return mesh
   }
@@ -807,16 +880,7 @@
       }
       const pivot = Array.isArray(item.bone.pivot) ? item.bone.pivot : [0, 0, 0]
       for (const cube of item.bone.cubes || []) {
-        const mesh = buildYsmCube(asset, cube)
-        const origin = Array.isArray(cube.origin) ? cube.origin : [0, 0, 0]
-        const size = Array.isArray(cube.size) ? cube.size : [0, 0, 0]
-        const dx = origin[0] + size[0] / 2 - pivot[0]
-        mesh.position.set(
-          mirrorX ? -dx : dx,
-          origin[1] + size[1] / 2 - pivot[1],
-          origin[2] + size[2] / 2 - pivot[2],
-        )
-        item.node.add(mesh)
+        item.node.add(buildYsmCube(asset, cube, pivot))
       }
     }
     for (const item of nodes.values()) {
@@ -1894,6 +1958,7 @@
       floors: 1,
       color: state.dark ? '#4a4038' : '#f3e6d2',
       lit: true,
+      roof: false,
       pick: 'home',
     })
     const homeRoof = cone(home, 3.2, 1.4, state.dark ? '#5c4436' : '#b96f4a', 0, 2.8, 0, {
@@ -1902,7 +1967,6 @@
       pick: 'home',
     })
     homeRoof.scale.set(1.35, 1, 1.1)
-    box(home, 0.28, 0.7, 0.28, p.stone, 1.2, 3.1, -0.4, { pick: 'home' })
 
     // 图书馆：柱廊
     const library = campusBuilding(g, {
@@ -2947,11 +3011,33 @@
     camera.lookAt(cameraView.target)
   }
 
+  function callBridge(name, ...args) {
+    try {
+      const bridge = window.StudioBridge
+      if (bridge && typeof bridge[name] === 'function') {
+        bridge[name](...args)
+        return true
+      }
+    } catch (error) {
+      console.warn(`[studio] StudioBridge.${name} failed`, error)
+    }
+    return false
+  }
+
   function pick(place) {
     if (!PLACES.includes(place) || place === currentPlace) return
-    if (window.StudioBridge && typeof window.StudioBridge.onPlaceSelected === 'function') {
-      window.StudioBridge.onPlaceSelected(place)
+    const before = currentPlace
+    const token = ++pickToken
+    if (!callBridge('onPlaceSelected', place)) {
+      console.log(`IRIS_PLACE:${place}`)
+      return
     }
+    // 桥接方法本身不抛错，但回调可能因线程/状态问题没有落地；1 秒后仍未切换则走 console 通道。
+    setTimeout(() => {
+      if (token === pickToken && currentPlace === before) {
+        console.log(`IRIS_PLACE:${place}`)
+      }
+    }, 1000)
   }
 
   function pointerPair() {
@@ -3177,9 +3263,7 @@
     if (firstFrame) {
       firstFrame = false
       if (boot) boot.hidden = true
-      if (window.StudioBridge && typeof window.StudioBridge.onReady === 'function') {
-        window.StudioBridge.onReady()
-      }
+      callBridge('onReady')
     }
   }
 
@@ -3200,9 +3284,7 @@
       fallback.hidden = false
       fallback.textContent = message
     }
-    if (window.StudioBridge && typeof window.StudioBridge.onError === 'function') {
-      window.StudioBridge.onError(message)
-    }
+    callBridge('onError', message)
   }
 
   function init() {
@@ -3373,7 +3455,5 @@
     },
   }
 
-  if (window.StudioBridge && typeof window.StudioBridge.onReady === 'function') {
-    window.StudioBridge.onReady()
-  }
+  callBridge('onReady')
 })()

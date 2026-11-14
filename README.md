@@ -15,7 +15,7 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 
 ### 对话与四空间
 
-- **工作空间**：面向编码、文件与命令任务，支持工作区文件夹、附件、工具调用卡片、流式输出、停止生成与会话自动命名。
+- **工作空间**：面向编码、文件与命令任务，支持工作区文件夹、文本/图片/二进制文件附件（如 ZIP）、工具调用卡片、流式输出、停止生成与会话自动命名。
 - **生活空间**：角色舞台与陪伴对话，支持场景背景、舞台底座、Live2D / VRM / GLB / MMD 实际渲染、表情/动作/口型与视频通话界面。
 - **操作空间**：权限中心、执行方式、执行日志与常用指令，面向点击、滑动、输入、截图等手机操作。设备工具支持先读取控件树（文字/描述/坐标/可点击/可滚动），再按文字点击、滚动查找、等待文字校验、长按/回车与最近任务/通知；点击与滑动也支持 0..1 归一化坐标。内置「手机操作」技能会把“观察 → 定位 → 操作 → 校验”的流程注入 Agent，操作空间顶部会显示最近回复与错误。
 - **综合空间**：离线 3D 园区与六个可进入场所（工作室、家、图书馆、工地、值班室、前台），支持拖动旋转、双指缩放、楼栋点击与状态标签；场所内的小人会随机选点走动、转向并摆动四肢，工作室角色名与居民名标签跟随人物。
@@ -58,8 +58,8 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 
 ### 扩展能力
 
-- **SKILL**：`SKILL.md`（YAML frontmatter + Markdown）导入、创建、编辑、删除、URL 下载、启用与提示词注入；注册 `use_skill` 工具按需读取。
-- **插件**：兼容 Operit ToolPkg（`manifest.json` / `manifest.hjson` + 子包 METADATA），WebView 沙箱执行脚本，限制文件与网络访问，支持 Hook 与工具注册。
+- **SKILL**：`SKILL.md`（YAML frontmatter + Markdown）导入、创建、编辑、删除、URL 下载、启用与提示词注入；注册 `use_skill` 工具按需读取。内置「主题创作」技能可生成可导入的主题预设 JSON。
+- **插件**：兼容 Operit ToolPkg（`manifest.json` / `manifest.hjson` + 子包 METADATA），WebView 沙箱执行脚本，限制文件与网络访问，支持 Hook 与工具注册；加载时自动转译 `NativeInterface.callTool` / `toolCall` 到宿主工具表，侧边栏插件入口与设置页 UI 通过 Compose DSL 兼容渲染器打开。
 - **MCP 客户端**：支持 Streamable HTTP、旧版 HTTP+SSE 长连接与 PRoot 容器内 stdio；OAuth 支持 Access/Refresh Token 与 401 自动刷新；工具注册为 `mcp_<server>_<tool>`。
 - **MCP 服务端**：把已注册工具暴露为 MCP 工具（`shell`、`workspace` 与 `mcp_` 前缀工具不对外），POST 可按 Accept 返回 SSE，GET 可建立事件流，默认 `http://127.0.0.1:8765/mcp`。
 - **本地 API**：OpenAI 兼容 `/v1/models`、`/v1/chat/completions`、`/v1/completions`、`/v1/embeddings`、`/v1/images/generations`、`/v1/audio/speech`、`/v1/audio/transcriptions` 与 `/health`；文本支持 SSE，语音合成返回 wav，识别接受 JSON Base64 或 multipart 音频。默认只监听 `127.0.0.1:8686`。
@@ -77,8 +77,9 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 ### 通知与外观
 
 - 生成完成通知，支持锁屏可见、悬浮提醒与灵动岛样式悬浮层。
-- 主题支持跟随系统、浅色、深色；综合空间强调色与明暗主题实时传入 3D 场景。
-- 设置体系共 7 个分组、37 个入口（含 3 个二级隐藏页），覆盖模型、后端、生成、性能、智能体、上下文、角色、语音、场景、API、MCP、插件、市场、技能、编程、权限、存储、网络、通知与数据管理。
+- 主题支持跟随系统、浅色、深色；界面风格可选标准、液态玻璃（半透明表面与亮边）与墨水屏（黑白灰高对比），并提供青绿、海蓝、暮紫、琥珀、玫瑰 5 种强调色。设置 › 主题 右上角可导入/导出主题预设 JSON。
+- 组件设置可切换聊天气泡样式（圆角、方角、描边、极简），以及 AI 回复后“角色对话”状态卡（日期、地点与角色状态）的显示开关。
+- 设置体系共 7 个分组、35 个入口（含 4 个二级隐藏页），覆盖模型、后端、生成、性能、智能体、上下文、角色、语音、场景、API、MCP、插件、市场、技能、编程、权限、存储、网络、通知与数据管理。
 
 ### 接入与自动化
 
@@ -181,7 +182,7 @@ app/src/main/
 │   ├── ui/
 │   │   ├── MainScreen.kt
 │   │   ├── chat/                     # 工作/生活/操作/综合空间、聊天组件、模型视图
-│   │   ├── settings/                 # 设置首页、37 个入口页面与各 ViewModel
+│   │   ├── settings/                 # 设置首页、35 个入口页面与各 ViewModel
 │   │   └── theme/                    # 配色、字体与主题
 │   ├── voice/                        # 系统 TTS、sherpa-onnx 本地 TTS/ASR、MiMo 云语音、录音与模型下载
 │   └── workspace/                    # 工作区条目、应用内/SAF 文件读写
@@ -244,7 +245,7 @@ app/src/main/
 | `filesDir/plugin_config/<pluginId>/` | 插件配置 |
 | `filesDir/proot/<imageId>/linux` | PRoot rootfs |
 | `filesDir/workspaces/<name>/` | 应用内工作区 |
-| `filesDir/attachments/` | 聊天图片附件 |
+| `filesDir/attachments/` | 聊天图片与二进制文件附件 |
 | `filesDir/screenshots/` | 设备操作截图 |
 | `filesDir/avatars/` | 用户头像 |
 | `filesDir/voice_clones/` | MiMo voiceclone 导入的音频样本 |
@@ -301,7 +302,7 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 - **语音**：系统 TTS 与 SpeechRecognizer 可用；云端 TTS/ASR 已接通 MiMo 与 OpenAI 兼容端点；本地 sherpa-onnx 支持 Kokoro/MeloTTS 合成与 SenseVoice/Paraformer 识别。sherpa AAR 不随仓库内置，由 Gradle 首次构建从 JitPack 下载完整包。IndexTTS-2 因缺少 Python 运行时未加入本地引擎。
 - **MCP**：客户端支持 Streamable HTTP、旧版 HTTP+SSE 与 stdio；stdio 依赖已安装的 PRoot rootfs 与应用内工作区；OAuth 需填写 Access/Refresh Token、Token URL 与客户端信息，未实现浏览器授权码与动态注册；服务端支持 SSE 响应与 GET 事件流，但仍是 close 分隔、无 chunked 编码；MCP 连接需手动建立。
 - **API**：已提供 embeddings、图片生成代理与音频合成/转写。语音端点使用语音设置中的云端配置；图片生成把请求代理到当前语言模型提供商的 `/images/generations`，是否可用取决于提供商与模型；未实现音频实时流式端点。
-- **备份**：当前仅把设置 JSON 复制到剪贴板，没有完整备份包导入/导出；恢复页只支持恢复默认设置。
+- **备份**：数据管理 › 备份可勾选角色卡、世界书、记忆与设置，导出为单个 ZIP（manifest + 角色卡 JSON/头像 + 世界书 + 记忆文件 + 设置与模型档案）；恢复时可按分类勾选，角色卡按同 id 覆盖并保留其他卡，世界书与记忆整体替换，设置立即生效。备份不含 API Key/令牌、角色模型、对话记录、插件与 MCP 配置。
 - **世界书**：递归扫描、分组评分、粘滞/冷却状态机与角色卡级绑定仍为简化实现。
 - **记忆检索**：默认使用本地特征哈希向量，配置模型档案的 OpenAI 兼容 Embedding 角色后会改用云端 `/embeddings`；两者都失败时回退关键词评分。日记由规则摘要生成，不是 LLM 代写。
 - **记忆关系图**：没有引入 ObjectBox，使用 JSON 复刻 Operit 的节点/边语义；自动连边依据共享标签或同文件夹，手动关系和自动沉淀的模型抽取关系都会写入 `links.json`。
@@ -310,7 +311,7 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 - **角色模型**：VRM/GLB、Live2D、MMD 已接入实际渲染；MMD VMD 动作编排、VRM 表情/动作切换与更多口型细节仍有缺口。TTS 播放已通过 Visualizer 提供真实振幅并驱动 Live2D 口型；Live2D 另带眨眼、视线游移、头部/身体摆动与呼吸，口型按振幅平滑并叠加音节包络，通话与生活空间共用同一套动作。
 - **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。AR 网格默认是 **IMU 姿态驱动的 3DoF 地平面锚定**（后置相机 + 固定相机高度）；设置 › 交互 可开启实验性 **OpenCV 光流位移**（后置相机 `ImageReader` YUV 灰度帧 + RANSAC 仿射估计平移/尺度，水平视场角由焦距/传感器尺寸估算，尺度变化用于微调相机高度），但仍是平面假设下的近似，没有单应分解、特征地图或 EKF，光照差、快速转动或走动会漂移，可在通话中点「重新定位」；双 Surface 会话失败时会退回纯预览。横屏时退回静态网格。模型尺寸直接绑定地面环的屏幕直径（高度 = 环直径 × 人物高度 / 2.4m），远近变化时与网格严格同比例；脚底位置按模型类型取默认值（Live2D 0.99 / MMD 0.70 / 3D 0.82），可用「脚底微调」修正。开启实验开关后可在通话中点「记录日志」，CSV 写到 `Android/data/com.iris.localai/files/tracking/`（逐帧 IMU、仿射、单应、特征点对与估计位移），用于校准符号和选解。
 - **桌宠与虚拟屏**：桌宠依赖悬浮窗权限；虚拟屏依赖 Shizuku + HiddenApiBypass，freeform 依赖 ROM 支持。
-- **插件兼容**：Operit Compose DSL UI 无法在 WebView 渲染；依赖任意 Java 反射、`Java.implement`、`loadDex/loadJar` 或宿主单例的插件无法等价运行。
+- **插件兼容**：Operit Compose DSL UI 通过兼容渲染器打开，支持 Column/Row/Box/Text/TextField/Button/Switch/Checkbox/Slider/Card/Surface/Icon/进度条等常用组件，复杂组件会降级；依赖任意 Java 反射、`Java.implement`、`loadDex/loadJar` 或宿主单例的插件无法等价运行。跨工具调用已转译到宿主工具表，但插件内嵌套调用自身工具仍不支持。
 - **本地语音模型**：sherpa-onnx 1.13.8（Apache-2.0），Gradle 坐标 `com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8`，首次构建从 JitPack 下载完整 AAR；官方 release 下载地址：`https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar`。Kokoro/MeloTTS 与 SenseVoice/Paraformer 按各自模型作者的许可使用，首次使用需在设置中下载 pinned revision 的模型文件。
 - **安全**：API Key、云语音 Key、MCP 请求头与模型提供商 Key 等以明文存入 SharedPreferences；MCP 服务清单还会镜像到外置的 `mcp/servers.json`；外置目录可被具备文件访问能力的其他应用读取。
 - **存储可见性**：`Android/data` 路径在 DocumentsUI 中可能不可见；外置应用专属目录会随卸载删除，重要数据需自行备份。

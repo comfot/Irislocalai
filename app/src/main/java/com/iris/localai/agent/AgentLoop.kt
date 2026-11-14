@@ -55,6 +55,7 @@ class AgentLoop(
         var finished = false
         var unclosedRetried = false
         var bareCommandRetried = false
+        var bareCommandExecuted = false
 
         suspend fun emitTagged(text: String) {
             if (text.isEmpty()) return
@@ -117,7 +118,7 @@ class AgentLoop(
                 return@flow
             }
 
-            val call = ToolCallParser.parse(output.toString())
+            var call = ToolCallParser.parse(output.toString())
             if (call == null) {
                 val text = output.toString()
                 if (!unclosedRetried && ToolCallParser.hasUnclosedToolCall(text)) {
@@ -130,7 +131,8 @@ class AgentLoop(
                     )
                     continue
                 }
-                if (!bareCommandRetried && step > 0 && ToolCallParser.looksLikeBareCommand(text)) {
+                val bareCommand = ToolCallParser.bareShellCommand(text)
+                if (!bareCommandRetried && bareCommand != null) {
                     bareCommandRetried = true
                     conversation += PromptMessage(PromptMessage.ASSISTANT, text)
                     conversation += PromptMessage(
@@ -150,13 +152,31 @@ class AgentLoop(
                         emitBody(thought.text)
                     }
                 }
-                if (ToolCallParser.looksLikeBareCommand(text)) {
-                    val note = "\n\n（检测到命令写在正文里，没有作为工具调用执行。需要执行时请重试。）"
-                    visible.append(note)
-                    this@flow.emit(AgentEvent.Delta(note))
+                if (!bareCommandExecuted && bareCommand != null &&
+                    ToolCallParser.isStrongShellCommand(bareCommand)
+                ) {
+                    val shell = availableTools.firstOrNull { it.name == "shell" }
+                    val shellPermission = toolPermissions["shell"] ?: ToolPermission.ALLOW
+                    if (shell != null && shellPermission != ToolPermission.DENY) {
+                        bareCommandExecuted = true
+                        call = ParsedToolCall(
+                            name = "shell",
+                            arguments = JsonObject(mapOf("command" to JsonPrimitive(bareCommand))),
+                        )
+                        val note = "\n\n（检测到命令写在正文里，已自动改用 shell 工具执行。）"
+                        visible.append(note)
+                        this@flow.emit(AgentEvent.Delta(note))
+                    }
                 }
-                finished = true
-                break
+                if (call == null) {
+                    if (bareCommand != null) {
+                        val note = "\n\n（检测到命令写在正文里，没有作为工具调用执行。需要执行时请重试。）"
+                        visible.append(note)
+                        this@flow.emit(AgentEvent.Delta(note))
+                    }
+                    finished = true
+                    break
+                }
             }
 
             val tool = availableTools.firstOrNull { it.name == call.name }

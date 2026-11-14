@@ -211,6 +211,7 @@ class ConversationStore(context: Context) {
                                                 put("kind", attachment.kind.name)
                                                 put("mimeType", attachment.mimeType)
                                                 put("imagePath", attachment.imagePath)
+                                                put("sizeBytes", attachment.sizeBytes)
                                             }
                                         }
                                     })
@@ -297,6 +298,7 @@ class ConversationStore(context: Context) {
                 }.getOrDefault(AttachmentKind.TEXT),
                 mimeType = obj.string("mimeType").orEmpty(),
                 imagePath = obj.string("imagePath").orEmpty(),
+                sizeBytes = obj.long("sizeBytes") ?: 0L,
             )
         }
     }

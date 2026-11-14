@@ -123,6 +123,24 @@ class WorldBookStore(context: Context) {
         }.toString()
     }
 
+    /** 备份用的完整世界书数组（保留 id 与全部条目字段）。 */
+    fun snapshotJson(): String = encodeBooks(_books.value)
+
+    /** 用备份内容整体替换本机世界书与全局扫描设置。 */
+    fun restoreFromBackup(booksJson: String, settings: WorldBookSettings) {
+        val books = decodeBooks(booksJson)
+        _books.value = books
+        _settings.value = settings
+        prefs.edit()
+            .putString(KEY_BOOKS, encodeBooks(books))
+            .putInt(KEY_SCAN_DEPTH, settings.scanDepth)
+            .putInt(KEY_TOKEN_BUDGET, settings.tokenBudget)
+            .putInt(KEY_MIN_ACTIVATIONS, settings.minActivations)
+            .putInt(KEY_MAX_RECURSION, settings.maxRecursion)
+            .putBoolean(KEY_INCLUDE_CONSTANT, settings.includeConstant)
+            .apply()
+    }
+
     private fun parseBook(text: String, fileName: String): Lorebook {
         val root = Json.parseToJsonElement(text.trimStart('\uFEFF')).jsonObject
         val name = root.string("name")

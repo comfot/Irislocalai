@@ -14,6 +14,7 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
@@ -325,14 +326,58 @@ class ModelProfileStore(context: Context) {
         prefs.edit().putString(KEY_PROVIDERS, encodeProviders(_providers.value)).apply()
     }
 
-    private fun encodeProviders(providers: List<ModelProvider>): String = buildJsonArray {
+    /** 备份用：提供商不写 apiKey，密钥留给本机；档案完整保留。 */
+    fun snapshotForBackup(): JsonObject = buildJsonObject {
+        put("active", _activeId.value)
+        put("providers", Json.parseToJsonElement(encodeProviders(_providers.value, includeApiKey = false)))
+        put("profiles", Json.parseToJsonElement(encodeProfiles(_profiles.value, includeSecrets = false)))
+    }
+
+    /** 恢复提供商与档案；与本机 id 相同的提供商沿用本机 apiKey，避免密钥被清空。 */
+    fun restoreFromBackup(json: JsonObject) {
+        val editor = prefs.edit()
+        (json["providers"] as? JsonArray)?.let { providers ->
+            val knownKeys = _providers.value.associate { it.id to it.apiKey }
+            val merged = buildJsonArray {
+                providers.forEach { element ->
+                    val obj = element as? JsonObject ?: return@forEach
+                    addJsonObject {
+                        obj.forEach { (key, value) ->
+                            if (key != "apiKey") put(key, value)
+                        }
+                        val id = (obj["id"] as? JsonPrimitive)?.contentOrNull
+                        val key = knownKeys[id].orEmpty()
+                        if (key.isNotBlank()) put("apiKey", key)
+                    }
+                }
+            }
+            editor.putString(KEY_PROVIDERS, merged.toString())
+        }
+        (json["profiles"] as? JsonArray)?.let { editor.putString(KEY_PROFILES, it.toString()) }
+        (json["active"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?.let { editor.putString(KEY_ACTIVE, it) }
+        editor.apply()
+        reload()
+    }
+
+    /** 外部写入偏好后重新读取提供商、档案与当前档案。 */
+    fun reload() {
+        val loaded = load()
+        _providers.value = loaded.providers
+        _profiles.value = loaded.profiles
+        _activeId.value = prefs.getString(KEY_ACTIVE, null)
+            ?.takeIf { id -> _profiles.value.any { it.id == id } }
+            ?: _profiles.value.first().id
+    }
+
+    private fun encodeProviders(providers: List<ModelProvider>, includeApiKey: Boolean = true): String = buildJsonArray {
         providers.forEach { provider ->
             addJsonObject {
                 put("id", provider.id)
                 put("name", provider.name)
                 put("kind", provider.kind.name)
                 put("vendor", provider.vendor.name)
-                put("apiKey", provider.apiKey)
+                if (includeApiKey) put("apiKey", provider.apiKey)
                 put("endpoint", provider.endpoint)
                 put("localModelPath", provider.localModelPath)
                 putJsonArray("roles") {
@@ -354,7 +399,7 @@ class ModelProfileStore(context: Context) {
         }
     }.toString()
 
-    private fun encodeProfiles(profiles: List<ModelProfile>): String = buildJsonArray {
+    private fun encodeProfiles(profiles: List<ModelProfile>, includeSecrets: Boolean = true): String = buildJsonArray {
         profiles.forEach { profile ->
             addJsonObject {
                 put("id", profile.id)
@@ -380,7 +425,9 @@ class ModelProfileStore(context: Context) {
                             put("thinkingBudget", config.thinkingBudget)
                             put("toolCalling", config.toolCalling)
                             putJsonObject("customHeaders") {
-                                config.customHeaders.forEach { (key, value) -> put(key, value) }
+                                config.customHeaders.forEach { (key, value) ->
+                                    if (includeSecrets || !isSensitiveHeader(key)) put(key, value)
+                                }
                             }
                         }
                     }
@@ -388,6 +435,11 @@ class ModelProfileStore(context: Context) {
             }
         }
     }.toString()
+
+    private fun isSensitiveHeader(key: String): Boolean {
+        val name = key.lowercase()
+        return listOf("authorization", "key", "token", "secret").any { it in name }
+    }
 
     private fun load(): Loaded {
         val providerObjects = rawArray(KEY_PROVIDERS)

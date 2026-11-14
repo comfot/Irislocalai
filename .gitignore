@@ -22,3 +22,6 @@ local.properties
 /.kotlin
 /*.zip
 /.preview-*.png
+
+# 素材加工工作目录
+/work/

@@ -48,7 +48,11 @@ class MainActivity : ComponentActivity() {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 }
             }
-            IrisTheme(darkTheme = settings.themeMode.resolveDark(isSystemInDarkTheme())) {
+            IrisTheme(
+                darkTheme = settings.themeMode.resolveDark(isSystemInDarkTheme()),
+                themeStyle = settings.themeStyle,
+                accent = settings.themeAccent,
+            ) {
                 MainScreen()
             }
         }

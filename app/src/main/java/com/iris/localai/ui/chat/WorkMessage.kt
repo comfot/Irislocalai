@@ -50,6 +50,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Casino
@@ -101,6 +102,7 @@ import com.iris.localai.agent.AttachmentKind
 import com.iris.localai.agent.ChatMessage
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
+import com.iris.localai.data.BubbleStyle
 import com.iris.localai.plugin.PluginHookDescriptor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -119,6 +121,9 @@ internal fun WorkMessageList(
     pluginMenuItems: List<PluginHookDescriptor> = emptyList(),
     onPluginMenu: (PluginHookDescriptor, ChatMessage, Int) -> Unit = { _, _, _ -> },
     modifier: Modifier = Modifier,
+    bubbleStyle: BubbleStyle = BubbleStyle.ROUNDED,
+    showRoleChatCard: Boolean = true,
+    renderPluginXml: suspend (String, String) -> String? = { _, _ -> null },
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -155,9 +160,17 @@ internal fun WorkMessageList(
             itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
                 val streaming = running && message.id == messages.last().id
                 if (message.role == ChatRole.USER) {
-                    WorkUserBubble(message, pluginMenuItems, onPluginMenu, index)
+                    WorkUserBubble(message, pluginMenuItems, onPluginMenu, index, bubbleStyle)
                 } else {
-                    WorkAssistantMessage(message, streaming, pluginMenuItems, onPluginMenu, index)
+                    WorkAssistantMessage(
+                        message = message,
+                        streaming = streaming,
+                        pluginMenuItems = pluginMenuItems,
+                        onPluginMenu = onPluginMenu,
+                        index = index,
+                        showRoleChatCard = showRoleChatCard,
+                        renderPluginXml = renderPluginXml,
+                    )
                 }
             }
             item(key = "work-bottom-anchor") {
@@ -190,13 +203,17 @@ private fun WorkUserBubble(
     pluginMenuItems: List<PluginHookDescriptor>,
     onPluginMenu: (PluginHookDescriptor, ChatMessage, Int) -> Unit,
     index: Int,
+    bubbleStyle: BubbleStyle,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    val visual = bubbleVisual(isUser = true, style = bubbleStyle)
     Box {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Surface(
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 5.dp),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            shape = visual.shape,
+            color = visual.color,
+            contentColor = visual.contentColor,
+            border = visual.border,
             modifier = if (pluginMenuItems.isNotEmpty()) {
                 Modifier.combinedClickable(
                     onClick = {},
@@ -225,10 +242,10 @@ private fun WorkUserBubble(
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = if (attachment.kind == AttachmentKind.IMAGE) {
-                                Icons.Outlined.Image
-                            } else {
-                                Icons.Outlined.AttachFile
+                            imageVector = when {
+                                attachment.kind == AttachmentKind.IMAGE -> Icons.Outlined.Image
+                                AttachmentClassifier.isArchiveFileName(attachment.name) -> Icons.Outlined.FolderZip
+                                else -> Icons.Outlined.AttachFile
                             },
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
@@ -267,9 +284,12 @@ private fun WorkAssistantMessage(
     pluginMenuItems: List<PluginHookDescriptor>,
     onPluginMenu: (PluginHookDescriptor, ChatMessage, Int) -> Unit,
     index: Int,
+    showRoleChatCard: Boolean,
+    renderPluginXml: suspend (String, String) -> String? = { _, _ -> null },
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    val displayText = AssistantMessageParser.mainText(message.text)
+    val display = remember(message.text) { AssistantMessageParser.parse(message.text) }
+    val displayText = display.mainText
     Box {
     Column(
         modifier = if (pluginMenuItems.isNotEmpty()) {
@@ -337,14 +357,24 @@ private fun WorkAssistantMessage(
 
         if (displayText.isNotBlank()) {
             Spacer(Modifier.height(9.dp))
-            WorkMarkdown(
+            PluginMarkupContent(
                 text = displayText,
-                modifier = Modifier.fillMaxWidth(),
-                streaming = streaming,
-            )
+                renderPluginXml = renderPluginXml,
+            ) { text ->
+                WorkMarkdown(
+                    text = text,
+                    modifier = Modifier.fillMaxWidth(),
+                    streaming = streaming,
+                )
+            }
         } else if (streaming) {
             Spacer(Modifier.height(10.dp))
             TypingDots()
+        }
+        if (showRoleChatCard) {
+            display.status?.let { status ->
+                AssistantStatusCard(status)
+            }
         }
     }
         PluginMessageMenu(

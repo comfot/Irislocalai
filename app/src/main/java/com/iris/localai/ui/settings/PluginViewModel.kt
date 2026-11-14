@@ -23,6 +23,7 @@ class PluginViewModel(application: Application) : AndroidViewModel(application) 
     val busy = store.busy
     val registrations = graph.pluginRuntime.registrations
     val registrationErrors = graph.pluginRuntime.errors
+    val uiInvalidations = graph.pluginRuntime.uiInvalidations
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -93,4 +94,46 @@ class PluginViewModel(application: Application) : AndroidViewModel(application) 
             runCatching { graph.pluginRuntime.ensureAllRegistrations() }
         }
     }
+
+    suspend fun renderPluginUi(plugin: InstalledPlugin, moduleId: String): Result<String> =
+        graph.pluginRuntime.renderUi(plugin, moduleId)
+
+    suspend fun dispatchPluginUiEvent(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        eventId: String,
+        valueJson: String?,
+    ): Result<String> = graph.pluginRuntime.dispatchUiEvent(plugin, moduleId, eventId, valueJson)
+
+    suspend fun callPluginUiController(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        controllerId: String,
+        interfaceName: String,
+        methodName: String,
+        argsJson: String,
+    ): String = graph.pluginRuntime.callUiController(
+        plugin,
+        moduleId,
+        controllerId,
+        interfaceName,
+        methodName,
+        argsJson,
+    )
+
+    suspend fun callPluginUiHandler(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        eventId: String,
+        payloadJson: String,
+    ): String = graph.pluginRuntime.callUiHandler(plugin, moduleId, eventId, payloadJson)
+
+    suspend fun loadPluginEnv(pluginId: String): Map<String, String> =
+        graph.pluginRuntime.readPluginEnv(pluginId)
+
+    suspend fun loadPluginEnvKeys(pluginId: String): List<String> =
+        graph.pluginRuntime.pluginEnvKeys(pluginId)
+
+    suspend fun savePluginEnv(pluginId: String, values: Map<String, String>) =
+        graph.pluginRuntime.savePluginEnv(pluginId, values)
 }
