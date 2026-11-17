@@ -92,6 +92,35 @@ class VrmaMotionStore(
             ?: error("导入后未找到动作文件")
     }
 
+    fun importBytes(name: String, bytes: ByteArray): VrmaAsset {
+        require(bytes.isNotEmpty()) { "VRMA 内容为空" }
+        validateGlb(bytes)
+        val base = safeFileName(name.substringBeforeLast('.').ifBlank { "generated" })
+        var target = File(root, "$base.vrma")
+        var index = 1
+        while (target.exists()) {
+            target = File(root, "$base-$index.vrma")
+            index += 1
+        }
+        target.writeBytes(bytes)
+        refresh()
+        return _assets.value.firstOrNull { it.id == "vrma/${target.name}" }
+            ?: error("保存后未找到动作文件")
+    }
+
+    fun importFile(name: String, source: File): VrmaAsset {
+        require(source.isFile) { "临时 VRMA 文件不存在" }
+        val bytes = source.readBytes()
+        return importBytes(name, bytes)
+    }
+
+    private fun validateGlb(bytes: ByteArray) {
+        require(bytes.size >= 12 && bytes[0] == 'g'.code.toByte() && bytes[1] == 'l'.code.toByte() &&
+            bytes[2] == 'T'.code.toByte() && bytes[3] == 'F'.code.toByte()) {
+            "生成结果不是有效的 GLB/VRMA 文件"
+        }
+    }
+
     fun delete(asset: VrmaAsset): Boolean {
         val relative = asset.id.removePrefix("vrma/")
         val removed = storage.readDirs("motion_assets/vrma").fold(false) { acc, dirRoot ->

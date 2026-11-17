@@ -5,7 +5,7 @@ package com.iris.localai.plugin
  * - NativeInterface.callTool / callToolAsync / toolCall 改走宿主兼容桥；
  * - 保留原始源码其余部分，避免大范围重写带来不可控行为。
  *
- * UI Compose DSL 目前没有原生渲染器，不在本转译层处理。
+ * UI Compose DSL 由 PluginRuntime 的兼容渲染器处理，本层只负责调用改写。
  */
 internal object OperitTranspiler {
 
@@ -50,13 +50,13 @@ internal object OperitTranspiler {
         }
 
         if ("ctx.UI" in output || "registerToolboxUiModule" in output) {
-            warnings += "包含 Compose DSL UI，当前只保留注册信息，无法原生渲染"
+            warnings += "包含 Compose DSL UI，将交给兼容渲染器（复杂组件可能降级）"
         }
         if (Regex("\\b(Java|Kotlin)\\s*\\.\\s*(use|importClass|newInstance|callStatic|type)\\s*\\(").containsMatchIn(output)) {
-            warnings += "使用了 Java/Kotlin 桥，当前仅支持白名单类"
+            warnings += "使用了 Java/Kotlin 桥，仅支持白名单类与插件目录内 dex"
         }
         if ("android." in output) {
-            warnings += "包含 Android API 调用，WebView 沙箱不支持"
+            warnings += "包含 Android API 调用，WebView 直接调用不支持（dex/PRoot 例外）"
         }
         return Result(output, rewrites, warnings)
     }

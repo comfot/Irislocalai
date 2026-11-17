@@ -205,7 +205,7 @@ private fun VrmMotionMarket() {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(asset.name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = { MotionBridge.playVrma(vrmaStore.virtualUrl(asset)) }) {
+                TextButton(onClick = { MotionBridge.playVrma(vrmaStore.virtualUrl(asset), holdIdle = asset.name.contains("坐")) }) {
                     Text("播放")
                 }
                 TextButton(onClick = { vrmaStore.delete(asset) }) { Text("删除") }
@@ -229,6 +229,7 @@ private fun MmdMotionMarket() {
     var remoteAssets by remember { mutableStateOf<List<RemoteAsset>>(emptyList()) }
     var remoteError by remember { mutableStateOf<String?>(null) }
     var remoteLoading by remember { mutableStateOf(false) }
+    var remoteVisibleCount by remember { mutableIntStateOf(REMOTE_PAGE_SIZE) }
     var filter by remember { mutableStateOf<MotionCategory?>(null) }
 
     fun toast(message: String) {
@@ -339,6 +340,7 @@ private fun MmdMotionMarket() {
                             path = asset.id,
                             loop = asset.category == MotionCategory.DANCE,
                             bgmPath = asset.bgm?.absolutePath,
+                            holdIdle = asset.name.contains("坐"),
                         )
                         toast("正在播放：${asset.name}")
                     },
@@ -398,7 +400,10 @@ private fun MmdMotionMarket() {
                     remoteError = null
                     scope.launch {
                         runCatching { graph.githubAssets.list(remotePath) }
-                            .onSuccess { remoteAssets = it }
+                            .onSuccess {
+                                remoteAssets = it
+                                remoteVisibleCount = REMOTE_PAGE_SIZE
+                            }
                             .onFailure { remoteError = it.message }
                         remoteLoading = false
                     }
@@ -419,6 +424,7 @@ private fun MmdMotionMarket() {
                         remotePath = path
                         remoteAssets = emptyList()
                         remoteError = null
+                        remoteVisibleCount = REMOTE_PAGE_SIZE
                     },
                     label = { Text(label) },
                 )
@@ -434,7 +440,8 @@ private fun MmdMotionMarket() {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            files.take(40).forEach { remote ->
+            val shown = files.take(remoteVisibleCount)
+            shown.forEach { remote ->
                 val task = tasks.firstOrNull { it.key == "repo-${remote.path}" }
                 val running = task?.state == AssetDownloadState.RUNNING
                 Row(
@@ -486,8 +493,22 @@ private fun MmdMotionMarket() {
                     }
                 }
             }
-            if (files.size > 40) {
-                Text("仅显示前 40 个，可切换分类或缩小仓库范围。", style = MaterialTheme.typography.labelSmall)
+            if (files.size > shown.size) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "已显示 ${shown.size} / ${files.size} 个",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { remoteVisibleCount += REMOTE_PAGE_SIZE }) {
+                        Text("加载更多")
+                    }
+                }
             }
         }
         Text(
@@ -497,6 +518,8 @@ private fun MmdMotionMarket() {
         )
     }
 }
+
+private const val REMOTE_PAGE_SIZE = 40
 
 private fun formatSize(bytes: Long): String = when {
     bytes >= 1L shl 30 -> String.format(Locale.US, "%.1f GB", bytes / (1L shl 30).toDouble())

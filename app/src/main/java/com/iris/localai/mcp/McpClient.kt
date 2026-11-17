@@ -2,6 +2,7 @@ package com.iris.localai.mcp
 
 import com.iris.localai.agent.Tool
 import com.iris.localai.agent.ToolRegistry
+import com.iris.localai.agent.ToolSource
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -118,7 +119,10 @@ class McpConnectionManager(
                     client.connect()
                     val names = client.tools.map { info ->
                         val name = toolName(server, info.name)
-                        registry.register(McpToolProxy(name, server.name, client, info))
+                        registry.register(
+                            McpToolProxy(name, server.name, client, info),
+                            ToolSource.Mcp(server.id, server.name),
+                        )
                         name
                     }
                     clients[server.id] = client

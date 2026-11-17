@@ -40,4 +40,8 @@ data class Conversation(
     val updatedAt: Long = System.currentTimeMillis(),
     /** 0 表示未归档；大于 0 表示归档时间。 */
     val archivedAt: Long = 0L,
+    /** 摘要压缩策略生成的较早对话摘要。 */
+    val summary: String = "",
+    /** 已纳入摘要的最后一条消息 id。 */
+    val summaryThroughMessageId: Long = 0L,
 )

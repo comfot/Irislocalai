@@ -53,4 +53,26 @@ class AssistantMessageParserTest {
         assertEquals("直接回答", display.mainText)
         assertNull(display.status)
     }
+
+    @Test
+    fun hidesPerformanceTag() {
+        val display = AssistantMessageParser.parse(
+            "你好呀\n<performance motion=\"wave\" expression=\"开心\"></performance>",
+        )
+        assertEquals("你好呀", display.mainText)
+    }
+
+    @Test
+    fun hidesOpenPerformanceTagWhileStreaming() {
+        val display = AssistantMessageParser.parse("你好呀\n<performance motion=\"wave\" expression=\"开心\">")
+        assertEquals("你好呀", display.mainText)
+    }
+
+    @Test
+    fun hidesVrmaMotionTag() {
+        val display = AssistantMessageParser.parse(
+            "你好呀\n<vrma_motion>wave happily</vrma_motion>",
+        )
+        assertEquals("你好呀", display.mainText)
+    }
 }

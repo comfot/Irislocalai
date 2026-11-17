@@ -28,20 +28,16 @@ data class PluginRequirement(
     val id: String,
     val description: String,
     val minVersion: String? = null,
-    val maxVersion: String? = null,
 )
 
 data class PluginResource(
     val key: String,
     val path: String,
-    val mime: String = "",
 )
 
 data class PluginWasmModule(
     val id: String,
     val path: String,
-    val exports: List<String> = emptyList(),
-    val abi: String = "assemblyscript",
 )
 
 data class PluginManifest(
@@ -106,6 +102,11 @@ fun sanitizePluginId(raw: String): String {
     return cleaned.trim('.', '_', '-').ifBlank { "plugin" }
 }
 
+/** Agent 工具表中使用的运行时名；与 PluginStore.runtimeName 保持同一规则。 */
+fun pluginRuntimeToolName(pluginId: String, toolName: String): String =
+    "plugin_" + pluginId.map { if (it.isLetterOrDigit() || it == '_') it else '_' }.joinToString("") +
+        "_" + toolName.map { if (it.isLetterOrDigit() || it == '_') it else '_' }.joinToString("")
+
 data class PluginHookDescriptor(
     val pluginId: String,
     val pluginName: String,
@@ -114,7 +115,7 @@ data class PluginHookDescriptor(
     val title: String = "",
     val senders: List<String> = emptyList(),
     val order: Int = 0,
-    val icon: String = "",
+    val event: String = "",
     val screen: String = "",
     val route: String = "",
     val surface: String = "",
@@ -147,6 +148,8 @@ data class PluginRegistrations(
     val hooks: List<PluginHookDescriptor> = emptyList(),
     val ui: List<PluginHookDescriptor> = emptyList(),
     val aiProviders: List<String> = emptyList(),
+    val pluginId: String = "",
+    val pluginName: String = "",
 ) {
     fun hooksOf(type: String): List<PluginHookDescriptor> =
         hooks.filter { it.type == type }.sortedWith(compareBy({ it.pluginId }, { it.order }, { it.id }))
@@ -163,4 +166,14 @@ data class ChatInputDecision(
 data class ToolInterceptDecision(
     val blocked: Boolean,
     val reason: String = "",
+)
+
+data class PluginInputToggle(
+    val id: String,
+    val pluginId: String,
+    val title: String,
+    val description: String = "",
+    val icon: String = "",
+    val checked: Boolean = false,
+    val slot: String = "",
 )

@@ -28,6 +28,7 @@ import com.iris.localai.data.ModelProfile
 import com.iris.localai.data.ModelRole
 import com.iris.localai.data.ProviderKind
 import com.iris.localai.data.Space
+
 import com.iris.localai.data.VoiceEngineType
 import com.iris.localai.engine.EngineState
 import com.iris.localai.engine.PromptMessage
@@ -40,6 +41,7 @@ import com.iris.localai.pet.PetDestination
 import com.iris.localai.pet.PetNavigator
 import com.iris.localai.plugin.InstalledPlugin
 import com.iris.localai.plugin.PluginHookDescriptor
+import com.iris.localai.plugin.PluginInputToggle
 import com.iris.localai.plugin.resolveUiModuleId
 import com.iris.localai.plugin.uiRouteModuleId
 import com.iris.localai.scene.SceneConfig
@@ -209,6 +211,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _attachments = MutableStateFlow<List<ChatAttachment>>(emptyList())
     val attachments: StateFlow<List<ChatAttachment>> = _attachments.asStateFlow()
+    private val _inputMenuToggles = MutableStateFlow<List<PluginInputToggle>>(emptyList())
+    val inputMenuToggles: StateFlow<List<PluginInputToggle>> = _inputMenuToggles.asStateFlow()
 
     private val _attachmentError = MutableStateFlow<String?>(null)
     val attachmentError: StateFlow<String?> = _attachmentError.asStateFlow()
@@ -222,6 +226,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val performanceIntensity: StateFlow<Float> = _performanceIntensity.asStateFlow()
 
     private val _submitting = MutableStateFlow(false)
+    private var sessionToolCount = 0
+    private var turnToolCount = 0
     private val _pluginMenuItems = MutableStateFlow<List<PluginHookDescriptor>>(emptyList())
     val pluginMenuItems: StateFlow<List<PluginHookDescriptor>> = _pluginMenuItems.asStateFlow()
     private val _pluginSidebarEntries = MutableStateFlow<List<PluginHookDescriptor>>(emptyList())
@@ -276,6 +282,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        // 插件面板里的 AiChat 跟随当前会话的消息与发送入口。
+        viewModelScope.launch {
+            combine(messages, currentConversation) { list, conversation -> list to conversation }
+                .collect { (list, conversation) ->
+                    if (conversation == null) {
+                        PluginAiChatBridge.detach()
+                    } else {
+                        PluginAiChatBridge.attach(
+                            title = conversation.title.ifBlank { "对话" },
+                            messages = list
+                                .filter { it.text.isNotBlank() }
+                                .takeLast(40)
+                                .map { message ->
+                                    PluginAiChatMessage(
+                                        id = message.id,
+                                        fromUser = message.role == ChatRole.USER,
+                                        text = message.text,
+                                    )
+                                },
+                            onSend = { text -> sendFromPlugin(text) },
+                        )
+                    }
+                }
+        }
         // 插件注册可能异步完成或随启停重建，直接跟随注册表刷新侧边栏与消息菜单。
         viewModelScope.launch {
             graph.pluginRuntime.registrations.collect { registrations ->
@@ -285,6 +315,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     .sortedWith(compareBy({ it.order }, { it.pluginName }, { it.id }))
                 _pluginMenuItems.value = registrations.values
                     .flatMap { it.hooksOf("chat_message_menu_item") }
+                refreshInputMenuToggles()
             }
         }
         // 桌宠输入栏与菜单跳转：桌宠在后台运行，消息经总线进入生活空间会话。
@@ -381,6 +412,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun selectConversation(id: Long) {
         val conversation = store.find(id) ?: return
         _currentId.value = id
+        sessionToolCount = 0
+        turnToolCount = 0
+        viewModelScope.launch {
+            runCatching { graph.pluginRuntime.notifyChatView("view_opened", id, conversation.title) }
+        }
+        refreshInputMenuToggles()
         if (conversation.space == Space.LIFE && conversation.characterId.isNotBlank() &&
             graph.settings.current.characterId != conversation.characterId
         ) {
@@ -391,6 +428,38 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         syncWorkspace(conversation)
         resetAttachments()
+    }
+
+    fun closePluginChatView() {
+        val id = _currentId.value ?: return
+        val title = store.find(id)?.title.orEmpty()
+        viewModelScope.launch {
+            runCatching { graph.pluginRuntime.notifyChatView("view_closed", id, title) }
+        }
+    }
+
+    fun refreshInputMenuToggles() {
+        val chatId = _currentId.value ?: return
+        viewModelScope.launch {
+            _inputMenuToggles.value = runCatching {
+                graph.pluginRuntime.inputMenuToggles(chatId)
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    fun toggleInputMenu(toggle: PluginInputToggle) {
+        val chatId = _currentId.value ?: return
+        val updated = _inputMenuToggles.value.map {
+            if (it.pluginId == toggle.pluginId && it.id == toggle.id) it.copy(checked = !it.checked) else it
+        }
+        _inputMenuToggles.value = updated
+        val target = updated.firstOrNull { it.pluginId == toggle.pluginId && it.id == toggle.id } ?: return
+        viewModelScope.launch {
+            val refreshed = runCatching {
+                graph.pluginRuntime.toggleInputMenu(chatId, target, target.checked)
+            }.getOrDefault(emptyList())
+            if (refreshed.isNotEmpty()) _inputMenuToggles.value = refreshed
+        }
     }
 
     fun openConversation(conversation: Conversation) {
@@ -415,6 +484,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             characterId = if (currentSpace == Space.LIFE) lifeCharacterId() else "",
         )
         _currentId.value = created.id
+        sessionToolCount = 0
+        turnToolCount = 0
+        viewModelScope.launch {
+            runCatching { graph.pluginRuntime.notifyChatView("view_opened", created.id, created.title) }
+        }
+        refreshInputMenuToggles()
         resetAttachments()
     }
 
@@ -461,8 +536,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        PluginAiChatBridge.detach()
         graph.tts.stop()
         super.onCleared()
+    }
+
+    private fun sendFromPlugin(text: String) {
+        val value = text.trim()
+        if (value.isEmpty() || _running.value) return
+        _input.value = value
+        send()
     }
 
     fun send() {
@@ -478,8 +561,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         workspaceId = graph.workspaces.active()?.id.orEmpty(),
                         characterId = if (space.value == Space.LIFE) lifeCharacterId() else "",
                     ).also { _currentId.value = it.id }
+                val promptDecision = graph.pluginRuntime.promptInput(conversation.id, text, "chat")
+                if (promptDecision?.action == "block" || promptDecision?.action == "consume") {
+                    Toast.makeText(
+                        getApplication(),
+                        promptDecision.message ?: "插件阻止了这条消息",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return@launch
+                }
+                val promptText = if (promptDecision?.action == "replace") promptDecision.text else text
                 val decision = try {
-                    graph.pluginRuntime.chatInputDecision(conversation.id, text)
+                    graph.pluginRuntime.chatInputDecision(conversation.id, promptText)
                 } catch (e: Exception) {
                     Toast.makeText(getApplication(), "插件 Hook 执行失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
                     return@launch
@@ -492,8 +585,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ).show()
                     return@launch
                 }
-                val finalText = if (decision.action == "replace") decision.text else text
-                sendNow(conversation, finalText, pendingAttachments)
+                val inputText = if (decision.action == "replace") decision.text else promptText
+                val messageDecision = graph.pluginRuntime.processMessage(
+                    conversation.id,
+                    inputText,
+                    "before_persist",
+                    "user",
+                )
+                if (messageDecision?.action == "block" || messageDecision?.action == "consume") {
+                    Toast.makeText(
+                        getApplication(),
+                        messageDecision.message ?: "插件阻止了这条消息",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return@launch
+                }
+                sendNow(
+                    conversation,
+                    messageDecision?.takeIf { it.action == "replace" }?.text ?: inputText,
+                    pendingAttachments,
+                )
+                graph.pluginRuntime.notifyChatInput(conversation.id, inputText, "submitted")
             } finally {
                 _submitting.value = false
             }
@@ -532,6 +644,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             else roleplayRoles[conversation.id] = roleplay.role
         }
         _running.value = true
+        turnToolCount = 0
         _performanceMood.value = "neutral"
         _performanceIntensity.value = 0.85f
         notifyPluginChatMessage(conversation.id, userMessage, "user")
@@ -576,6 +689,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     maxSide = settings.visionQualitySide.coerceIn(384, 2048),
                 )
                 val trimmedHistory = trimHistory(history, settings)
+                val summary = summarizeIfNeeded(conversation, settings)
+                val historyWithSummary = if (summary.isNotBlank()) {
+                    listOf(PromptMessage(PromptMessage.SYSTEM, "【较早对话摘要】\n$summary")) + trimmedHistory
+                } else {
+                    trimmedHistory
+                }
+                val finalHistory = graph.pluginRuntime.transformPromptHistory(
+                    conversation.id,
+                    historyWithSummary,
+                    settings.contextStrategy.name,
+                ).let { graph.pluginRuntime.estimatePromptHistory(conversation.id, it) }
                 val userInput = buildPromptContent(text, pendingAttachments, visionEnabled)
                 val character = graph.characters.get(settings.characterId)?.card
                 val userBlock = buildString {
@@ -638,6 +762,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 includeMemory = true,
                                 includeKnowledge = settings.knowledgeInChat,
                                 maxChars = 420,
+                                query = text,
                             ))
                         }
                         if (graph.memory.looksLikeRecall(text)) {
@@ -745,7 +870,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         append(settings.systemPrompt)
                     }
                 }
-                val finalPromptSuffix = graph.pluginRuntime.transformSystemPrompt(conversation.id, promptSuffix)
+                val finalPromptSuffix = graph.pluginRuntime.transformSystemPrompt(
+                    conversation.id,
+                    promptSuffix,
+                    conversation.space.name,
+                )
                 val startInThink = settings.deepThinking &&
                     (engineState.value as? EngineState.Ready)?.details?.thinkingPrefilled == true
                 val pendingReasoning = StringBuilder()
@@ -754,7 +883,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 graph.agent.run(
                     userInput = userInput,
                     userImages = userImages,
-                    history = trimmedHistory,
+                    history = finalHistory,
                     params = SamplingConfig(
                         temperature = if (useProfileParams) language.temperature else settings.temperature,
                         topP = if (useProfileParams) language.topP else settings.topP,
@@ -781,6 +910,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     },
                     planFirst = settings.planFirst,
                     startInThink = startInThink,
+                    chatId = conversation.id,
                 ).collect { event ->
                     when (event) {
                         is AgentEvent.Delta -> store.updateMessage(conversation.id, assistantId) {
@@ -798,7 +928,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 it.copy(reasoning = it.reasoning + event.text)
                             }
                         }
+                        is AgentEvent.ToolProgress -> {
+                            store.updateMessage(conversation.id, assistantId) { message ->
+                                val steps = message.steps.toMutableList()
+                                val index = steps.indexOfLast { it.tool == event.tool && it.result.isBlank() }
+                                if (index >= 0) {
+                                    steps[index] = steps[index].copy(progress = event.text)
+                                } else {
+                                    steps += AgentStep(
+                                        tool = event.tool,
+                                        arguments = "",
+                                        result = "",
+                                        status = StepStatus.OK,
+                                        progress = event.text,
+                                    )
+                                }
+                                message.copy(steps = steps)
+                            }
+                        }
                         is AgentEvent.StepFinished -> {
+                            sessionToolCount++
+                            turnToolCount++
                             val stepReasoning = pendingReasoning.toString()
                             val stepReasoningMs = if (reasoningStartedAt > 0L) {
                                 (reasoningLastAt - reasoningStartedAt).coerceAtLeast(0L)
@@ -808,13 +958,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             pendingReasoning.setLength(0)
                             reasoningStartedAt = 0L
                             store.updateMessage(conversation.id, assistantId) {
-                                it.copy(
-                                    reasoning = "",
-                                    steps = it.steps + event.step.copy(
-                                        reasoning = stepReasoning,
-                                        reasoningMs = stepReasoningMs,
-                                    ),
+                                val steps = it.steps.toMutableList()
+                                val index = steps.indexOfLast { step ->
+                                    step.tool == event.step.tool && step.result.isBlank()
+                                }
+                                val finalStep = event.step.copy(
+                                    reasoning = stepReasoning,
+                                    reasoningMs = stepReasoningMs,
                                 )
+                                if (index >= 0) steps[index] = finalStep else steps += finalStep
+                                it.copy(reasoning = "", steps = steps)
                             }
                         }
                         is AgentEvent.Finished -> {
@@ -823,9 +976,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             } else {
                                 null
                             }
+                            val aiText = event.text.ifBlank {
+                                store.find(conversation.id)?.messages?.lastOrNull()?.text.orEmpty()
+                            }
+                            val aiDecision = graph.pluginRuntime.processMessage(
+                                conversation.id,
+                                aiText,
+                                "before_persist",
+                                "ai",
+                            )
+                            val persistedText = if (aiDecision?.action == "replace") aiDecision.text else aiText
                             store.updateMessage(conversation.id, assistantId) {
                                 it.copy(
-                                    text = event.text.ifBlank { it.text },
+                                    text = persistedText.ifBlank { it.text },
                                     reasoningMs = finalReasoningMs ?: it.reasoningMs,
                                 )
                             }
@@ -848,6 +1011,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             } else {
                                 speakIfEnabled(spokenText)
                             }
+                            graph.memoryAutoCapture.captureAsync(conversation.id)
                         }
                         is AgentEvent.Failed -> {
                             store.updateMessage(conversation.id, assistantId) {
@@ -1144,7 +1308,49 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             ids = ids - com.iris.localai.agent.tools.DeviceToolNames.all
         }
+        // 只允许生活插件通过 Hook 调用，避免模型直接调用与 <vrma_motion> 重复生成。
+        ids = ids - "vrma_generate"
         return ids
+    }
+
+    private suspend fun summarizeIfNeeded(
+        conversation: com.iris.localai.agent.Conversation,
+        settings: AppSettings,
+    ): String {
+        if (settings.contextStrategy != ContextStrategy.SUMMARY || !settings.autoCompact) return ""
+        val latest = store.find(conversation.id) ?: conversation
+        val keep = (settings.contextKeepTurns * 2).coerceAtLeast(2)
+        val historyMessages = latest.messages.dropLast(2).filter { it.text.isNotBlank() }
+        val older = historyMessages
+            .dropLast(keep)
+            .filter { it.id > latest.summaryThroughMessageId }
+        if (older.isEmpty()) return latest.summary
+        val source = older.takeLast(40).map { message ->
+            PromptMessage(
+                role = message.role.name.lowercase(),
+                content = AssistantMessageParser.mainText(message.text).ifBlank { message.text },
+            )
+        }
+        val generated = runCatching {
+            graph.pluginRuntime.generateSummary(latest.id, source, latest.summary)
+        }.getOrNull()
+        val summary = (generated?.takeIf { it.isNotBlank() }
+            ?: buildLocalSummary(latest.summary, older)).take(4000)
+        store.updateSummary(latest.id, summary, older.last().id)
+        return summary
+    }
+
+    private fun buildLocalSummary(previous: String, messages: List<ChatMessage>): String = buildString {
+        if (previous.isNotBlank()) {
+            appendLine(previous.takeLast(2000))
+        }
+        messages.takeLast(20).forEach { message ->
+            val who = if (message.role == ChatRole.USER) "用户" else "AI"
+            val text = AssistantMessageParser.mainText(message.text).ifBlank { message.text }
+                .replace("\n", " ")
+                .take(120)
+            if (text.isNotBlank()) appendLine("$who：$text")
+        }
     }
 
     private fun trimHistory(
@@ -1435,7 +1641,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 it.category in categories && it.name.contains(wanted, ignoreCase = true)
             }
         if (asset != null) {
-            MotionBridge.playAsset(asset.id, loop = false, bgmPath = asset.bgm?.absolutePath)
+            MotionBridge.playAsset(
+                asset.id,
+                loop = false,
+                bgmPath = asset.bgm?.absolutePath,
+                holdIdle = asset.name.contains("坐"),
+            )
         }
         if (MotionBridge.hasMotionView()) {
             val action = when (wanted.lowercase()) {
@@ -1459,7 +1670,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ?: pool.firstOrNull { it.name.contains(name, ignoreCase = true) }
         }
         if (asset != null) {
-            MotionBridge.playAsset(asset.id, loop = true, bgmPath = asset.bgm?.absolutePath)
+            MotionBridge.playAsset(
+                asset.id,
+                loop = true,
+                bgmPath = asset.bgm?.absolutePath,
+                holdIdle = asset.name.contains("坐"),
+            )
         }
         if (MotionBridge.hasMotionView()) {
             MotionBridge.play("dance")
@@ -1551,7 +1767,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun notifyPluginChatRuntime(conversationId: Long, state: String, message: String? = null) {
         viewModelScope.launch {
-            runCatching { graph.pluginRuntime.notifyChatRuntime(conversationId, state, message) }
+            runCatching {
+                graph.pluginRuntime.notifyChatRuntime(
+                    chatId = conversationId,
+                    state = state,
+                    message = message,
+                    turnToolCalls = turnToolCount,
+                    sessionToolCalls = sessionToolCount,
+                )
+            }
         }
     }
 

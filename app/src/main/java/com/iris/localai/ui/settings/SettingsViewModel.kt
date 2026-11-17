@@ -36,6 +36,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val apiState = graph.api.state
     val conversations = graph.conversations.conversations
     val tools: List<Tool> get() = graph.tools.all()
+    val toolEntries: List<com.iris.localai.agent.RegisteredTool> get() = graph.tools.allWithSource()
     val skills = graph.skills.skills
     val workspaces = graph.workspaces.workspaces
     val characters = graph.characters.cards

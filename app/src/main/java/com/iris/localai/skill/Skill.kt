@@ -14,6 +14,8 @@ data class Skill(
     val suite: String = "",
     val source: String = "",
     val updatedAt: Long = System.currentTimeMillis(),
+    /** 相对技能目录的资源文件（SKILL.md 之外）。 */
+    val resources: List<String> = emptyList(),
 )
 
 data class SkillSettings(

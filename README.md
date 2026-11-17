@@ -23,7 +23,7 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 - **YSM 小人模型**：同一设置页可为角色卡绑定未加密的 YSM 模型（含 `ysm.json` 的文件夹或 ZIP），也可直接导入加密 `.ysm`：内置 MIT 许可的 YSMParser WASM，在 WebView 内存中解密 V1/V2/V3 并反推为基岩版 geometry，再按 YSM 的镜像坐标/UV 规则渲染；`.ysm` 不会落盘为明文。解析失败或未绑定模型时回退程序化小人。仅应用于你拥有授权、允许本地预览的模型。
 - 会话按空间隔离，统一持久化到 `conversations.json`；切换空间会切换对应会话与输入栏。
 - 视频通话会持续采集前置摄像头画面和麦克风，本地或云端 ASR 转写后连同画面帧进入多模态对话，回复再由本地、云端或系统 TTS 朗读，形成实时语音视频对话。通话支持两种舞台：房间背景（场景图/视频 + 上半身取景）与 AR 网格（后置相机 + IMU 姿态驱动的地平面锚定 + 全身模型），入口在 设置 › 交互 › 视频通话；AR 网格对 Live2D、VRM/GLB 与 MMD 都可用，网格对齐反编译版的琥珀色 #FFCC40、±1 范围 0.5 步长 5×5 线与 1.2 半径地面环；手机转动时网格与人物固定在真实地面上，拖动可重新锚定，大小/位置/相机高度会持久化。
-- 会话归档：侧栏会话菜单可归档/恢复；归档会话从活跃列表移入「已归档」区，归档时触发一次记忆沉淀；删除归档会话只删除会话记录，不删除已沉淀记忆。
+- 会话归档：侧栏会话菜单可归档/恢复；归档会话从活跃列表移入「已归档」区，每轮回复后与归档时都会增量沉淀记忆；删除归档会话只删除会话记录，不删除已沉淀记忆。
 - 侧栏包含会话列表、可折叠工作区与角色卡横排；顶栏可切换空间，设置入口位于侧栏底部。
 
 ### 模型与推理
@@ -40,8 +40,13 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 ### Agent 与工具链
 
 - `AgentLoop` 采用 ReAct 风格循环，解析 `<tool_call>{...}</tool_call>`，兼容模型原生 DSML 工具标签；默认最多 4 步，可在设置中调整。
-- `ToolRegistry` 注册 22 个内置工具：`current_time`、`device_info`、`random_pick`、`use_skill`、`workspace`、`read_file`、`write_file`、`edit_file`、`list_files`、`search_files`、`fetch_url`、`memory`、`motion_control`、`expression_control`、`shell`、`device_open_app`、`device_tap`、`device_swipe`、`device_back`、`device_home`、`device_input_text`、`device_screenshot`。
-- 工具可按空间过滤：文件工具与命令工具只在工作/综合空间生效；设备操作工具只在操作/综合空间生效。
+- `ToolRegistry` 注册 41 个内置工具：
+  - 基础：`current_time`、`device_info`、`random_pick`、`use_skill`、`memory`、`fetch_url`、`motion_control`、`expression_control`。
+  - 文件与命令：`workspace`、`read_file`、`write_file`、`edit_file`、`list_files`、`search_files`、`shell`。
+  - 设备操作：`device_open_app`、`device_tap`、`device_tap_text`、`device_swipe`、`device_scroll`、`device_wait_text`、`device_back`、`device_home`、`device_input_text`、`device_screenshot`、`device_ui`、`device_recents`、`device_notifications`、`device_long_press`、`device_enter`。
+  - AI 浏览器：`browser_open`、`browser_read`、`browser_snapshot`、`browser_click`、`browser_input`、`browser_scroll`、`browser_wait`、`browser_navigate`、`browser_back`、`browser_screenshot`。
+  - 扩展：`mcp_config`（由连接管理器在启动后注册）。
+- 工具可按空间过滤：文件工具与命令工具只在工作/综合空间生效，且 `shell`/`workspace` 还需在「编程管理」开启；设备操作工具只在操作/综合空间生效，进入这两类空间时始终补齐完整设备工具；浏览器工具在所有空间可用。开关由设置 › 智能体 › 工具勾选决定。
 - 工具权限支持允许 / 询问 / 拒绝，Shell 另支持允许与禁止的命令前缀。
 - 插件工具、MCP 客户端工具与技能工具会动态注册进同一工具表。
 
@@ -50,8 +55,8 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 - **角色卡**：PNG/JSON 的 V1/V2/V3 与春水别名导入，创建、编辑、收藏、删除、导出 JSON/PNG，列表与缩略图布局。
 - **角色模型**：Live2D ZIP、VRM 0.x/1.0、GLB/GLTF、MMD（PMX/PMD）导入、缩略图、模型绑定与位置偏移。
 - **世界书**：SillyTavern world info 导入，支持主/二级关键词、整词/正则/大小写、常驻、概率、顺序、插入位置/深度、粘滞/冷却、扫描深度与 Token 预算。
-- **记忆三库**：日记、记忆库、知识库；常规对话只注入记忆摘要，需要回忆时由 `memory` 工具做向量 + 关键词混合检索。日记按应用打开过的日期自动生成，记忆库支持文件夹、标题、标签、重要度、搜索、详情与编辑。
-- **记忆关系图**：记忆之间支持 `SHARED_TAG` / `SAME_FOLDER` 自动连边和手动关系，关系图支持拖拽缩放、节点点击与跨文件夹虚线；归档会话时从对话中沉淀事实、偏好与事件，记忆页也提供“整理最近对话”手动入口。
+- **记忆三库**：日记、记忆库、知识库；常规对话只注入记忆摘要（按本轮对话相关度排序），需要回忆时由 `memory` 工具做向量 + 关键词混合检索。云端 Embedding 不可用时自动回退本地哈希，并在检索结果与记忆页标明原因。日记按应用打开过的日期自动生成，记忆库支持文件夹、标题、标签、类型、重要度、搜索、详情与编辑。
+- **记忆关系图**：记忆之间支持 `SHARED_TAG` / `SAME_FOLDER` 自动连边和手动关系，关系图支持拖拽缩放、节点点击与跨文件夹虚线；每轮回复结束后从对话中增量沉淀事实、偏好与事件（云端模型需单独开启），记忆页也提供“整理最近对话”手动补处理入口。
 - **场景**：背景图/视频、名称/介绍、底座样式（无/圆形舞台/网格平台/光晕底座/纹理）与颜色。
 - **语音**：系统 TTS/STT；云端支持 OpenAI 兼容 TTS/ASR，重点接入小米 MiMo `mimo-v2.5-tts-voiceclone` 音色复刻（wav/mp3 样本，≤10 MB）与 `mimo-v2.5-asr`；本地通过 sherpa-onnx 运行 Kokoro/MeloTTS 合成与 SenseVoice/Paraformer 识别，自动朗读、语音输入和视频通话都按所选引擎分流。
 - **桌面宠物**：悬浮桌宠服务，支持模型、缩放、拖动、点击/长按动作、待机动画与聊天气泡。
@@ -59,7 +64,7 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 ### 扩展能力
 
 - **SKILL**：`SKILL.md`（YAML frontmatter + Markdown）导入、创建、编辑、删除、URL 下载、启用与提示词注入；注册 `use_skill` 工具按需读取。内置「主题创作」技能可生成可导入的主题预设 JSON。
-- **插件**：兼容 Operit ToolPkg（`manifest.json` / `manifest.hjson` + 子包 METADATA），WebView 沙箱执行脚本，限制文件与网络访问，支持 Hook 与工具注册；加载时自动转译 `NativeInterface.callTool` / `toolCall` 到宿主工具表，侧边栏插件入口与设置页 UI 通过 Compose DSL 兼容渲染器打开。
+- **插件**：兼容 Operit ToolPkg（`manifest.json` / `manifest.hjson` + 子包 METADATA），WebView 执行脚本；插件文件默认限制在自身目录与配置目录，兼容伪工具同样受限并可在设置中逐项配置权限，HTTP 仅公网。支持 Hook、工具注册、ToolPkg 注册函数、`NativeInterface.java*`、Java 包链与插件目录内 dex；加载时自动转译 `NativeInterface.callTool` / `callToolAsyncStreaming` / `toolCall` 到宿主工具表。侧边栏插件入口与设置页 UI 通过 Compose DSL 兼容渲染器打开，面板为近全屏可拖动样式。内置 `VRMA动作生成` 插件把 Text-To-VRMA 源码与 node_modules 打进 APK，在 PRoot 内置 Node 中运行 8787 API；复用当前语言模型 provider，入口在 设置 › 3D 控制 › VRM 控制 › VRMA 的「创作」。生成结果先作为临时动作预览，只有点击「保存到动作」并命名后才进入 VRMA 动作库，关闭创作对话框会删除未保存项。
 - **MCP 客户端**：支持 Streamable HTTP、旧版 HTTP+SSE 长连接与 PRoot 容器内 stdio；OAuth 支持 Access/Refresh Token 与 401 自动刷新；工具注册为 `mcp_<server>_<tool>`。
 - **MCP 服务端**：把已注册工具暴露为 MCP 工具（`shell`、`workspace` 与 `mcp_` 前缀工具不对外），POST 可按 Accept 返回 SSE，GET 可建立事件流，默认 `http://127.0.0.1:8765/mcp`。
 - **本地 API**：OpenAI 兼容 `/v1/models`、`/v1/chat/completions`、`/v1/completions`、`/v1/embeddings`、`/v1/images/generations`、`/v1/audio/speech`、`/v1/audio/transcriptions` 与 `/health`；文本支持 SSE，语音合成返回 wav，识别接受 JSON Base64 或 multipart 音频。默认只监听 `127.0.0.1:8686`。
@@ -79,7 +84,7 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 - 生成完成通知，支持锁屏可见、悬浮提醒与灵动岛样式悬浮层。
 - 主题支持跟随系统、浅色、深色；界面风格可选标准、液态玻璃（半透明表面与亮边）与墨水屏（黑白灰高对比），并提供青绿、海蓝、暮紫、琥珀、玫瑰 5 种强调色。设置 › 主题 右上角可导入/导出主题预设 JSON。
 - 组件设置可切换聊天气泡样式（圆角、方角、描边、极简），以及 AI 回复后“角色对话”状态卡（日期、地点与角色状态）的显示开关。
-- 设置体系共 7 个分组、35 个入口（含 4 个二级隐藏页），覆盖模型、后端、生成、性能、智能体、上下文、角色、语音、场景、API、MCP、插件、市场、技能、编程、权限、存储、网络、通知与数据管理。
+- 设置体系共 6 个分组、36 个入口（基础功能、角色、高级功能、界面与外观、系统管理、数据管理，其中 4 个是二级隐藏页：综合空间、桌宠穿透、Live2D 控制、3D 控制），覆盖模型、后端、生成、性能、智能体、上下文、角色、语音、场景、API、MCP、插件、市场、技能、编程、权限、存储、网络、通知、主题与备份。
 
 ### 接入与自动化
 
@@ -110,6 +115,8 @@ AppGraph（手动依赖装配）
   ├── MotionAssetStore / VrmaMotionStore / HastMotionStore
   ├── SkillStore / PluginStore / PluginRuntime
   ├── McpStore / McpConnectionManager / McpServerService
+  ├── BrowserController / BrowserPolicy
+  ├── IntegrationManager / BotMessageRouter
   ├── ProotRuntime / RootfsInstaller / ShellTool
   ├── DevicePermissionStore / DeviceActionExecutor / VirtualDisplayController
   ├── ApiService / HttpServer / ApiRoutes
@@ -131,10 +138,12 @@ AppGraph（手动依赖装配）
 
 - **engine/**：`EngineManager` 统一加载/卸载与状态；`LlamaEngine` 通过 JNI 调用 `libiris_llama.so`，`OpenAiCompatibleEngine` 解析云端 SSE 并按图片输入切换到视觉提供商，`StubEngine` 在无可用模型时回声兜底。
 - **agent/**：`AgentLoop` 负责系统提示、ReAct 循环、工具调用解析、权限判断与结果回填；`ConversationStore` 按空间管理会话；`AssistantMessageParser`、`ThinkTagFilter`、`DisplayTagFilter` 处理思考标签与展示内容。
+- **browser/**：`BrowserController` 驱动可见 WebView 完成打开、正文读取、快照、按索引点击/输入、滚动、等待文字与翻页，`BrowserPolicy` 按域名允许/阻断名单与仅 http(s) 规则校验跳转。
 - **character/**：`CardCodec`/`CardSpec` 解析 PNG/JSON 角色卡，`CharacterCardStore` 管理卡与收藏，`CharacterModelStore` 管理 Live2D/VRM/GLB/MMD，`CharacterPlazaClient` 聚合角色模型站点。
-- **memory/**：日记、记忆库、知识库、记忆关系、打开日期与自动沉淀状态；`briefContext` 生成精简摘要供常规注入，`recall` 使用本地哈希向量或已配置的云端 Embedding 做详细检索；日记按打开日期自动生成，关系图与自动记忆分别由 `MemoryLink` 和 `MemoryAutoCapture` 维护。
+- **memory/**：日记、记忆库、知识库、记忆关系、打开日期、向量缓存与自动沉淀状态；`briefContext` 生成精简摘要供常规注入，`recall` 使用本地哈希向量或已配置的云端 Embedding 做详细检索，云端向量缓存写入 `vectors.json`；日记按打开日期自动生成，关系图与自动记忆分别由 `MemoryLink` 和 `MemoryAutoCapture` 维护。
 - **lorebook/**：世界书条目解析、关键词/正则匹配、预算裁剪与系统提示拼接。
-- **motion/**：`MotionAssetStore` 管理 VMD/镜头/BGM，`VrmaMotionStore` 管理 VRMA，`HastMotionStore` 管理 HAST-SEC，`MotionBridge` 把动作指令送进 WebView，`MotionEnvironment` 通过 PRoot 运行 Node 动作服务。
+- **integration/**：`IntegrationManager` 管理 Telegram/QQ/微信 Bot 的配置与长连接，`BotMessageRouter` 把通道消息绑定到综合空间会话并收紧可用工具，`WeixinLoginClient` 处理扫码登录。
+- **motion/**：`MotionAssetStore` 管理 VMD/镜头/BGM，`VrmaMotionStore` 管理 VRMA，`HastMotionStore` 管理 HAST-SEC，`MotionBridge` 把动作指令送进 WebView，`MotionEnvironment` 通过 PRoot 运行 Node 动作服务；`VrmaGenerationEnvironment` 启动内置 Text-To-VRMA API，`VrmaGenerateTool` 供生活插件生成并播放 VRMA。
 - **plugin/**：`PluginManifestParser` 解析 Operit ToolPkg，`PluginRuntime` 用 WebView 沙箱执行脚本，`PluginTool` 把插件工具注册进 Agent，`OperitMarketClient` 读取市场索引。
 - **permission/**：`DevicePermissionStore` 汇总无障碍、悬浮窗、录音、通知与 Shizuku 状态，`DeviceActionExecutor` 执行设备动作，`VirtualDisplayController` 管理虚拟屏，`FreeformLaunchActivity` 启动小窗。
 - **proot/**：`ProotRuntime`/`ProotSession` 启动容器，`RootfsInstaller` 下载与解压 rootfs，`RootfsPatcher` 补 DNS/hosts/locale。
@@ -147,12 +156,15 @@ AppGraph（手动依赖装配）
 app/src/main/
 ├── AndroidManifest.xml
 ├── assets/
-│   ├── studio.html / studio.js       # 综合空间 3D 园区与五场所
+│   ├── studio.html / studio.js       # 综合空间 3D 园区与六场所
 │   ├── three.min.js                  # 综合空间离线 three.js
 │   ├── character.html / character.js # VRM/GLB 页面与加载
 │   ├── live2d.html / live2d.js       # Live2D 页面
 │   ├── mmd.html / mmd.js             # MMD 页面
 │   ├── motion/server.js              # PRoot 内置动作服务
+│   └── vrma_runtime/                 # Text-To-VRMA 源码与 node_modules（内置 VRMA 生成）
+│   ├── voice/                        # 本地语音模型清单（Kokoro/MeloTTS/SenseVoice/Paraformer）
+│   ├── ysm/                          # YSMParser WASM 与许可文本
 │   └── model/                        # three.js、GLTFLoader、Cubism、Pixi、Babylon、MMD 运行时
 ├── java/com/iris/localai/
 │   ├── IrisApp.kt                    # Application，持有 AppGraph
@@ -160,12 +172,14 @@ app/src/main/
 │   ├── MainActivity.kt               # 唯一 Activity
 │   ├── accessibility/                # 无障碍服务
 │   ├── agent/                        # AgentLoop、Tool、ToolCallParser、会话与消息解析
-│   │   └── tools/                    # 时间、设备、文件、网络、记忆、动作、Shell 等工具
+│   │   └── tools/                    # 时间、设备、文件、网络、记忆、动作、浏览器、Shell 等工具
+│   ├── browser/                      # AI 浏览器控制器、策略校验与可见 WebView 页面
 │   ├── character/                    # 角色卡编解码、存储、模型仓库、角色广场客户端
 │   ├── code/                         # 编程设置、ShellTool
 │   ├── data/                         # 设置、模型档案、下载客户端、语音配置、设置镜像
 │   ├── engine/                       # EngineManager、InferenceEngine、云端引擎、Stub
 │   │   └── llama/                    # LlamaNative / LlamaEngine
+│   ├── integration/                  # Telegram / QQ / 微信 Bot 服务与消息路由
 │   ├── lorebook/                     # 世界书解析与存储
 │   ├── mcp/                          # MCP 客户端、连接管理、服务端与存储
 │   ├── memory/                       # 日记、记忆库、知识库
@@ -182,7 +196,7 @@ app/src/main/
 │   ├── ui/
 │   │   ├── MainScreen.kt
 │   │   ├── chat/                     # 工作/生活/操作/综合空间、聊天组件、模型视图
-│   │   ├── settings/                 # 设置首页、35 个入口页面与各 ViewModel
+│   │   ├── settings/                 # 设置首页、36 个入口页面与各 ViewModel
 │   │   └── theme/                    # 配色、字体与主题
 │   ├── voice/                        # 系统 TTS、sherpa-onnx 本地 TTS/ASR、MiMo 云语音、录音与模型下载
 │   └── workspace/                    # 工作区条目、应用内/SAF 文件读写
@@ -193,7 +207,7 @@ app/src/main/
 └── res/
 ```
 
-当前 Kotlin 源码约 179 个文件、4.2 万行。单元测试位于 `app/src/test/`，覆盖 API 鉴权、角色卡编解码、技能解析、工具注册、消息解析、VPD→VMD、权限状态、插件清单与 PRoot rootfs 等。
+当前 Kotlin 源码约 229 个文件、6.0 万行。单元测试位于 `app/src/test/`（26 个文件），覆盖 API 鉴权、角色卡编解码、技能解析、工具注册与工具调用解析、消息/思考标签/角色状态解析、VPD→VMD、权限状态、插件清单、MCP 连接与 SSE 传输、主题预设编解码、记忆 Embedding 状态与 PRoot rootfs 等。
 
 ## 四空间
 
@@ -239,6 +253,7 @@ app/src/main/
 | `filesDir/memory/{diary,memories,knowledge}.json` | 日记、记忆库、知识库 |
 | `filesDir/memory/{usage_days,diary_handled}.json` | 应用打开日期与已处理日记日期 |
 | `filesDir/memory/links.json` | 记忆关系边（源/目标/类型/权重/说明） |
+| `filesDir/memory/vectors.json` | 云端 Embedding 向量缓存（按记忆/日记/知识 id 与文本哈希校验，不参与备份） |
 | `filesDir/memory/auto_state.json` | 每个会话最后处理的自动沉淀消息 id |
 | `filesDir/skills/<id>/SKILL.md` + `meta.json` | 技能库 |
 | `filesDir/plugins/<id>/` | 已安装插件 |
@@ -304,14 +319,15 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 - **API**：已提供 embeddings、图片生成代理与音频合成/转写。语音端点使用语音设置中的云端配置；图片生成把请求代理到当前语言模型提供商的 `/images/generations`，是否可用取决于提供商与模型；未实现音频实时流式端点。
 - **备份**：数据管理 › 备份可勾选角色卡、世界书、记忆与设置，导出为单个 ZIP（manifest + 角色卡 JSON/头像 + 世界书 + 记忆文件 + 设置与模型档案）；恢复时可按分类勾选，角色卡按同 id 覆盖并保留其他卡，世界书与记忆整体替换，设置立即生效。备份不含 API Key/令牌、角色模型、对话记录、插件与 MCP 配置。
 - **世界书**：递归扫描、分组评分、粘滞/冷却状态机与角色卡级绑定仍为简化实现。
-- **记忆检索**：默认使用本地特征哈希向量，配置模型档案的 OpenAI 兼容 Embedding 角色后会改用云端 `/embeddings`；两者都失败时回退关键词评分。日记由规则摘要生成，不是 LLM 代写。
+- **记忆检索**：默认使用本地特征哈希向量，配置模型档案的 OpenAI 兼容 Embedding 角色后会改用云端 `/embeddings`，成功后把向量写入 `memory/vectors.json` 供下次直接复用；云端请求失败或配置不完整时回退本地哈希，并在 `recall` 结果与记忆页显示具体原因。召回候选超过 800 条时按重要度与新鲜度预筛，避免全量打分随数据无限增长。日记由规则摘要生成，不是 LLM 代写。
 - **记忆关系图**：没有引入 ObjectBox，使用 JSON 复刻 Operit 的节点/边语义；自动连边依据共享标签或同文件夹，手动关系和自动沉淀的模型抽取关系都会写入 `links.json`。
-- **自动沉淀**：归档会话时触发一次当前引擎的结构化记忆抽取；引擎不可用、失败或返回非 JSON 时回退用户陈述规则提取。记忆页“整理最近对话”也可手动触发。删除归档会话不会删除已写入的记忆。自动抽取质量受模型能力影响。
+- **自动沉淀**：每轮回复结束后触发一次增量抽取，归档会话时再补一次；只处理上次位置之后的新消息，同一会话 90 秒内不重复调用模型，`force` 只跳过开关与节流、不重跑已分析内容。云端语言模型默认不参与自动沉淀，需在设置 › 上下文推理 › 记忆与知识库开启“云端模型自动沉淀”；归档与手动整理不受该限制。引擎不可用、失败或返回非 JSON 时回退用户陈述规则提取。记忆页“整理最近对话”只补处理未分析内容。删除归档会话不会删除已写入的记忆。自动抽取质量受模型能力影响。
 - **工作区位置**：`workspaceLocation` / `customWorkspacePath` 已持久化，但 Shell、PRoot 与文件工具仍以 `WorkspaceStore` 的活动工作区为准。
 - **角色模型**：VRM/GLB、Live2D、MMD 已接入实际渲染；MMD VMD 动作编排、VRM 表情/动作切换与更多口型细节仍有缺口。TTS 播放已通过 Visualizer 提供真实振幅并驱动 Live2D 口型；Live2D 另带眨眼、视线游移、头部/身体摆动与呼吸，口型按振幅平滑并叠加音节包络，通话与生活空间共用同一套动作。
 - **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。AR 网格默认是 **IMU 姿态驱动的 3DoF 地平面锚定**（后置相机 + 固定相机高度）；设置 › 交互 可开启实验性 **OpenCV 光流位移**（后置相机 `ImageReader` YUV 灰度帧 + RANSAC 仿射估计平移/尺度，水平视场角由焦距/传感器尺寸估算，尺度变化用于微调相机高度），但仍是平面假设下的近似，没有单应分解、特征地图或 EKF，光照差、快速转动或走动会漂移，可在通话中点「重新定位」；双 Surface 会话失败时会退回纯预览。横屏时退回静态网格。模型尺寸直接绑定地面环的屏幕直径（高度 = 环直径 × 人物高度 / 2.4m），远近变化时与网格严格同比例；脚底位置按模型类型取默认值（Live2D 0.99 / MMD 0.70 / 3D 0.82），可用「脚底微调」修正。开启实验开关后可在通话中点「记录日志」，CSV 写到 `Android/data/com.iris.localai/files/tracking/`（逐帧 IMU、仿射、单应、特征点对与估计位移），用于校准符号和选解。
 - **桌宠与虚拟屏**：桌宠依赖悬浮窗权限；虚拟屏依赖 Shizuku + HiddenApiBypass，freeform 依赖 ROM 支持。
-- **插件兼容**：Operit Compose DSL UI 通过兼容渲染器打开，支持 Column/Row/Box/Text/TextField/Button/Switch/Checkbox/Slider/Card/Surface/Icon/进度条等常用组件，复杂组件会降级；依赖任意 Java 反射、`Java.implement`、`loadDex/loadJar` 或宿主单例的插件无法等价运行。跨工具调用已转译到宿主工具表，但插件内嵌套调用自身工具仍不支持。
+- **插件兼容**：Operit Compose DSL UI 通过兼容渲染器打开，支持 Column/Row/Box/Text/TextField/Button/Switch/Checkbox/Slider/Card/Surface/Icon/Image/Dialog/Lazy 列表/WebView/Markdown 等组件，复杂组件会降级；AiChat 可嵌入当前主聊天（无活跃会话时显示提示）。依赖任意 Java 反射、`Java.implement` 或宿主单例的插件无法等价运行；`loadDex`/`loadJar` 仅支持插件目录内文件，dex 类支持构造、实例方法与实例字段。已接入 chat_input、chat_message、chat_runtime、system_prompt_compose、tool_lifecycle、chat_message_menu_item、prompt_input、prompt_history、prompt_estimate_history、tool_prompt_compose、prompt_finalize、prompt_estimate_finalize、message_processing、chat_view、app_lifecycle、summary_generate、input_menu_toggle、desktop_widget、xml_render 与工具流式中间回调；插件 AI Provider 会同步为“插件”类型模型提供商，非流式返回。desktop_widget 以悬浮窗近似实现（Android AppWidget 无法渲染 Compose DSL）。跨工具调用已转译到宿主工具表，但插件内嵌套调用自身工具仍不支持。
+- **VRMA 生成**：内置 Text-To-VRMA 需要 PRoot 已安装 Node 20+，首次启动会复制约 43 MB 运行时；云端使用当前语言模型 provider（OpenAI 兼容或 Anthropic Claude），Gemini 与未配置 provider 会失败。生成走 8787 本地 API，ARDY 本地引擎未在手机启用。生活空间插件设置 `VRMA_GENERATION=TRUE` 时改用 `<vrma_motion>` 指令与 `vrma_generate`，FALSE 回退原动作/表情表。
 - **本地语音模型**：sherpa-onnx 1.13.8（Apache-2.0），Gradle 坐标 `com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8`，首次构建从 JitPack 下载完整 AAR；官方 release 下载地址：`https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar`。Kokoro/MeloTTS 与 SenseVoice/Paraformer 按各自模型作者的许可使用，首次使用需在设置中下载 pinned revision 的模型文件。
 - **安全**：API Key、云语音 Key、MCP 请求头与模型提供商 Key 等以明文存入 SharedPreferences；MCP 服务清单还会镜像到外置的 `mcp/servers.json`；外置目录可被具备文件访问能力的其他应用读取。
 - **存储可见性**：`Android/data` 路径在 DocumentsUI 中可能不可见；外置应用专属目录会随卸载删除，重要数据需自行备份。
@@ -323,4 +339,5 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 - [xiaokeai](https://github.com/liupig/xiaokeai)：3D 舞台与场景素材概念，舞台素材采用 Apache-2.0 公开仓库。
 - Operit ToolPkg 与 Operit 市场：插件清单、子包 METADATA 与市场索引兼容。
 - AIRI、MikuMikuAR、agent-workspace：角色模型、角色广场、动作与工作空间交互的参考。
+- Text-To-VRMA（MIT）：VRMA 生成运行时、LLM 动作规格与 vrmaBuilder；许可与第三方声明位于 `assets/vrma_runtime/LICENSE` 和 `THIRD_PARTY_NOTICES.md`。
 - 内置 Web 运行时：three.js（MIT）、Babylon.js、pixi-live2d-display（MIT）、Live2D Cubism Core（Live2D 专有许可），许可文本位于 `app/src/main/assets/model/LICENSE-*.txt`。

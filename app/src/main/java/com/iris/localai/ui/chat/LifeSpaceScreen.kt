@@ -411,6 +411,8 @@ private fun CharacterStage(
                 motionIdle = motionIdle,
                 motionPack = motionPack,
                 motionAxisFix = motionAxisFix,
+                speaking = live2dSpeaking,
+                mouthAmplitude = mouthAmplitude,
                 modifier = modelOffset,
             )
             Box(
@@ -962,6 +964,7 @@ private fun LifeComposer(
                 }
             }
 
+            PluginInputMenuRow(viewModel = viewModel)
             Row(verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     value = input,

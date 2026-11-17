@@ -363,6 +363,7 @@ private fun MmdControlCard(localMotions: List<MotionAsset>, onToast: (String) ->
                             path = asset.id,
                             loop = asset.category == MotionCategory.DANCE,
                             bgmPath = asset.bgm?.absolutePath,
+                            holdIdle = asset.name.contains("坐"),
                         )
                         onToast("正在播放：${asset.name}")
                     },
@@ -395,6 +396,7 @@ private fun VrmControlCard(
     val ready = hastStore.isReady()
     val engine = settings.vrmMotionEngine
     var vrmaStatus by remember { mutableStateOf<String?>(null) }
+    var showVrmaGenerator by remember { mutableStateOf(false) }
     val importVrma = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
@@ -456,7 +458,7 @@ private fun VrmControlCard(
             }
             SettingsSwitchRow(
                 title = "自动待机动作",
-                summary = "空闲时播放 HAST-SEC 待机动作",
+                summary = "动作结束后自动回到待机（HAST-SEC / VRMA / MMD）",
                 checked = settings.motionAutoIdle,
                 onCheckedChange = { enabled ->
                     viewModel.update { it.copy(motionAutoIdle = enabled) }
@@ -467,6 +469,7 @@ private fun VrmControlCard(
                 TextButton(onClick = { importVrma.launch("*/*") }) { Text("导入 VRMA") }
                 TextButton(onClick = { vrmaStore.refresh() }) { Text("刷新") }
                 TextButton(onClick = { MotionBridge.stopVrma() }) { Text("停止") }
+                TextButton(onClick = { showVrmaGenerator = true }) { Text("创作") }
             }
             vrmaStatus?.let {
                 Text(
@@ -502,7 +505,7 @@ private fun VrmControlCard(
                     }
                     TextButton(
                         onClick = {
-                            MotionBridge.playVrma(vrmaStore.virtualUrl(asset))
+                            MotionBridge.playVrma(vrmaStore.virtualUrl(asset), holdIdle = asset.name.contains("坐"))
                             vrmaStatus = "正在播放：${asset.name}"
                         },
                     ) { Text("播放") }
@@ -530,6 +533,10 @@ private fun VrmControlCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+
+    if (showVrmaGenerator) {
+        VrmaGenerationDialog(onDismiss = { showVrmaGenerator = false })
     }
 
     SettingsCard(title = "动作轴向修正（仅 GLB）") {

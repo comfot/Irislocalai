@@ -175,14 +175,23 @@ class SkillStore(context: Context) {
     suspend fun importBytes(bytes: ByteArray, fileName: String): Result<Skill> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val text = if (isZip(bytes)) {
-                    firstMarkdownInZip(bytes) ?: error("ZIP 中没有 .md 技能文件")
-                } else {
-                    String(bytes, Charsets.UTF_8)
-                }
                 val baseName = fileName.substringBeforeLast('.').ifBlank { "导入技能" }
-                val skill = SkillParser.parse(text, baseName)
-                save(skill.copy(id = uniqueId(skill.name), source = fileName), new = true)
+                if (isZip(bytes)) {
+                    val packageFiles = readSkillZip(bytes)
+                    val skill = SkillParser.parse(packageFiles.markdown, baseName)
+                    val saved = save(skill.copy(id = uniqueId(skill.name), source = fileName), new = true)
+                    val dir = File(root, saved.id)
+                    packageFiles.resources.forEach { (path, content) ->
+                        writeResource(dir, path, content)
+                    }
+                    refresh()
+                    _skills.value.firstOrNull { it.id == saved.id }
+                        ?: error("技能资源写入失败")
+                } else {
+                    val text = String(bytes, Charsets.UTF_8)
+                    val skill = SkillParser.parse(text, baseName)
+                    save(skill.copy(id = uniqueId(skill.name), source = fileName), new = true)
+                }
             }
         }
 
@@ -246,7 +255,13 @@ class SkillStore(context: Context) {
                 true
             }
             .joinToString("\n\n") { skill ->
-                "【技能：${skill.name}】\n${skill.instructions.take(2000)}"
+                val refs = if (skill.resources.isEmpty()) {
+                    ""
+                } else {
+                    "\n参考文件（需要时用 use_skill 读取，file 传相对路径）：" +
+                        skill.resources.take(12).joinToString("、")
+                }
+                "【技能：${skill.name}】\n${skill.instructions.take(2000)}$refs"
             }
     }
 
@@ -264,9 +279,17 @@ class SkillStore(context: Context) {
         val meta = runCatching {
             Json.parseToJsonElement(File(dir, META).readText()).jsonObject
         }.getOrNull()
-        val triggers = meta?.get("triggers")?.let { element ->
-            (element as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        val triggers = meta?.let { element ->
+            (element["triggers"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
         }
+        val resources = dir.walkTopDown()
+            .filter { file ->
+                file.isFile && file.name != "SKILL.md" && file.name != META &&
+                    !file.name.startsWith(".") && !file.path.contains("__MACOSX")
+            }
+            .map { file -> file.relativeTo(dir).invariantSeparatorsPath }
+            .sorted()
+            .toList()
         return parsed.copy(
             id = dir.name,
             enabled = meta?.boolean("enabled") ?: true,
@@ -276,6 +299,7 @@ class SkillStore(context: Context) {
             suite = meta?.string("suite") ?: parsed.suite,
             source = meta?.string("source") ?: "",
             updatedAt = meta?.long("updatedAt") ?: 0L,
+            resources = resources,
         )
     }
 
@@ -320,20 +344,62 @@ class SkillStore(context: Context) {
     private fun isZip(bytes: ByteArray): Boolean =
         bytes.size > 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()
 
-    private fun firstMarkdownInZip(bytes: ByteArray): String? {
+    private data class ZipSkill(
+        val markdown: String,
+        val resources: List<Pair<String, ByteArray>>,
+    )
+
+    private fun readSkillZip(bytes: ByteArray): ZipSkill {
+        val entries = linkedMapOf<String, ByteArray>()
+        var total = 0L
         ZipInputStream(ByteArrayInputStream(bytes)).use { input ->
-            var total = 0L
             while (true) {
                 val entry = input.nextEntry ?: break
                 if (entry.isDirectory) continue
-                if (!entry.name.endsWith(".md", ignoreCase = true)) continue
+                val name = entry.name.replace('\\', '/').trimStart('/')
+                if (name.contains("__MACOSX/") || name.endsWith(".DS_Store")) continue
+                if (name.split('/').any { it.isBlank() || it == "." || it == ".." }) continue
                 val content = input.readBytes()
                 total += content.size
-                if (total > 2_000_000) throw IOException("技能包过大")
-                return String(content, Charsets.UTF_8)
+                if (total > MAX_SKILL_ZIP_BYTES) throw IOException("技能包过大")
+                entries[name] = content
             }
         }
-        return null
+        val skillEntry = entries.entries.firstOrNull {
+            it.key.substringAfterLast('/').equals("SKILL.md", ignoreCase = true)
+        } ?: error("ZIP 中没有 SKILL.md")
+        val prefix = skillEntry.key.substringBeforeLast('/', "")
+        val resources = entries.entries
+            .filter { (name, _) ->
+                name != skillEntry.key &&
+                    (prefix.isEmpty() || name.startsWith("$prefix/"))
+            }
+            .map { (name, data) ->
+                val relative = if (prefix.isEmpty()) name else name.removePrefix("$prefix/")
+                relative to data
+            }
+            .filter { it.first.isNotBlank() }
+        return ZipSkill(String(skillEntry.value, Charsets.UTF_8), resources)
+    }
+
+    private fun writeResource(dir: File, relative: String, bytes: ByteArray) {
+        val root = dir.canonicalFile
+        val target = File(root, relative).canonicalFile
+        require(target.path.startsWith(root.path + File.separator)) { "技能资源路径非法：$relative" }
+        target.parentFile?.mkdirs()
+        target.writeBytes(bytes)
+    }
+
+    fun readResource(skillId: String, relative: String): Result<String> = runCatching {
+        val skill = _skills.value.firstOrNull { it.id == skillId } ?: error("技能不存在：$skillId")
+        val path = relative.replace('\\', '/').trimStart('/')
+        require(path.isNotBlank() && !path.split('/').any { it == ".." }) { "技能资源路径非法" }
+        require(skill.resources.any { it == path }) { "技能没有该参考文件：$path" }
+        val skillDir = File(root, skillId).canonicalFile
+        val file = File(skillDir, path).canonicalFile
+        require(file.isFile && file.path.startsWith(skillDir.path + File.separator)) { "技能资源不存在：$path" }
+        require(file.length() <= MAX_RESOURCE_BYTES) { "参考文件超过 200 KB" }
+        file.readText()
     }
 
     private fun JsonObject.string(key: String): String? =
@@ -354,5 +420,7 @@ class SkillStore(context: Context) {
         const val KEY_AGENT = "inject_agent"
         const val KEY_OPERATION_SKILL = "operation_skill_seeded"
         const val KEY_THEME_SKILL = "theme_skill_seeded"
+        const val MAX_SKILL_ZIP_BYTES = 8L * 1024 * 1024
+        const val MAX_RESOURCE_BYTES = 200L * 1024
     }
 }

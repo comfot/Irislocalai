@@ -12,6 +12,7 @@ data class MotionAssetCommand(
     val path: String,
     val loop: Boolean,
     val bgmPath: String? = null,
+    val holdIdle: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -19,7 +20,7 @@ data class CameraCommand(val seq: Long, val path: String, val loop: Boolean)
 
 data class ExpressionCommand(val seq: Long, val name: String)
 
-data class VrmaCommand(val seq: Long, val url: String, val loop: Boolean = false)
+data class VrmaCommand(val seq: Long, val url: String, val loop: Boolean = false, val holdIdle: Boolean = false)
 
 /** Agent 工具与 3D 渲染页面之间的动作指令通道。 */
 object MotionBridge {
@@ -83,10 +84,10 @@ object MotionBridge {
     }
 
     /** 播放本地动作素材；path 为 motion_assets 下的相对路径。 */
-    fun playAsset(path: String, loop: Boolean = false, bgmPath: String? = null) {
+    fun playAsset(path: String, loop: Boolean = false, bgmPath: String? = null, holdIdle: Boolean = false) {
         if (path.isBlank()) return
         seq += 1
-        _assetCommand.value = MotionAssetCommand(seq, path, loop, bgmPath)
+        _assetCommand.value = MotionAssetCommand(seq, path, loop, bgmPath, holdIdle)
     }
 
     fun stopAsset() {
@@ -111,10 +112,10 @@ object MotionBridge {
         _expressionCommand.value = ExpressionCommand(seq, name)
     }
 
-    fun playVrma(url: String, loop: Boolean = false) {
+    fun playVrma(url: String, loop: Boolean = false, holdIdle: Boolean = false) {
         if (url.isBlank()) return
         seq += 1
-        _vrmaCommand.value = VrmaCommand(seq, url, loop)
+        _vrmaCommand.value = VrmaCommand(seq, url, loop, holdIdle)
     }
 
     fun stopVrma() {

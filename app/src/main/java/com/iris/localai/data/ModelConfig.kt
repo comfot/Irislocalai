@@ -3,6 +3,7 @@ package com.iris.localai.data
 enum class ProviderKind(val label: String) {
     LOCAL("本地"),
     CLOUD("云端"),
+    PLUGIN("插件"),
 }
 
 enum class CloudVendor(
@@ -44,6 +45,8 @@ data class ModelProvider(
     val apiKey: String = "",
     val endpoint: String = CloudVendor.OPENAI.defaultEndpoint,
     val localModelPath: String = "",
+    val pluginId: String = "",
+    val pluginProviderId: String = "",
     val roles: Set<ModelRole> = ModelRole.entries.toSet(),
     val models: List<ProviderModel> = emptyList(),
 ) {
@@ -127,6 +130,14 @@ fun defaultRoles(providerId: String = DEFAULT_PROVIDER_ID): Map<ModelRole, RoleC
     ModelRole.entries.associateWith { role ->
         defaultRoleConfig(role).copy(providerId = providerId)
     }
+
+data class PluginAiProviderRef(
+    val pluginId: String,
+    val pluginName: String,
+    val providerId: String,
+    val displayName: String = "",
+    val description: String = "",
+)
 
 data class ModelProfile(
     val id: String,

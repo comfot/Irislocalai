@@ -11,14 +11,17 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -30,6 +33,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -43,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,6 +68,11 @@ import com.iris.localai.character.CharacterEntry
 import com.iris.localai.data.Space
 import com.iris.localai.plugin.PluginHookDescriptor
 import com.iris.localai.workspace.Workspace
+import com.iris.localai.workspace.WorkspaceEntry
+import com.iris.localai.workspace.WorkspaceFs
+import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun Sidebar(
@@ -89,6 +101,8 @@ fun Sidebar(
     var pendingRename by remember { mutableStateOf<Conversation?>(null) }
     var renameText by remember { mutableStateOf("") }
     var workspaceExpanded by rememberSaveable { mutableStateOf(false) }
+    var filesWorkspaceId by rememberSaveable { mutableStateOf<String?>(null) }
+    var archivedExpanded by rememberSaveable { mutableStateOf(false) }
     val activeWorkspace = workspaces.firstOrNull { it.id == workspaceId }
     val activeCharacterName = characters.firstOrNull { it.id == characterId }?.card?.charName.orEmpty()
     val spaceLabel = if (space == Space.LIFE && activeCharacterName.isNotBlank()) {
@@ -149,7 +163,13 @@ fun Sidebar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { workspaceExpanded = !workspaceExpanded }
+                    .clickable {
+                        workspaceExpanded = !workspaceExpanded
+                        if (workspaceExpanded && filesWorkspaceId == null) {
+                            filesWorkspaceId = workspaceId.takeIf { id -> workspaces.any { it.id == id } }
+                                ?: workspaces.firstOrNull()?.id
+                        }
+                    }
                     .padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -184,12 +204,30 @@ fun Sidebar(
                 )
             }
             if (workspaceExpanded) {
-                workspaces.forEach { workspace ->
-                    WorkspaceRow(
-                        workspace = workspace,
-                        selected = workspace.id == workspaceId,
-                        onClick = { onSelectWorkspace(workspace.id) },
-                    )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 280.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    workspaces.forEach { workspace ->
+                        WorkspaceRow(
+                            workspace = workspace,
+                            selected = workspace.id == workspaceId,
+                            filesExpanded = filesWorkspaceId == workspace.id,
+                            onClick = { onSelectWorkspace(workspace.id) },
+                            onToggleFiles = {
+                                filesWorkspaceId = if (filesWorkspaceId == workspace.id) {
+                                    null
+                                } else {
+                                    workspace.id
+                                }
+                            },
+                        )
+                        if (filesWorkspaceId == workspace.id) {
+                            WorkspaceFileTree(workspace = workspace)
+                        }
+                    }
                 }
             }
 
@@ -290,27 +328,47 @@ fun Sidebar(
                             modifier = Modifier.padding(vertical = 8.dp),
                             color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
                         )
-                        Text(
-                            text = "已归档（${archivedInSpace.size}）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { archivedExpanded = !archivedExpanded }
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "已归档（${archivedInSpace.size}）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                imageVector = if (archivedExpanded) {
+                                    Icons.Default.KeyboardArrowUp
+                                } else {
+                                    Icons.Default.KeyboardArrowDown
+                                },
+                                contentDescription = if (archivedExpanded) "收起已归档" else "展开已归档",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
-                    items(archivedInSpace, key = { "archived-${it.id}" }) { conversation ->
-                        ConversationRow(
-                            conversation = conversation,
-                            selected = false,
-                            archived = true,
-                            onClick = { onRestoreConversation(conversation.id) },
-                            onRename = {
-                                pendingRename = conversation
-                                renameText = conversation.title
-                            },
-                            onArchive = {},
-                            onRestore = { onRestoreConversation(conversation.id) },
-                            onDelete = { pendingDelete = conversation },
-                        )
+                    if (archivedExpanded) {
+                        items(archivedInSpace, key = { "archived-${it.id}" }) { conversation ->
+                            ConversationRow(
+                                conversation = conversation,
+                                selected = false,
+                                archived = true,
+                                onClick = { onRestoreConversation(conversation.id) },
+                                onRename = {
+                                    pendingRename = conversation
+                                    renameText = conversation.title
+                                },
+                                onArchive = {},
+                                onRestore = { onRestoreConversation(conversation.id) },
+                                onDelete = { pendingDelete = conversation },
+                            )
+                        }
                     }
                 }
             }
@@ -395,7 +453,9 @@ private fun SidebarLabel(text: String) {
 private fun WorkspaceRow(
     workspace: Workspace,
     selected: Boolean,
+    filesExpanded: Boolean,
     onClick: () -> Unit,
+    onToggleFiles: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -443,7 +503,127 @@ private fun WorkspaceRow(
                 modifier = Modifier.size(16.dp),
             )
         }
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clickable(onClick = onToggleFiles),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (filesExpanded) {
+                    Icons.Default.KeyboardArrowUp
+                } else {
+                    Icons.Default.KeyboardArrowDown
+                },
+                contentDescription = if (filesExpanded) "收起文件" else "展开文件",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
+}
+
+/** 工作区文件树：按目录逐级展开，在侧栏内只读浏览。 */
+@Composable
+private fun WorkspaceFileTree(workspace: Workspace) {
+    val context = LocalContext.current
+    val fs = remember(workspace.id) { WorkspaceFs(context, workspace) }
+    WorkspaceDirContents(fs = fs, path = "", depth = 1)
+}
+
+@Composable
+private fun WorkspaceDirContents(fs: WorkspaceFs, path: String, depth: Int) {
+    var entries by remember(path) { mutableStateOf<List<WorkspaceEntry>?>(null) }
+    var error by remember(path) { mutableStateOf<String?>(null) }
+    LaunchedEffect(path) {
+        val result = withContext(Dispatchers.IO) { fs.entries(path) }
+        result.onSuccess { entries = it }
+            .onFailure { error = it.message ?: "读取目录失败" }
+    }
+    val indent = Modifier.padding(start = (4 + depth * 10).dp, top = 2.dp, bottom = 2.dp, end = 4.dp)
+    when {
+        error != null -> Text(
+            text = error!!,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = indent,
+        )
+        entries == null -> Text(
+            text = "加载中…",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = indent,
+        )
+        entries!!.isEmpty() -> Text(
+            text = if (path.isEmpty()) "工作区为空" else "空目录",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = indent,
+        )
+        else -> entries!!.forEach { entry ->
+            WorkspaceFileRow(fs = fs, entry = entry, depth = depth)
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceFileRow(fs: WorkspaceFs, entry: WorkspaceEntry, depth: Int) {
+    var expanded by remember(entry.path) { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = entry.isDir) { expanded = !expanded }
+            .padding(start = (4 + depth * 10).dp, top = 3.dp, bottom = 3.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = when {
+                !entry.isDir -> Icons.Outlined.Description
+                expanded -> Icons.Outlined.FolderOpen
+                else -> Icons.Outlined.Folder
+            },
+            contentDescription = null,
+            tint = if (entry.isDir) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = entry.name,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (entry.isDir) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (!entry.isDir) {
+            Text(
+                text = formatEntrySize(entry.size),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    if (entry.isDir && expanded) {
+        WorkspaceDirContents(fs = fs, path = entry.path, depth = depth + 1)
+    }
+}
+
+private fun formatEntrySize(size: Long): String = when {
+    size < 0 -> ""
+    size >= 1L shl 30 -> String.format(Locale.US, "%.1f GB", size / (1L shl 30).toDouble())
+    size >= 1L shl 20 -> String.format(Locale.US, "%.1f MB", size / (1L shl 20).toDouble())
+    size >= 1L shl 10 -> String.format(Locale.US, "%.0f KB", size / (1L shl 10).toDouble())
+    else -> "$size B"
 }
 
 @Composable

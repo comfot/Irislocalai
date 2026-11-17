@@ -115,6 +115,11 @@ internal fun MemoryPage(viewModel: MemoryViewModel = viewModel()) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text(
+                text = "详细回忆的向量：${viewModel.embeddingStatus()}；不可用时自动回退本地哈希",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             if (notice != null) {
                 Text(
                     text = notice.orEmpty(),

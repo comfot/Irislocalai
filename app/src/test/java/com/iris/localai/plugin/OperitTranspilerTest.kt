@@ -41,5 +41,6 @@ class OperitTranspilerTest {
         )
         assertTrue(result.warnings.any { it.contains("Compose DSL") })
         assertTrue(result.warnings.any { it.contains("Java/Kotlin") })
+        assertTrue(result.warnings.none { it.contains("无法原生渲染") })
     }
 }

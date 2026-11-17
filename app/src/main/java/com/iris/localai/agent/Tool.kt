@@ -8,4 +8,8 @@ interface Tool {
     val description: String
 
     suspend fun execute(arguments: JsonObject): String
+
+    /** 可选中间进度；默认实现退化为一次性执行。 */
+    suspend fun executeStreaming(arguments: JsonObject, onProgress: suspend (String) -> Unit): String =
+        execute(arguments)
 }

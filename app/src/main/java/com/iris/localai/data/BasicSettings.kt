@@ -21,7 +21,7 @@ enum class WorkspaceLocation(val label: String) {
 enum class ContextStrategy(val label: String, val hint: String) {
     SLIDING_WINDOW("滑动窗口", "只保留最近若干轮对话"),
     TOKEN_BUDGET("Token 预算", "按上下文预算裁剪历史"),
-    SUMMARY("摘要压缩", "压缩较早内容（占位，暂按预算裁剪）"),
+    SUMMARY("摘要压缩", "压缩较早内容并注入历史摘要"),
     KV_SHIFT("KV 位移", "交由引擎丢弃最旧 KV（占位）"),
 }
 

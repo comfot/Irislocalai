@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "iris.vrma_generator",
+  "version": "1.0.1",
+  "main": "main.js",
+  "subpackages": [
+    {
+      "id": "noop",
+      "entry": "empty.js"
+    }
+  ],
+  "display_name": {
+    "zh": "VRMA动作生成",
+    "en": "VRMA Motion Generator"
+  },
+  "description": {
+    "zh": "内置 Text-To-VRMA 运行时与依赖；入口在 设置 › 3D 控制 › VRM 控制 › VRMA 下方。Node 服务由宿主在 PRoot 中管理。",
+    "en": "Bundled Text-To-VRMA runtime; entry under 3D Controls › VRM Control › VRMA."
+  },
+  "enabled_by_default": true
+}

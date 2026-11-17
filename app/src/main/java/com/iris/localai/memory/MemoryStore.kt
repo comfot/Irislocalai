@@ -143,9 +143,13 @@ class MemoryStore(
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val diaryMutex = Mutex()
-    private val vectorCache = ConcurrentHashMap<String, CachedVector>()
+    private val vectorLock = Any()
 
     private val usageFile = File(dir, USAGE)
+    private val vectorsFile = File(dir, VECTORS)
+    private val vectorCache = ConcurrentHashMap<String, CachedVector>().apply {
+        putAll(loadVectors())
+    }
     private val handledFile = File(dir, HANDLED_DIARY)
     private val linksFile = File(dir, LINKS)
     private val usageDays = ConcurrentHashMap.newKeySet<String>().apply { addAll(loadDateSet(usageFile)) }
@@ -164,6 +168,10 @@ class MemoryStore(
 
     private val _links = MutableStateFlow(loadLinks())
     val links: StateFlow<List<MemoryLink>> = _links.asStateFlow()
+
+    /** 当前检索使用的向量来源，用于界面说明是否回退到了本地哈希。 */
+    val embeddingStatus: String
+        get() = embeddingClient?.status()?.label ?: "未配置向量模型"
 
     fun addDiary(entry: DiaryEntry) {
         val now = System.currentTimeMillis()
@@ -470,13 +478,22 @@ class MemoryStore(
         includeMemory: Boolean = true,
         includeKnowledge: Boolean = true,
         maxChars: Int = 420,
+        query: String = "",
     ): String {
         val blocks = mutableListOf<String>()
         val enabledMemories = _memories.value.filter { it.enabled && it.content.isNotBlank() }
+        val tokens = queryTokens(query)
 
         if (includeMemory && enabledMemories.isNotEmpty()) {
             val top = enabledMemories
-                .sortedByDescending { digestScore(it) }
+                .sortedByDescending { item ->
+                    val digest = digestScore(item)
+                    if (tokens.isEmpty()) {
+                        digest
+                    } else {
+                        digest * 0.6f + relevanceScore(item.title, item.content, item.tags, tokens) * 0.4f
+                    }
+                }
                 .take(6)
             val themes = enabledMemories
                 .flatMap { it.tags }
@@ -505,7 +522,15 @@ class MemoryStore(
         if (includeKnowledge) {
             val docs = _knowledge.value
                 .filter { it.enabled && it.title.isNotBlank() }
-                .sortedByDescending { it.updatedAt }
+                .sortedWith(
+                    if (tokens.isEmpty()) {
+                        compareByDescending<KnowledgeDocument> { it.updatedAt }
+                    } else {
+                        compareByDescending<KnowledgeDocument> { doc ->
+                            relevanceScore(doc.title, doc.content, doc.tags, tokens)
+                        }.thenByDescending { doc -> doc.updatedAt }
+                    },
+                )
                 .take(4)
             if (docs.isNotEmpty()) {
                 blocks += "知识库索引：\n" + docs.joinToString("\n") { doc ->
@@ -533,7 +558,12 @@ class MemoryStore(
     ): MemoryRecallResult = withContext(Dispatchers.IO) {
         val cleanQuery = query.trim()
         val wanted = limit.coerceIn(1, 20)
-        val candidates = recallCandidates(includeDiary, includeKnowledge)
+        val allCandidates = recallCandidates(includeDiary, includeKnowledge)
+        val candidates = if (allCandidates.size <= MAX_RECALL_CANDIDATES) {
+            allCandidates
+        } else {
+            allCandidates.sortedByDescending { salience(it) }.take(MAX_RECALL_CANDIDATES)
+        }
         if (candidates.isEmpty()) {
             return@withContext MemoryRecallResult(cleanQuery, "none", emptyList())
         }
@@ -545,6 +575,7 @@ class MemoryStore(
             return@withContext MemoryRecallResult(cleanQuery, "salience", hits)
         }
 
+        var vectorsChanged = false
         val queryVector = run {
             var vector = embeddingClient?.embed(cleanQuery)
                 ?: MemoryVector(HashEmbedding.KEY, HashEmbedding.embed(cleanQuery))
@@ -565,6 +596,7 @@ class MemoryStore(
                                     candidate.text.hashCode(),
                                     values,
                                 )
+                                vectorsChanged = true
                             }
                         }
                     }
@@ -602,9 +634,17 @@ class MemoryStore(
             }
             persistMemories()
         }
+        val status = embeddingClient?.status()
+        val vectorMode = when {
+            queryVector.key != HashEmbedding.KEY -> queryVector.key
+            embeddingClient == null -> "${HashEmbedding.KEY}（回退：未配置向量模型）"
+            status == EmbeddingStatus.READY -> "${HashEmbedding.KEY}（回退：云端向量请求失败）"
+            else -> "${HashEmbedding.KEY}（回退：${status?.label ?: "未知原因"}）"
+        }
+        if (vectorsChanged) persistVectors()
         MemoryRecallResult(
             query = cleanQuery,
-            vectorMode = queryVector.key,
+            vectorMode = vectorMode,
             hits = top.map { (candidate, score) -> candidate.toHit(score) },
         )
     }
@@ -628,7 +668,7 @@ class MemoryStore(
         maxChars: Int = 2400,
         includeMemory: Boolean = true,
         includeKnowledge: Boolean = true,
-    ): String = briefContext(includeMemory, includeKnowledge, maxChars)
+    ): String = briefContext(includeMemory, includeKnowledge, maxChars, query)
 
     /**
      * 记录今天打开过应用；只对“打开过且没有日记”的过去日期生成日记。
@@ -648,15 +688,16 @@ class MemoryStore(
         diaryMutex.withLock {
             val today = LocalDate.now()
             val existingDates = _diary.value.map { it.date }.toSet()
+            // 按最早的积压日期优先，每次最多处理一批，避免一次启动卡顿；
+            // 剩余日期仍留在待处理集合里，下次启动或手动补生成时继续。
             val candidates = usageDays
-                .toList()
-                .filter { raw ->
-                    val date = runCatching { LocalDate.parse(raw) }.getOrNull()
-                    date != null && date.isBefore(today)
-                }
+                .mapNotNull { raw -> runCatching { LocalDate.parse(raw) }.getOrNull() }
+                .filter { it.isBefore(today) }
+                .map { it.toString() }
+                .distinct()
                 .filter { it !in existingDates && it !in handledDiaryDays }
                 .sorted()
-                .takeLast(MAX_DIARY_DAYS)
+                .take(MAX_DIARY_DAYS)
             var created = 0
             candidates.forEach { date ->
                 val entry = runCatching { buildDiary(date) }.getOrNull()
@@ -744,6 +785,10 @@ class MemoryStore(
         val textHash = candidate.text.hashCode()
         val cached = vectorCache[candidate.id]
         if (cached != null && cached.key == key && cached.textHash == textHash) {
+            val now = System.currentTimeMillis()
+            if (now - cached.usedAt > VECTOR_TOUCH_INTERVAL_MS) {
+                vectorCache[candidate.id] = cached.copy(usedAt = now)
+            }
             return cached.values
         }
         if (key != HashEmbedding.KEY) return null
@@ -759,12 +804,20 @@ class MemoryStore(
         }
     }
 
-    private fun lexicalScore(candidate: RecallCandidate, tokens: List<String>): Float {
+    private fun lexicalScore(candidate: RecallCandidate, tokens: List<String>): Float =
+        relevanceScore(candidate.title, candidate.content, candidate.tags, tokens)
+
+    private fun relevanceScore(
+        title: String,
+        content: String,
+        tags: List<String>,
+        tokens: List<String>,
+    ): Float {
         if (tokens.isEmpty()) return 0f
-        val title = candidate.title.lowercase()
-        val body = (candidate.content + " " + candidate.tags.joinToString(" ")).lowercase()
-        val hits = tokens.count { token -> title.contains(token) || body.contains(token) }
-        val titleHits = tokens.count { token -> title.contains(token) }
+        val lowerTitle = title.lowercase()
+        val body = (content + " " + tags.joinToString(" ")).lowercase()
+        val hits = tokens.count { token -> lowerTitle.contains(token) || body.contains(token) }
+        val titleHits = tokens.count { token -> lowerTitle.contains(token) }
         return ((hits.toFloat() / tokens.size) * 0.7f + (titleHits.toFloat() / tokens.size) * 0.3f)
             .coerceIn(0f, 1f)
     }
@@ -973,6 +1026,59 @@ class MemoryStore(
         File(dir, KNOWLEDGE).writeText(json)
     }
 
+    /** 只缓存云端向量；写盘前按当前记忆/日记/知识 id 清理并限制总量。 */
+    private fun persistVectors() {
+        synchronized(vectorLock) {
+            val liveIds = buildSet {
+                _memories.value.forEach { add(it.id) }
+                _diary.value.forEach { add(it.id) }
+                _knowledge.value.forEach { add(it.id) }
+            }
+            vectorCache.keys.retainAll(liveIds)
+            val kept = vectorCache.entries
+                .sortedByDescending { it.value.usedAt }
+                .take(MAX_VECTOR_CACHE)
+            vectorCache.keys.retainAll(kept.map { it.key }.toSet())
+            val vectors = buildJsonArray {
+                kept.forEach { (id, cached) ->
+                    addJsonObject {
+                        put("id", id)
+                        put("key", cached.key)
+                        put("hash", cached.textHash)
+                        put("usedAt", cached.usedAt)
+                        put("values", buildJsonArray { cached.values.forEach { add(it) } })
+                    }
+                }
+            }
+            runCatching {
+                vectorsFile.parentFile?.mkdirs()
+                vectorsFile.writeText(JsonObject(mapOf("vectors" to vectors)).toString())
+            }
+        }
+    }
+
+    private fun loadVectors(): Map<String, CachedVector> {
+        if (!vectorsFile.isFile) return emptyMap()
+        return runCatching {
+            Json.parseToJsonElement(vectorsFile.readText()).jsonObject["vectors"]
+                ?.jsonArray
+                ?.mapNotNull { element ->
+                    val obj = element as? JsonObject ?: return@mapNotNull null
+                    val id = obj.string("id") ?: return@mapNotNull null
+                    val key = obj.string("key") ?: return@mapNotNull null
+                    val hash = obj.int("hash") ?: return@mapNotNull null
+                    val values = (obj["values"] as? JsonArray)
+                        ?.mapNotNull { (it as? JsonPrimitive)?.floatOrNull }
+                        ?.toFloatArray()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: return@mapNotNull null
+                    id to CachedVector(key, hash, values, obj.long("usedAt") ?: 0L)
+                }
+                ?.toMap()
+                .orEmpty()
+        }.getOrDefault(emptyMap())
+    }
+
     /** 备份用：记忆目录下的已知 JSON 文件。 */
     fun snapshotFiles(): Map<String, ByteArray> = FILE_NAMES.mapNotNull { name ->
         File(dir, name).takeIf { it.isFile }?.let { name to it.readBytes() }
@@ -996,6 +1102,7 @@ class MemoryStore(
     /** 从磁盘重新加载全部记忆数据，供备份恢复后刷新界面。 */
     fun reload() {
         vectorCache.clear()
+        vectorCache.putAll(loadVectors())
         _diary.value = loadDiary()
         _memories.value = loadMemories()
         _knowledge.value = loadKnowledge()
@@ -1128,6 +1235,7 @@ class MemoryStore(
         val key: String,
         val textHash: Int,
         val values: FloatArray,
+        val usedAt: Long = System.currentTimeMillis(),
     )
 
     private fun JsonObject.string(key: String): String? =
@@ -1158,6 +1266,7 @@ class MemoryStore(
         const val MEMORIES = "memories.json"
         const val KNOWLEDGE = "knowledge.json"
         const val LINKS = "links.json"
+        const val VECTORS = "vectors.json"
         const val USAGE = "usage_days.json"
         const val HANDLED_DIARY = "diary_handled.json"
         val FILE_NAMES = listOf(DIARY, MEMORIES, KNOWLEDGE, LINKS, USAGE, HANDLED_DIARY)
@@ -1166,15 +1275,20 @@ class MemoryStore(
         const val DAY_MS = 86_400_000L
         const val HALF_LIFE_DAYS = 14f
         const val MAX_DIARY_DAYS = 14
+        const val MAX_RECALL_CANDIDATES = 800
+        const val MAX_VECTOR_CACHE = 1200
+        const val VECTOR_TOUCH_INTERVAL_MS = 3_600_000L
         val RECALL_PATTERN = Regex(
             "记得|记不记得|还记得|回忆|回想|上次|上回|之前|以前|曾经|那天|当时|说过|提到过",
             RegexOption.IGNORE_CASE,
         )
         val POSITIVE_WORDS = listOf(
             "开心", "高兴", "喜欢", "幸福", "顺利", "完成", "成功", "惊喜", "期待", "温暖",
+            "满足", "放松", "兴奋", "感动", "安心", "有趣", "可爱", "谢谢", "棒", "舒服",
         )
         val NEGATIVE_WORDS = listOf(
             "难过", "伤心", "生气", "愤怒", "害怕", "焦虑", "失败", "累", "烦", "失望",
+            "疲惫", "委屈", "孤独", "烦躁", "担心", "压力", "头疼", "难受", "崩溃", "无聊",
         )
     }
 }

@@ -1,5 +1,8 @@
 package com.iris.localai.ui.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.localai.plugin.InstalledPlugin
+import com.iris.localai.plugin.PluginWidgetService
+import com.iris.localai.plugin.pluginRuntimeToolName
 import com.iris.localai.plugin.resolveUiModuleId
 import kotlinx.coroutines.delay
 
@@ -86,19 +91,19 @@ internal fun PluginPage(
                     onClick = { importer.launch("*/*") },
                     enabled = !busy,
                     modifier = Modifier.weight(1f),
-                ) { Text("导入 ZIP") }
+                ) { Text("导入 ZIP", maxLines = 1) }
                 Button(
                     onClick = { showUrlDialog = true },
                     enabled = !busy,
                     modifier = Modifier.weight(1f),
-                ) { Text("从 URL 安装") }
+                ) { Text("URL 安装", maxLines = 1) }
                 Button(
                     onClick = onOpenMarket,
                     modifier = Modifier.weight(1f),
-                ) { Text("插件市场") }
+                ) { Text("插件市场", maxLines = 1) }
             }
             Text(
-                text = "沙箱限制：插件只能读写自身目录/配置目录与访问公网 HTTP；Java 仅提供 File/Files/Base64/MessageDigest/集合等白名单兼容层，任意 Java 反射与接口代理不可用；Compose DSL UI 可通过兼容渲染器打开（常用组件支持，复杂组件会降级）。插件内嵌套调用自身工具暂不支持。请只安装可信来源的插件。",
+                text = "沙箱边界：插件 JS 默认只能读写自身目录与配置目录，兼容伪工具也限制在这两个目录；HTTP 仅公网（响应 1MB、下载 128MB），伪工具权限可在 设置 › 智能体 配置。Java 提供白名单兼容层，并支持插件目录内 dex 与 PRoot 终端（能力更强，请只安装可信插件）。Compose DSL UI 可渲染，复杂组件会降级；插件内嵌套调用自身工具暂不支持。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -209,15 +214,34 @@ internal fun PluginPage(
                             }
                             TextButton(
                                 onClick = {
-                                    openUi = Triple(plugin, registered.resolveUiModuleId(ui), ui.title.ifBlank { ui.id })
+                                    val moduleId = registered.resolveUiModuleId(ui)
+                                    if (ui.type == "desktop_widget") {
+                                        if (Settings.canDrawOverlays(context)) {
+                                            PluginWidgetService.start(
+                                                context,
+                                                plugin.id,
+                                                moduleId,
+                                                ui.title.ifBlank { ui.id },
+                                            )
+                                        } else {
+                                            context.startActivity(
+                                                Intent(
+                                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                    Uri.parse("package:${context.packageName}"),
+                                                ),
+                                            )
+                                        }
+                                    } else {
+                                        openUi = Triple(plugin, moduleId, ui.title.ifBlank { ui.id })
+                                    }
                                 },
                                 enabled = plugin.enabled,
-                            ) { Text("打开") }
+                            ) { Text(if (ui.type == "desktop_widget") "浮窗" else "打开") }
                         }
                     }
                     registered.aiProviders.forEach { provider ->
                         Text(
-                            text = "AI Provider：$provider（已注册，未接入模型选择）",
+                            text = "AI Provider：$provider（已接入模型提供商，请在模型设置中选择）",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -251,6 +275,11 @@ internal fun PluginPage(
                         plugin.tools.forEach { tool ->
                             Column(modifier = Modifier.padding(start = 8.dp, bottom = 6.dp)) {
                                 Text(tool.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    text = "来源：插件 ${plugin.name} · 运行时名 ${pluginRuntimeToolName(plugin.id, tool.name)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
                                 Text(
                                     text = tool.description.ifBlank { "无描述" },
                                     style = MaterialTheme.typography.labelSmall,

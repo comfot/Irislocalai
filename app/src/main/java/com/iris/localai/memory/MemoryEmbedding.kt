@@ -25,6 +25,18 @@ data class MemoryVector(
     val values: FloatArray,
 )
 
+/** Embedding 角色当前的可用状态，用于向用户解释为何回退本地哈希向量。 */
+enum class EmbeddingStatus(val label: String) {
+    READY("云端向量就绪"),
+    NO_PROFILE("未选择模型档案"),
+    NO_PROVIDER("未找到 Embedding 提供商"),
+    ROLE_DISABLED("Embedding 角色未启用"),
+    NO_MODEL("Embedding 角色缺少模型名"),
+    NOT_CLOUD("本地提供商不支持向量接口"),
+    UNSUPPORTED_VENDOR("提供商不支持 /embeddings"),
+    NO_KEY("缺少 API Key"),
+}
+
 /**
  * 本地特征哈希向量：中文按字/二元/三元组切分，英文按词切分，
  * 带符号哈希到固定维度并做 L2 归一化。无需模型即可做近似的向量召回。
@@ -88,6 +100,22 @@ class MemoryEmbeddingClient(
     private val profileProvider: () -> ModelProfile?,
     private val providerResolver: (ModelProfile) -> ModelProvider?,
 ) {
+
+    /** 不发起请求，只解析当前档案配置能否用于云端向量。 */
+    fun status(): EmbeddingStatus {
+        val profile = profileProvider() ?: return EmbeddingStatus.NO_PROFILE
+        val provider = providerResolver(profile) ?: return EmbeddingStatus.NO_PROVIDER
+        val role = profile.role(ModelRole.EMBEDDING)
+        if (!role.enabled) return EmbeddingStatus.ROLE_DISABLED
+        val model = role.modelName.trim().ifBlank {
+            provider.models.firstOrNull { it.enabled }?.name.orEmpty()
+        }
+        if (model.isBlank()) return EmbeddingStatus.NO_MODEL
+        if (provider.kind != com.iris.localai.data.ProviderKind.CLOUD) return EmbeddingStatus.NOT_CLOUD
+        if (provider.vendor !in COMPATIBLE_VENDORS) return EmbeddingStatus.UNSUPPORTED_VENDOR
+        if (provider.apiKey.isBlank()) return EmbeddingStatus.NO_KEY
+        return EmbeddingStatus.READY
+    }
 
     suspend fun embed(text: String): MemoryVector? =
         embedBatch(listOf(text))?.firstOrNull()

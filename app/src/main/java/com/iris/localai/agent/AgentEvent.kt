@@ -12,6 +12,8 @@ data class AgentStep(
     /** 本轮工具调用前的思考内容，按轮次展示在步骤卡片上方。 */
     val reasoning: String = "",
     val reasoningMs: Long = 0L,
+    /** 执行中的中间进度；最终结果写入 result 后不再展示。 */
+    val progress: String = "",
 )
 
 sealed interface AgentEvent {
@@ -22,6 +24,8 @@ sealed interface AgentEvent {
     /** 云端模型返回的推理增量，与正文分开保存，界面上折叠展示。 */
     data class Reasoning(val text: String) : AgentEvent
     data class StepFinished(val step: AgentStep) : AgentEvent
+    /** 工具执行中的中间进度，用于步骤卡片实时展示。 */
+    data class ToolProgress(val tool: String, val text: String) : AgentEvent
     data class Finished(val text: String) : AgentEvent
     data class Failed(val message: String) : AgentEvent
 }

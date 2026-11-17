@@ -11,6 +11,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +61,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -157,7 +161,12 @@ internal fun MessageBubble(
         else AssistantMessageParser.parse(message.text)
     }
     val displayText = display.mainText
-    val showTyping = !isUser && displayText.isBlank() && message.steps.isEmpty() && isGenerating
+    val visibleSteps = remember(message.steps) {
+        message.steps.filterNot {
+            it.tool == "motion_control" || it.tool == "expression_control" || it.tool == "vrma_generate"
+        }
+    }
+    val showTyping = !isUser && displayText.isBlank() && visibleSteps.isEmpty() && isGenerating
     val typingLabel = if (message.reasoning.isNotBlank()) "思考中…" else "正在生成…"
 
     Column(
@@ -201,7 +210,7 @@ internal fun MessageBubble(
                 AssistantStatusCard(status)
             }
         }
-        message.steps.forEach { step -> AgentStepCard(step) }
+        visibleSteps.forEach { step -> AgentStepCard(step) }
     }
 }
 
@@ -371,6 +380,36 @@ internal fun SelectorChip(
                     },
                 )
             }
+        }
+    }
+}
+
+@Composable
+internal fun PluginInputMenuRow(
+    viewModel: ChatViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val toggles by viewModel.inputMenuToggles.collectAsStateWithLifecycle()
+    if (toggles.isEmpty()) return
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        toggles.forEach { toggle ->
+            FilterChip(
+                selected = toggle.checked,
+                onClick = { viewModel.toggleInputMenu(toggle) },
+                label = {
+                    Text(
+                        text = toggle.title.ifBlank { toggle.id },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+            )
         }
     }
 }

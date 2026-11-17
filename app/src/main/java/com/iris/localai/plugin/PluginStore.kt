@@ -47,6 +47,69 @@ class PluginStore(private val context: Context) {
             .orEmpty()
     }
 
+    /** 随应用分发的内置插件：首次启动复制到插件目录，用户卸载后不再自动重装。 */
+    fun installBundled() {
+        val prefs = context.getSharedPreferences("iris_builtin_plugins", Context.MODE_PRIVATE)
+        val names = runCatching { context.assets.list(BUILTIN_DIR) }.getOrNull().orEmpty()
+        var changed = false
+        names.forEach { name ->
+            val key = "installed_$name"
+            val target = File(root, name)
+            val bundledVersion = runCatching {
+                val text = context.assets.open("$BUILTIN_DIR/$name/manifest.json")
+                    .bufferedReader().use { it.readText() }
+                PluginManifestParser.parse(text).version
+            }.getOrDefault("")
+            val installedVersion = runCatching {
+                findManifest(target)?.let { PluginManifestParser.parse(it.readText()).version }
+            }.getOrNull().orEmpty()
+            val meta = readMeta(target)
+            val isBuiltin = meta?.source == "builtin"
+            val shouldInstall = !target.exists() && !prefs.getBoolean(key, false)
+            val shouldUpdate = target.exists() && isBuiltin && bundledVersion != installedVersion
+            if (shouldInstall || shouldUpdate) {
+                val previousEnabled = meta?.enabled
+                runCatching {
+                    if (target.exists()) target.deleteRecursively()
+                    copyAssetDir("$BUILTIN_DIR/$name", target)
+                }.onSuccess {
+                    writeMeta(
+                        target,
+                        PluginMeta(
+                            enabled = previousEnabled ?: true,
+                            installedAt = System.currentTimeMillis(),
+                            source = "builtin",
+                        ),
+                    )
+                    changed = true
+                }
+            }
+            prefs.edit().putBoolean(key, true).apply()
+        }
+        if (changed) {
+            refresh()
+            onToolsChanged?.invoke()
+        }
+    }
+
+    private fun copyAssetDir(assetPath: String, target: File) {
+        target.mkdirs()
+        val children = context.assets.list(assetPath).orEmpty()
+        children.forEach { child ->
+            val childAsset = "$assetPath/$child"
+            val childTarget = File(target, child)
+            val grandChildren = runCatching { context.assets.list(childAsset) }.getOrNull().orEmpty()
+            if (grandChildren.isNotEmpty()) {
+                copyAssetDir(childAsset, childTarget)
+            } else {
+                childTarget.parentFile?.mkdirs()
+                context.assets.open(childAsset).use { input ->
+                    childTarget.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+        }
+    }
+
     suspend fun installZip(
         bytes: ByteArray,
         source: String,
@@ -169,8 +232,7 @@ class PluginStore(private val context: Context) {
         resolve(pluginDir(plugin), resource.path)
 
     fun runtimeName(binding: PluginToolBinding): String =
-        "plugin_" + binding.plugin.id.map { if (it.isLetterOrDigit()) it else '_' }.joinToString("") +
-            "_" + binding.tool.name.map { if (it.isLetterOrDigit() || it == '_') it else '_' }.joinToString("")
+        pluginRuntimeToolName(binding.plugin.id, binding.tool.name)
 
     private fun load(dir: File): InstalledPlugin? = runCatching {
         val manifestFile = findManifest(dir) ?: return null
@@ -306,6 +368,7 @@ class PluginStore(private val context: Context) {
     )
 
     private companion object {
+        const val BUILTIN_DIR = "builtin_plugins"
         const val PLUGINS_DIR = "plugins"
         const val META = "iris-plugin.json"
         const val MAX_PACKAGE_BYTES = 64L * 1024 * 1024

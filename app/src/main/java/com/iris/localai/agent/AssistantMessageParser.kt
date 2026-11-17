@@ -30,6 +30,10 @@ object AssistantMessageParser {
     private val mainClose = Regex("(?is)</maintext\\s*>")
     private val htmlTag = Regex("(?is)<[^>]+>")
     private val detailsTag = Regex("(?is)</?details[^>]*>")
+    private val performanceTag = Regex("(?is)<performance\\b[^>]*>.*?</performance\\s*>|<performance\\b[^>]*/>")
+    private val vrmaMotionTag = Regex("(?is)<vrma_motion\\b[^>]*>.*?</vrma_motion\\s*>|<vrma_motion\\b[^>]*/>")
+    private val openPerformanceTail = Regex("(?is)<performance\\b[^>]*>.*$")
+    private val openVrmaMotionTail = Regex("(?is)<vrma_motion\\b[^>]*>.*$")
     private val danglingTag = Regex("(?is)<[^>]*$")
 
     fun parse(raw: String): AssistantDisplay {
@@ -59,10 +63,22 @@ object AssistantMessageParser {
             }
         }
 
-        val main = mainRaw
+        val cleaned = mainRaw
             .replace(mainOpen, "")
             .replace(mainClose, "")
             .replace(detailsTag, "")
+            .replace(performanceTag, "")
+            .replace(vrmaMotionTag, "")
+        val cleanedByVrma = if (cleaned.contains("</vrma_motion", ignoreCase = true)) {
+            cleaned
+        } else {
+            cleaned.replace(openVrmaMotionTail, "")
+        }
+        val main = (if (cleanedByVrma.contains("</performance", ignoreCase = true)) {
+            cleanedByVrma
+        } else {
+            cleanedByVrma.replace(openPerformanceTail, "")
+        })
             .replace(danglingTag, "")
             .trim()
         return AssistantDisplay(main, statusRaw?.takeIf { it.isNotBlank() }?.let(::parseStatus))

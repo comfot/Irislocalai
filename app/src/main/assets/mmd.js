@@ -275,13 +275,13 @@
     playMotion(url, loop) {
       return playMotion(url, { loop: loop !== false, restart: true })
     },
-    playAsset(path, loop) {
+    playAsset(path, loop, holdIdle) {
       if (!path) return Promise.resolve(false)
       if (!model || !window.__irisMmdReady) {
-        pendingAsset = { path: String(path), loop: !!loop }
+        pendingAsset = { path: String(path), loop: !!loop, holdIdle: !!holdIdle }
         return Promise.resolve(true)
       }
-      return playAssetNow(path, loop)
+      return playAssetNow(path, loop, holdIdle)
     },
     stop() {
       pendingAsset = null
@@ -445,7 +445,8 @@
     }
   }
 
-  function playAssetNow(path, loop) {
+  function playAssetNow(path, loop, holdIdle) {
+    holdIdleMotion = !!holdIdle
     const url = motionAssetBase + String(path).split('/').map(encodeURIComponent).join('/')
     return playMotion(url, { loop: !!loop, restart: true })
   }
@@ -465,6 +466,7 @@
   let onceDeadline = 0
   let pendingHold = false
   let idleTimer = 0
+  let holdIdleMotion = false
   let cameraVmd = null
   let cameraHome = null
   let shotTransition = null
@@ -583,6 +585,7 @@
     currentMotionUrl = ''
     onceDeadline = 0
     heldPose = null
+    holdIdleMotion = false
     try { model.setRuntimeAnimation(null) } catch (_) { }
     if (freeze) {
       heldPose = from
@@ -596,8 +599,9 @@
 
   function scheduleIdle(delay) {
     clearTimeout(idleTimer)
+    if (holdIdleMotion) return
     idleTimer = setTimeout(() => {
-      if (currentMotionUrl || !model) return
+      if (currentMotionUrl || !model || holdIdleMotion) return
       const url = idleMotionUrl || motionUrl
       if (url) playMotion(url, { loop: true })
     }, delay)
@@ -903,7 +907,7 @@
       const dt = Math.min(0.05, engine.getDeltaTime() / 1000)
       if (onceDeadline > 0 && performance.now() >= onceDeadline) {
         onceDeadline = 0
-        const freeze = pendingHold
+        const freeze = pendingHold || holdIdleMotion
         stopMotion(freeze, true)
         if (!freeze) scheduleIdle(180)
         return
@@ -968,7 +972,7 @@
       if (pendingAsset) {
         const pending = pendingAsset
         pendingAsset = null
-        await playAssetNow(pending.path, pending.loop)
+        await playAssetNow(pending.path, pending.loop, pending.holdIdle)
       }
     } catch (error) {
       console.error('mmd load error', error)

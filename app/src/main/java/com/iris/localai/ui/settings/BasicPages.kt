@@ -353,28 +353,57 @@ internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
         }
 
         ExpandableSettingsCard(
-            title = "工具（${viewModel.tools.size}）",
-            summary = "开关与每个工具的权限",
+            title = "工具（${viewModel.toolEntries.size}）",
+            summary = "开关、来源与每个工具的权限",
         ) {
-            viewModel.tools.forEach { tool ->
+            viewModel.toolEntries.forEach { entry ->
                 ToolSettingRow(
-                    tool = tool,
-                    enabled = tool.name in settings.enabledToolIds,
-                    permission = settings.toolPermissions[tool.name] ?: ToolPermission.ALLOW,
+                    tool = entry.tool,
+                    sourceLabel = entry.source.label,
+                    enabled = entry.tool.name in settings.enabledToolIds,
+                    permission = settings.toolPermissions[entry.tool.name] ?: ToolPermission.ALLOW,
                     onToggle = { enabled ->
                         viewModel.update {
                             it.copy(
                                 enabledToolIds = if (enabled) {
-                                    it.enabledToolIds + tool.name
+                                    it.enabledToolIds + entry.tool.name
                                 } else {
-                                    it.enabledToolIds - tool.name
+                                    it.enabledToolIds - entry.tool.name
                                 },
                             )
                         }
                     },
                     onPermission = { permission ->
                         viewModel.update {
-                            it.copy(toolPermissions = it.toolPermissions + (tool.name to permission))
+                            it.copy(toolPermissions = it.toolPermissions + (entry.tool.name to permission))
+                        }
+                    },
+                )
+            }
+        }
+
+        ExpandableSettingsCard(
+            title = "插件兼容工具（${compatToolSettings.size}）",
+            summary = "插件通过 toolCall 调用的伪工具，仅限插件目录与配置目录",
+        ) {
+            Text(
+                text = "这些工具不进入 Agent 工具表，模型不能直接调用；它们只允许访问插件目录/配置目录，HTTP 仅公网地址。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            compatToolSettings.forEach { item ->
+                CompatToolSettingRow(
+                    name = item.first,
+                    summary = item.second,
+                    permission = settings.toolPermissions["compat:${item.first}"]
+                        ?: settings.toolPermissions[item.first]
+                        ?: ToolPermission.ALLOW,
+                    onPermission = { permission ->
+                        viewModel.update {
+                            it.copy(
+                                toolPermissions = it.toolPermissions +
+                                    ("compat:${item.first}" to permission),
+                            )
                         }
                     },
                 )
@@ -494,11 +523,17 @@ internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
                 enabled = settings.memoryEnabled,
             ) { on -> viewModel.update { it.copy(memoryAutoDiary = on) } }
             BasicSwitchRow(
-                title = "归档时自动沉淀记忆",
-                summary = "归档会话时提取稳定事实、偏好与事件；模型不可用时回退规则提取",
+                title = "自动沉淀记忆",
+                summary = "每轮回复后与归档时增量整理稳定事实、偏好与事件；模型不可用时回退规则提取",
                 checked = settings.memoryAutoSave,
                 enabled = settings.memoryEnabled,
             ) { on -> viewModel.update { it.copy(memoryAutoSave = on) } }
+            BasicSwitchRow(
+                title = "云端模型自动沉淀",
+                summary = "允许把最近对话发送给云端语言模型做自动整理；关闭时仅本地模型自动沉淀，归档与手动整理不受限",
+                checked = settings.memoryAutoSaveCloud,
+                enabled = settings.memoryEnabled && settings.memoryAutoSave,
+            ) { on -> viewModel.update { it.copy(memoryAutoSaveCloud = on) } }
             BasicSwitchRow(
                 title = "对话中检索知识库",
                 summary = "回答前检索本地文档",
@@ -516,6 +551,7 @@ internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
 @Composable
 private fun ToolSettingRow(
     tool: Tool,
+    sourceLabel: String,
     enabled: Boolean,
     permission: ToolPermission,
     onToggle: (Boolean) -> Unit,
@@ -531,6 +567,11 @@ private fun ToolSettingRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(tool.name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = sourceLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
             Text(
                 text = tool.description,
                 style = MaterialTheme.typography.labelSmall,
@@ -556,6 +597,57 @@ private fun ToolSettingRow(
         Switch(checked = enabled, onCheckedChange = onToggle)
     }
 }
+
+@Composable
+private fun CompatToolSettingRow(
+    name: String,
+    summary: String,
+    permission: ToolPermission,
+    onPermission: (ToolPermission) -> Unit,
+) {
+    var menu by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Box {
+            TextButton(onClick = { menu = true }) { Text(permission.label) }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                ToolPermission.entries.forEach { item ->
+                    DropdownMenuItem(
+                        text = { Text(item.label) },
+                        onClick = {
+                            onPermission(item)
+                            menu = false
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val compatToolSettings = listOf(
+    "read_file" to "读取插件目录或配置目录内的文本文件（最大 4 MB）",
+    "write_file" to "写入插件目录或配置目录内的文本文件（最大 2 MB）",
+    "list_files" to "列出插件目录或配置目录内的文件",
+    "make_directory" to "在插件目录或配置目录内创建目录",
+    "delete_file" to "删除插件目录或配置目录内的文件/目录",
+    "http_request" to "请求公网 HTTP/HTTPS 地址（响应最大 1 MB）",
+    "download_file" to "下载公网文件到插件目录（最大 128 MB）",
+)
 
 @Composable
 private fun BasicSwitchRow(

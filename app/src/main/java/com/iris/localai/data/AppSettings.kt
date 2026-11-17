@@ -79,7 +79,7 @@ data class AppSettings(
     val motionEndpoint: String = "",
     val motionApiKey: String = "",
     val motionDurationSeconds: Int = 5,
-    val motionAutoIdle: Boolean = false,
+    val motionAutoIdle: Boolean = true,
     val motionInCall: Boolean = true,
     /** 0=不修正，1=前后翻转（z 取反），2=左右翻转（x 取反），3=前后+左右。 */
     val motionAxisFix: Int = 1,
@@ -155,6 +155,7 @@ data class AppSettings(
     val memorySuggest: Boolean = true,
     val memoryAutoDiary: Boolean = true,
     val memoryAutoSave: Boolean = true,
+    val memoryAutoSaveCloud: Boolean = false,
 
     // 语音
     val ttsEngine: VoiceEngineType = VoiceEngineType.SYSTEM,

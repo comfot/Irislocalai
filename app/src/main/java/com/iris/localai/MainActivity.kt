@@ -24,6 +24,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         val graph = (application as IrisApp).graph
+        graph.pluginRuntime.notifyAppLifecycle("activity_on_create")
         if (graph.settings.current.motionServiceAutoStart) {
             val imageId = graph.code.settings.value.imageId
             if (imageId.isNotBlank()) {
@@ -60,11 +61,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        val wasVisible = AppForeground.visible
         AppForeground.visible = true
+        val graph = (application as IrisApp).graph
+        if (!wasVisible) graph.pluginRuntime.notifyAppLifecycle("application_on_foreground")
+        graph.pluginRuntime.notifyAppLifecycle("activity_on_resume")
     }
 
     override fun onPause() {
         AppForeground.visible = false
+        val graph = (application as IrisApp).graph
+        graph.pluginRuntime.notifyAppLifecycle("activity_on_pause")
+        graph.pluginRuntime.notifyAppLifecycle("application_on_background")
         super.onPause()
     }
 }

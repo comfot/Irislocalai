@@ -35,7 +35,7 @@ class MotionControlTool(
         "让 3D 角色播放动作或舞蹈，按当前模型类型自动使用 VRM 或 MMD 绑定。" +
             "必须带 arguments.action，调用示例：" +
             "<tool_call>{\"name\":\"motion_control\",\"arguments\":{\"action\":\"wave\"}}</tool_call>。" +
-            "action 可为绑定别名（idle/wave/dance/nod/greet）、实际动作名，或 list 查看当前绑定。" +
+            "action 可为绑定别名或实际动作名；不确定时先传 action=list 查看当前绑定，不要假设 dance/wave 一定存在。" +
             "VRM 根据当前引擎播放 HAST-SEC 技能或本地 VRMA 动作，MMD 播放 VMD 素材。"
 
     override suspend fun execute(arguments: JsonObject): String {
@@ -70,7 +70,9 @@ class MotionControlTool(
     }
 
     private fun playMmd(requested: String): String {
-        val resolved = bindings.resolve(Model3DKind.MMD, requested) ?: requested
+        val resolved = bindings.resolve(Model3DKind.MMD, requested)
+            ?: looseBinding(Model3DKind.MMD, requested)
+            ?: requested
         val asset = resolveMmdAsset(resolved)
             ?: resolveMmdAsset(requested)
             ?: assets.assets.value.firstOrNull {
@@ -90,6 +92,7 @@ class MotionControlTool(
             path = asset.id,
             loop = asset.category == MotionCategory.DANCE,
             bgmPath = asset.bgm?.absolutePath,
+            holdIdle = asset.name.contains("坐"),
         )
         val bgm = asset.bgm?.let { "，配乐 ${it.name}" }.orEmpty()
         val suffix = if (MotionBridge.hasMmdView()) "" else "（当前没有显示中的 MMD 模型）"
@@ -100,7 +103,9 @@ class MotionControlTool(
         if (settings.current.vrmMotionEngine == VrmMotionEngine.VRMA) {
             return playVrma(requested)
         }
-        val resolved = bindings.resolve(Model3DKind.VRM, requested) ?: requested
+        val resolved = bindings.resolve(Model3DKind.VRM, requested)
+            ?: looseBinding(Model3DKind.VRM, requested)
+            ?: requested
         val catalog = runCatching { clips.catalog() }.getOrDefault(emptyList())
         val action = when {
             catalog.isEmpty() -> resolved
@@ -121,15 +126,43 @@ class MotionControlTool(
     }
 
     private fun playVrma(requested: String): String {
-        val resolved = bindings.resolve(Model3DKind.VRM, requested) ?: requested
-        val asset = vrma.findByName(resolved) ?: vrma.findByName(requested)
+        val resolved = bindings.resolve(Model3DKind.VRM, requested)
+            ?: looseBinding(Model3DKind.VRM, requested)
+            ?: requested
+        val asset = vrma.findByName(resolved)
+            ?: vrma.findByName(requested)
+            ?: vrma.assets.value.firstOrNull {
+                val lower = it.name.lowercase()
+                when (requested.lowercase()) {
+                    "dance", "跳舞", "舞蹈" -> lower.contains("舞") || lower.contains("dance")
+                    "wave", "挥手", "摆手", "打招呼" ->
+                        lower.contains("挥") || lower.contains("wave") || lower.contains("招手")
+                    "nod", "点头" -> lower.contains("点头") || lower.contains("nod")
+                    "idle", "待机", "stand" -> lower.contains("待机") || lower.contains("idle")
+                    else -> false
+                }
+            }
         if (asset == null) {
             return "VRMA 动作未找到：$resolved；请在「设置 › 3D 控制 › 控制底层 › VRM 控制」导入 .vrma 并添加绑定"
         }
-        MotionBridge.playVrma(vrma.virtualUrl(asset))
+        MotionBridge.playVrma(vrma.virtualUrl(asset), holdIdle = asset.name.contains("坐"))
         val suffix = if (MotionBridge.hasMotionView() || MotionBridge.hasActiveView()) ""
         else "（当前没有显示中的 VRM 角色，请切到生活空间）"
         return "已播放 VRMA 动作：${asset.name}$suffix"
+    }
+
+    private fun looseBinding(kind: Model3DKind, requested: String): String? {
+        val wanted = requested.trim().lowercase()
+        val keywords = when (wanted) {
+            "dance", "跳舞", "舞蹈" -> listOf("舞", "dance")
+            "wave", "挥手", "摆手", "打招呼", "greet" -> listOf("挥", "摆手", "招呼", "wave", "greet")
+            "nod", "点头" -> listOf("点头", "nod")
+            "idle", "待机", "stand" -> listOf("待机", "idle", "站")
+            else -> listOf(wanted)
+        }
+        return bindings.bindings(kind).entries.firstOrNull { (alias, action) ->
+            keywords.any { alias.contains(it, ignoreCase = true) || action.contains(it, ignoreCase = true) }
+        }?.value
     }
 
     private fun resolveMmdAsset(value: String): MotionAsset? {

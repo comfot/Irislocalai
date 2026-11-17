@@ -506,9 +506,10 @@ private fun ProviderCard(
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ProviderKind.entries.forEach { kind ->
+                        ProviderKind.entries.filter { it != ProviderKind.PLUGIN }.forEach { kind ->
                             FilterChip(
                                 selected = provider.kind == kind,
+                                enabled = provider.kind != ProviderKind.PLUGIN,
                                 onClick = {
                                     onUpdate(
                                         provider.copy(
@@ -985,7 +986,7 @@ private fun AddProviderDialog(
                     singleLine = true,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ProviderKind.entries.forEach { item ->
+                    ProviderKind.entries.filter { it != ProviderKind.PLUGIN }.forEach { item ->
                         FilterChip(
                             selected = kind == item,
                             onClick = { kind = item },

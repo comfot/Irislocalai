@@ -1,20 +1,37 @@
 package com.iris.localai.ui.settings
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,7 +52,6 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
@@ -50,6 +66,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,7 +78,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +91,9 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -80,11 +106,16 @@ import java.io.File
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.data.RemoteFetch
 import com.iris.localai.plugin.InstalledPlugin
+import com.iris.localai.ui.chat.PluginAiChatBridge
 import com.iris.localai.ui.chat.WorkMarkdown
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emptyFlow
@@ -137,6 +168,140 @@ private val LocalPluginUiHandlerCall =
     staticCompositionLocalOf<suspend (String, String) -> String> {
         { _, _ -> "null" }
     }
+
+private val LocalPluginUiAssetRoots = staticCompositionLocalOf<List<File>> { emptyList() }
+
+@Composable
+internal fun PluginWidgetSurface(
+    plugin: InstalledPlugin,
+    moduleId: String,
+    title: String,
+    renderUi: suspend () -> Result<String>,
+    dispatchUiEvent: suspend (String, String?) -> Result<String>,
+    callUiController: suspend (String, String, String, String) -> String = { _, _, _, _ -> "" },
+    callUiHandler: suspend (String, String) -> String = { _, _ -> "null" },
+    onClose: () -> Unit,
+    onDrag: (Float, Float) -> Unit = { _, _ -> },
+) {
+    val context = LocalContext.current
+    val assetRoots = remember(context, plugin.directory, plugin.id) {
+        listOfNotNull(
+            safePluginUiAssetDir(File(context.filesDir, "plugins"), plugin.directory),
+            safePluginUiAssetDir(File(context.filesDir, "plugin_config"), plugin.id),
+        )
+    }
+    val scope = rememberCoroutineScope()
+    var tree by remember(plugin.id, moduleId) { mutableStateOf<PluginUiNode?>(null) }
+    var error by remember(plugin.id, moduleId) { mutableStateOf<String?>(null) }
+    var busy by remember(plugin.id, moduleId) { mutableStateOf(false) }
+    var onLoadStarted by remember(plugin.id, moduleId) { mutableStateOf(false) }
+    val dragModifier = Modifier.pointerInput(Unit) {
+        detectDragGestures { change, drag ->
+            change.consume()
+            onDrag(drag.x, drag.y)
+        }
+    }
+
+    fun apply(raw: String) {
+        runCatching { parsePluginUiTree(raw) }
+            .onSuccess { tree = it; error = null }
+            .onFailure { error = it.message ?: "UI 解析失败" }
+    }
+
+    fun load() {
+        busy = true
+        scope.launch {
+            renderUi().onSuccess(::apply).onFailure { error = it.message ?: "UI 渲染失败" }
+            busy = false
+        }
+    }
+
+    fun dispatch(handler: String?, valueJson: String? = null) {
+        if (handler.isNullOrBlank()) return
+        busy = true
+        scope.launch {
+            dispatchUiEvent(handler, valueJson).onSuccess(::apply)
+                .onFailure { error = it.message ?: "UI 事件执行失败" }
+            busy = false
+        }
+    }
+
+    LaunchedEffect(plugin.id, moduleId) { load() }
+    LaunchedEffect(tree) {
+        if (!onLoadStarted) {
+            val handler = tree?.let { findUiHandler(it, "onLoad") }
+            if (handler != null) {
+                onLoadStarted = true
+                dispatch(handler)
+            }
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 6.dp,
+        shadowElevation = 18.dp,
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(dragModifier)
+                    .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title.ifBlank { plugin.name },
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "插件浮窗 · ${plugin.name}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = { load() }, enabled = !busy) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = "刷新")
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.Close, contentDescription = "关闭浮窗")
+                }
+            }
+            if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            error?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                tree?.let {
+                    CompositionLocalProvider(
+                        LocalPluginUiControllerCall provides callUiController,
+                        LocalPluginUiHandlerCall provides callUiHandler,
+                        LocalPluginUiAssetRoots provides assetRoots,
+                    ) { PluginUiNodeView(it, ::dispatch) }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 internal fun PluginInlineUi(raw: String, modifier: Modifier = Modifier) {
@@ -210,58 +375,153 @@ internal fun PluginUiDialogHost(
         }
     }
 
+    val context = LocalContext.current
+    val assetRoots = remember(context, plugin.directory, plugin.id) {
+        listOfNotNull(
+            safePluginUiAssetDir(File(context.filesDir, "plugins"), plugin.directory),
+            safePluginUiAssetDir(File(context.filesDir, "plugin_config"), plugin.id),
+        )
+    }
+    var panelFraction by rememberSaveable { mutableStateOf(0.92f) }
+    val displayTitle = title.ifBlank { plugin.name }
+    val boundedContent = tree?.let(::containsBoundedContent) == true
+    val contentScrollState = rememberScrollState()
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.96f)
-                .fillMaxHeight(0.9f),
-            shape = RoundedCornerShape(20.dp),
-            tonalElevation = 4.dp,
-        ) {
-            Column(
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val screenHeightPx = with(LocalDensity.current) { maxHeight.toPx() }.coerceAtLeast(1f)
+            val dragState = rememberDraggableState { delta ->
+                panelFraction = (panelFraction - delta / screenHeightPx).coerceIn(0.3f, 1f)
+            }
+            val finishDrag: suspend () -> Unit = {
+                if (panelFraction < 0.6f) {
+                    onDismiss()
+                } else {
+                    panelFraction = if (panelFraction > 0.92f) 1f else panelFraction.coerceIn(0.6f, 1f)
+                }
+            }
+            val dragModifier = Modifier.draggable(
+                state = dragState,
+                orientation = Orientation.Vertical,
+                onDragStopped = { _ -> finishDrag() },
+            )
+            Surface(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(panelFraction.coerceAtLeast(0.3f)),
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                shadowElevation = 24.dp,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = title.ifBlank { plugin.name },
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = { load() }, enabled = !busy) { Text("刷新") }
-                    TextButton(onClick = onDismiss) { Text("关闭") }
-                }
-                Text(
-                    text = "Operit Compose DSL 兼容渲染 · ${plugin.name}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                error?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                tree?.let {
-                    CompositionLocalProvider(
-                        LocalPluginUiControllerCall provides callUiController,
-                        LocalPluginUiHandlerCall provides callUiHandler,
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (panelFraction > 0.98f) Modifier.statusBarsPadding() else Modifier)
+                        .navigationBarsPadding(),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(24.dp)
+                            .then(dragModifier),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        PluginUiNodeView(it, ::dispatch)
+                        Box(
+                            modifier = Modifier
+                                .width(44.dp)
+                                .height(4.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(dragModifier)
+                            .padding(start = 16.dp, end = 8.dp, top = 2.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = displayTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "Operit Compose DSL · ${plugin.name}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        IconButton(onClick = { load() }, enabled = !busy) {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = "刷新插件界面",
+                                tint = if (busy) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Outlined.Close,
+                                contentDescription = "关闭插件界面",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (busy) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .then(if (boundedContent) Modifier else Modifier.verticalScroll(contentScrollState))
+                            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        error?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        tree?.let {
+                            CompositionLocalProvider(
+                                LocalPluginUiControllerCall provides callUiController,
+                                LocalPluginUiHandlerCall provides callUiHandler,
+                                LocalPluginUiAssetRoots provides assetRoots,
+                            ) {
+                                PluginUiNodeView(it, ::dispatch)
+                            }
+                        }
                     }
                 }
             }
         }
     }
 }
+
+private fun containsBoundedContent(node: PluginUiNode): Boolean =
+    node.type == "LazyColumn" ||
+        (node.type == "WebView" && node.props.bool("fillMaxSize") == true) ||
+        node.children.any(::containsBoundedContent)
 
 private data class PluginUiNode(
     val type: String,
@@ -276,13 +536,28 @@ private fun parsePluginUiTree(raw: String): PluginUiNode {
 }
 
 private fun parsePluginUiNode(element: kotlinx.serialization.json.JsonElement?): PluginUiNode? {
+    if (element is JsonPrimitive && element.isString) {
+        val text = element.content
+        return text.takeIf { it.isNotBlank() }
+            ?.let { PluginUiNode("Text", buildJsonObject { put("text", it) }, emptyList()) }
+    }
     val obj = element as? JsonObject ?: return null
     val type = obj.string("type") ?: return null
-    val props = obj["props"] as? JsonObject ?: JsonObject(emptyMap())
+    val props = when (val rawProps = obj["props"]) {
+        is JsonObject -> rawProps
+        is JsonPrimitive -> JsonObject(mapOf("text" to rawProps))
+        else -> JsonObject(emptyMap())
+    }
+    val topLevelText = obj["text"] as? JsonPrimitive
+    val mergedProps = if (props["text"] == null && topLevelText != null) {
+        JsonObject(props + ("text" to topLevelText))
+    } else {
+        props
+    }
     val children = (obj["children"] as? JsonArray)
         ?.mapNotNull(::parsePluginUiNode)
         .orEmpty()
-    return PluginUiNode(type, props, children)
+    return PluginUiNode(type, mergedProps, children)
 }
 
 private fun findUiHandler(node: PluginUiNode, key: String): String? {
@@ -316,12 +591,21 @@ private fun PluginUiNodeView(
     val props = node.props
     val clickableHandler = props.handler("clickable")
     val fixedHeight = props.number("height")
+    val fixedWidth = props.number("width")
     val fixedSize = props.number("size")
     val clipRadius = (props["clip"] as? JsonObject)?.number("cornerRadius")
     val hasWebViewChild = node.children.any { it.type == "WebView" }
     val modifier = Modifier
         .then(if (props.bool("fillMaxSize") == true) Modifier.fillMaxSize() else Modifier)
         .then(if (props.bool("fillMaxWidth") == true) Modifier.fillMaxWidth() else Modifier)
+        .then(if (props.bool("fillMaxHeight") == true) Modifier.fillMaxHeight() else Modifier)
+        .then(
+            if (fixedWidth != null && fixedWidth > 0f && node.type != "Spacer" && node.type != "WebView") {
+                Modifier.width(fixedWidth.dp)
+            } else {
+                Modifier
+            },
+        )
         .then(
             if (clickableHandler != null) {
                 Modifier.clickable { onEvent(clickableHandler, null) }
@@ -340,7 +624,7 @@ private fun PluginUiNodeView(
         .then(if (clipRadius != null && !hasWebViewChild) Modifier.clip(RoundedCornerShape(clipRadius.dp)) else Modifier)
         .padding(paddingOf(props))
     when (node.type) {
-        "Column", "LazyColumn", "FlowColumn" -> Column(
+        "Column", "FlowColumn" -> Column(
             modifier = modifier,
             verticalArrangement = spacingOf(props),
             horizontalAlignment = horizontalAlignmentOf(props.string("horizontalAlignment")),
@@ -355,7 +639,26 @@ private fun PluginUiNodeView(
             }
         }
 
-        "Row", "LazyRow", "FlowRow" -> Row(
+        "LazyColumn" -> {
+            val listState = rememberLazyListState()
+            val autoScrollToEnd = props.bool("autoScrollToEnd") == true
+            LaunchedEffect(node.children.size, autoScrollToEnd) {
+                if (autoScrollToEnd && node.children.isNotEmpty()) {
+                    listState.scrollToItem(node.children.lastIndex)
+                }
+            }
+            LazyColumn(
+                modifier = modifier,
+                state = listState,
+                verticalArrangement = spacingOf(props),
+                horizontalAlignment = horizontalAlignmentOf(props.string("horizontalAlignment")),
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                items(node.children) { child -> PluginUiNodeView(child, onEvent) }
+            }
+        }
+
+        "Row", "FlowRow" -> Row(
             modifier = modifier,
             horizontalArrangement = horizontalSpacingOf(props),
             verticalAlignment = verticalAlignmentOf(props.string("verticalAlignment")),
@@ -370,6 +673,15 @@ private fun PluginUiNodeView(
             }
         }
 
+        "LazyRow" -> LazyRow(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.Start,
+            verticalAlignment = verticalAlignmentOf(props.string("verticalAlignment")),
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            items(node.children) { child -> PluginUiNodeView(child, onEvent) }
+        }
+
         "Box" -> Box(
             modifier = modifier,
             contentAlignment = boxAlignmentOf(props.string("contentAlignment") ?: props.string("alignment")),
@@ -382,7 +694,9 @@ private fun PluginUiNodeView(
         )
 
         "Text" -> Text(
-            text = props.string("text").orEmpty(),
+            text = props.string("text")
+                ?: props.string("content")
+                ?: node.children.firstOrNull()?.props?.string("text").orEmpty(),
             modifier = modifier,
             style = textStyleOf(props.string("style")),
             color = colorOfElement(props["color"]) ?: MaterialTheme.colorScheme.onSurface,
@@ -397,23 +711,41 @@ private fun PluginUiNodeView(
         )
 
         "Button", "TextButton" -> {
-            val text = props.string("text") ?: node.children.firstOrNull()?.props?.string("text")
-            Button(
-                onClick = { onEvent(props.handler("onClick"), null) },
-                modifier = modifier,
-            ) { Text(text.orEmpty()) }
+            val text = props.string("text")
+                ?: props.string("content")
+                ?: props.string("label")
+                ?: node.children.firstOrNull()?.props?.string("text")
+            val enabled = props.bool("enabled") != false
+            val onClick = { onEvent(props.handler("onClick"), null) }
+            if (node.type == "TextButton") {
+                TextButton(onClick = onClick, modifier = modifier, enabled = enabled) {
+                    Text(text.orEmpty())
+                }
+            } else {
+                Button(onClick = onClick, modifier = modifier, enabled = enabled) {
+                    Text(text.orEmpty())
+                }
+            }
         }
 
-        "TextField", "OutlinedTextField" -> OutlinedTextField(
-            value = props.string("value").orEmpty(),
-            onValueChange = { value ->
-                onEvent(props.handler("onValueChange"), JsonPrimitive(value).toString())
-            },
-            modifier = modifier,
-            label = props.string("label")?.let { { Text(it) } },
-            placeholder = props.string("placeholder")?.let { { Text(it) } },
-            singleLine = props.bool("singleLine") != false,
-        )
+        "TextField", "OutlinedTextField" -> {
+            val declaredMaxLines = props.int("maxLines")
+            val singleLine = props.bool("singleLine")
+                ?: (props.bool("multiLine") != true && (declaredMaxLines == null || declaredMaxLines <= 1))
+            OutlinedTextField(
+                value = props.string("value").orEmpty(),
+                onValueChange = { value ->
+                    onEvent(props.handler("onValueChange"), JsonPrimitive(value).toString())
+                },
+                modifier = modifier,
+                enabled = props.bool("enabled") != false,
+                label = props.string("label")?.let { { Text(it) } },
+                placeholder = props.string("placeholder")?.let { { Text(it) } },
+                singleLine = singleLine,
+                minLines = if (singleLine) 1 else props.int("minLines") ?: 1,
+                maxLines = if (singleLine) 1 else declaredMaxLines ?: Int.MAX_VALUE,
+            )
+        }
 
         "Switch" -> Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
             if (props.string("label") != null) {
@@ -424,6 +756,7 @@ private fun PluginUiNodeView(
                 onCheckedChange = { value ->
                     onEvent(props.handler("onCheckedChange"), JsonPrimitive(value).toString())
                 },
+                enabled = props.bool("enabled") != false,
             )
         }
 
@@ -439,6 +772,7 @@ private fun PluginUiNodeView(
                 valueRange = start..end,
                 steps = props.int("steps") ?: 0,
                 modifier = modifier,
+                enabled = props.bool("enabled") != false,
             )
         }
 
@@ -446,6 +780,7 @@ private fun PluginUiNodeView(
             selected = props.bool("selected") == true,
             onClick = { onEvent(props.handler("onClick"), null) },
             modifier = modifier,
+            enabled = props.bool("enabled") != false,
         )
 
         "Checkbox" -> Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
@@ -455,12 +790,14 @@ private fun PluginUiNodeView(
                 onCheckedChange = { value ->
                     onEvent(props.handler("onCheckedChange"), JsonPrimitive(value).toString())
                 },
+                enabled = props.bool("enabled") != false,
             )
         }
 
         "IconButton" -> IconButton(
             onClick = { onEvent(props.handler("onClick"), null) },
             modifier = modifier,
+            enabled = props.bool("enabled") != false,
         ) {
             val child = node.children.firstOrNull()
             if (child != null) {
@@ -506,34 +843,11 @@ private fun PluginUiNodeView(
         "LinearProgressIndicator" -> LinearProgressIndicator(modifier = modifier.fillMaxWidth())
         "CircularProgressIndicator" -> CircularProgressIndicator(modifier = modifier.size(24.dp))
 
-        "AlertDialog", "Dialog" -> Card(modifier = modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                props.string("title")?.let {
-                    Text(it, style = MaterialTheme.typography.titleMedium)
-                }
-                props.string("text")?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall)
-                }
-                node.children.forEach { PluginUiNodeView(it, onEvent) }
-            }
-        }
+        "AlertDialog", "Dialog" -> PluginDialogNode(node, onEvent)
 
-        "Image" -> Text(
-            text = "[图片${props.string("url")?.let { "：$it" }.orEmpty()}]",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = modifier,
-        )
+        "Image" -> PluginImage(props, modifier)
 
-        "AiChat" -> Text(
-            text = "AiChat 组件暂不支持内嵌渲染",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = modifier,
-        )
+        "AiChat" -> PluginAiChat(props, modifier)
 
         "Markdown" -> WorkMarkdown(
             text = props.string("text").orEmpty(),
@@ -708,6 +1022,435 @@ private fun PluginUiNodeView(
 
         else -> Column(modifier = modifier, verticalArrangement = spacingOf(props)) {
             node.children.forEach { PluginUiNodeView(it, onEvent) }
+        }
+    }
+}
+
+private const val MAX_PLUGIN_IMAGE_BYTES = 12L * 1024L * 1024L
+
+private sealed interface PluginImageState {
+    data object Loading : PluginImageState
+    data class Ready(val bitmap: Bitmap) : PluginImageState
+    data class Failed(val message: String) : PluginImageState
+}
+
+@Composable
+private fun PluginImage(props: JsonObject, modifier: Modifier) {
+    val source = props.string("url")
+        ?: props.string("src")
+        ?: props.string("uri")
+        ?: props.string("path")
+        ?: props.string("fileUri")
+        ?: props.string("file")
+        ?: props.string("data")
+        ?: props.string("icon")
+        ?: props.string("name")
+        ?: ""
+    val contentDescription = props.string("contentDescription") ?: props.string("description")
+    val roots = LocalPluginUiAssetRoots.current
+    val state by produceState<PluginImageState>(PluginImageState.Loading, source, roots) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                PluginImageState.Ready(loadPluginImage(source, roots))
+            } catch (error: Throwable) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                PluginImageState.Failed(error.message ?: "图片加载失败")
+            }
+        }
+    }
+    val hasExplicitHeight = props.number("height") != null || props.number("size") != null
+    val hasExplicitWidth = props.number("width") != null
+    when (val current = state) {
+        PluginImageState.Loading -> Box(
+            modifier = when {
+                hasExplicitHeight -> modifier
+                hasExplicitWidth -> modifier.height(160.dp)
+                else -> modifier.fillMaxWidth().height(160.dp)
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                Text(
+                    text = "图片加载中…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        is PluginImageState.Failed -> Box(
+            modifier = when {
+                hasExplicitHeight -> modifier
+                hasExplicitWidth -> modifier.height(120.dp)
+                else -> modifier.fillMaxWidth().height(120.dp)
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = current.message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        is PluginImageState.Ready -> {
+            val bitmap = current.bitmap
+            val ratio = bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1).toFloat()
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Fit,
+                modifier = when {
+                    hasExplicitHeight -> modifier
+                    hasExplicitWidth -> modifier.aspectRatio(ratio.coerceAtLeast(0.1f))
+                    else -> modifier.fillMaxWidth().heightIn(max = 420.dp).aspectRatio(ratio.coerceAtLeast(0.1f))
+                },
+            )
+        }
+    }
+}
+
+private suspend fun loadPluginImage(source: String, roots: List<File>): Bitmap {
+    val trimmed = source.trim()
+    require(trimmed.isNotEmpty()) { "图片地址为空" }
+    val bytes = when {
+        trimmed.startsWith("data:", ignoreCase = true) -> decodePluginImageDataUri(trimmed)
+        trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true) -> RemoteFetch.bytes(trimmed, MAX_PLUGIN_IMAGE_BYTES)
+        else -> {
+            val file = resolvePluginImageFile(trimmed, roots)
+                ?: throw IllegalArgumentException("本地图片仅允许插件目录内的文件")
+            require(file.length() <= MAX_PLUGIN_IMAGE_BYTES) { "图片超过 12MB 限制" }
+            file.readBytes()
+        }
+    }
+    require(bytes.size <= MAX_PLUGIN_IMAGE_BYTES) { "图片超过 12MB 限制" }
+    return decodePluginBitmap(bytes) ?: throw IllegalArgumentException("无法解码图片")
+}
+
+private fun decodePluginImageDataUri(source: String): ByteArray {
+    val comma = source.indexOf(',')
+    require(comma > 5) { "图片 data URI 格式无效" }
+    val meta = source.substring(5, comma)
+    val payload = source.substring(comma + 1)
+    val bytes = if (meta.contains("base64", ignoreCase = true)) {
+        Base64.decode(payload, Base64.DEFAULT)
+    } else {
+        java.net.URLDecoder.decode(payload, "UTF-8").toByteArray()
+    }
+    require(bytes.size <= MAX_PLUGIN_IMAGE_BYTES) { "图片超过 12MB 限制" }
+    return bytes
+}
+
+private fun safePluginUiAssetDir(base: File, child: String): File? {
+    val name = child.trim()
+    if (name.isEmpty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')) {
+        return null
+    }
+    val baseCanonical = runCatching { base.canonicalFile }.getOrNull() ?: return null
+    val dirCanonical = runCatching { File(base, name).canonicalFile }.getOrNull() ?: return null
+    return dirCanonical.takeIf { it.path.startsWith(baseCanonical.path + File.separator) }
+}
+
+private fun resolvePluginImageFile(path: String, roots: List<File>): File? {
+    if (roots.isEmpty()) return null
+    val cleaned = path.removePrefix("file://")
+    val requested = File(cleaned)
+    val candidates = if (requested.isAbsolute) listOf(requested) else roots.map { File(it, cleaned) }
+    for (candidate in candidates) {
+        val canonical = runCatching { candidate.canonicalFile }.getOrNull() ?: continue
+        val allowed = roots.any { root ->
+            val base = runCatching { root.canonicalFile }.getOrNull() ?: return@any false
+            canonical.path == base.path || canonical.path.startsWith(base.path + File.separator)
+        }
+        if (allowed && canonical.isFile) return canonical
+    }
+    return null
+}
+
+private fun decodePluginBitmap(bytes: ByteArray): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var sample = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 2048) {
+        sample *= 2
+    }
+    return BitmapFactory.decodeByteArray(
+        bytes,
+        0,
+        bytes.size,
+        BitmapFactory.Options().apply { inSampleSize = sample },
+    )
+}
+
+private data class PluginChatMessage(val role: String, val text: String)
+
+private fun pluginChatMessages(props: JsonObject): List<PluginChatMessage> {
+    val array = props["messages"] as? JsonArray ?: return emptyList()
+    return array.mapNotNull { element ->
+        when (element) {
+            is JsonPrimitive -> element.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?.let { PluginChatMessage("assistant", it) }
+
+            is JsonObject -> {
+                val role = (element["role"] as? JsonPrimitive)?.contentOrNull
+                    ?: (element["sender"] as? JsonPrimitive)?.contentOrNull
+                    ?: "assistant"
+                pluginChatMessageText(element)
+                    .takeIf { it.isNotBlank() }
+                    ?.let { PluginChatMessage(role, it) }
+            }
+
+            else -> null
+        }
+    }
+}
+
+private fun pluginChatMessageText(message: JsonObject): String {
+    val content = message["content"] ?: message["text"] ?: message["message"] ?: return ""
+    return when (content) {
+        is JsonPrimitive -> content.contentOrNull.orEmpty()
+        is JsonArray -> content.mapNotNull { part ->
+            when (part) {
+                is JsonPrimitive -> part.contentOrNull
+                is JsonObject -> (part["text"] as? JsonPrimitive)?.contentOrNull
+                else -> null
+            }
+        }.joinToString("\n")
+
+        else -> ""
+    }
+}
+
+@Composable
+private fun PluginAiChat(props: JsonObject, modifier: Modifier) {
+    val hostState by PluginAiChatBridge.state.collectAsStateWithLifecycle()
+    val host = hostState
+    if (host == null) {
+        Surface(
+            modifier = modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("AiChat", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = "当前没有可嵌入的主聊天会话，请在聊天页打开插件面板后再使用 AiChat。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
+    var input by remember(host.title) { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    LaunchedEffect(host.messages.size) {
+        if (host.messages.isNotEmpty()) listState.scrollToItem(host.messages.lastIndex)
+    }
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(360.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = host.title,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "宿主主聊天",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (host.messages.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    text = "还没有消息",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(host.messages) { message ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = if (message.fromUser) Arrangement.End else Arrangement.Start,
+                    ) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(0.9f),
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (message.fromUser) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = if (message.fromUser) "我" else "AI",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (message.fromUser) {
+                                    Text(
+                                        text = message.text,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    )
+                                } else {
+                                    WorkMarkdown(text = message.text)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("输入消息") },
+                maxLines = 3,
+            )
+            TextButton(
+                enabled = input.isNotBlank(),
+                onClick = {
+                    host.onSend(input)
+                    input = ""
+                },
+            ) { Text("发送") }
+        }
+    }
+}
+
+private fun pluginNodeText(element: JsonElement?): String? = when (element) {
+    is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }
+    is JsonObject -> {
+        val nodeProps = element["props"] as? JsonObject
+        val direct = nodeProps?.string("text")
+            ?: nodeProps?.string("content")
+            ?: nodeProps?.string("value")
+            ?: element.string("text")
+            ?: element.string("content")
+        direct?.takeIf { it.isNotBlank() }
+            ?: (element["children"] as? JsonArray)
+                ?.firstOrNull()
+                ?.let { pluginNodeText(it) }
+    }
+    else -> null
+}
+
+@Composable
+private fun PluginDialogNode(node: PluginUiNode, onEvent: (String?, String?) -> Unit) {
+    val props = node.props
+    var open by remember { mutableStateOf(props.bool("open") != false) }
+    if (!open) return
+    val dismissHandler = props.handler("onDismissRequest")
+        ?: props.handler("onDismiss")
+        ?: props.handler("onCancel")
+    val confirmHandler = props.handler("onConfirm") ?: props.handler("onConfirmClick")
+    val titleText = pluginNodeText(props["title"]) ?: "对话框"
+    val bodyText = pluginNodeText(props["text"]) ?: pluginNodeText(props["message"])
+    val markdownText = props.string("markdown")
+
+    fun closeWith(handler: String?) {
+        open = false
+        onEvent(handler, null)
+    }
+
+    Dialog(
+        onDismissRequest = { closeWith(dismissHandler) },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .widthIn(max = 560.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                shadowElevation = 24.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = titleText,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    if (!bodyText.isNullOrBlank()) {
+                        Text(
+                            text = bodyText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (!markdownText.isNullOrBlank()) {
+                        WorkMarkdown(text = markdownText)
+                    }
+                    if (node.children.isNotEmpty()) {
+                        Column(verticalArrangement = spacingOf(props)) {
+                            node.children.forEach { PluginUiNodeView(it, onEvent) }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = { closeWith(dismissHandler) }) { Text("取消") }
+                        Button(
+                            onClick = { closeWith(confirmHandler ?: dismissHandler) },
+                        ) { Text("确定") }
+                    }
+                }
+            }
         }
     }
 }

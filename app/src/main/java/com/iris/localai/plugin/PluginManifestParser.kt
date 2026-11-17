@@ -44,7 +44,6 @@ object PluginManifestParser {
                     id = requiredId,
                     description = localized(obj["description"]),
                     minVersion = obj.text("min_version"),
-                    maxVersion = obj.text("max_version"),
                 )
             }
             .orEmpty()
@@ -54,7 +53,7 @@ object PluginManifestParser {
                 val obj = element as? JsonObject ?: return@mapNotNull null
                 val key = obj.text("key") ?: return@mapNotNull null
                 val path = obj.text("path") ?: return@mapNotNull null
-                PluginResource(key = key, path = path, mime = obj.text("mime").orEmpty())
+                PluginResource(key = key, path = path)
             }
             .orEmpty()
         val wasmModules = (root["wasm_modules"] as? JsonArray)
@@ -65,10 +64,6 @@ object PluginManifestParser {
                 PluginWasmModule(
                     id = id,
                     path = path,
-                    exports = (obj["exports"] as? JsonArray)
-                        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                        .orEmpty(),
-                    abi = obj.text("abi") ?: "assemblyscript",
                 )
             }
             .orEmpty()

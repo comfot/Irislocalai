@@ -56,12 +56,14 @@ import com.iris.localai.data.ModelProfile
 import com.iris.localai.data.ModelProfileStore
 import com.iris.localai.data.ModelRole
 import com.iris.localai.data.ProviderKind
+import com.iris.localai.data.PluginAiProviderRef
 import com.iris.localai.data.SettingsRepository
 import com.iris.localai.data.ToolPermission
 import com.iris.localai.engine.Backend
 import com.iris.localai.engine.EngineManager
 import com.iris.localai.engine.InferenceEngine
 import com.iris.localai.engine.OpenAiCompatibleEngine
+import com.iris.localai.engine.PluginAiEngine
 import com.iris.localai.engine.StubEngine
 import com.iris.localai.integration.BotMessageRouter
 import com.iris.localai.integration.IntegrationManager
@@ -79,6 +81,8 @@ import com.iris.localai.motion.HastMotionStore
 import com.iris.localai.motion.GitHubAssetClient
 import com.iris.localai.motion.MotionAssetStore
 import com.iris.localai.motion.VrmaMotionStore
+import com.iris.localai.motion.VrmaGenerationEnvironment
+import com.iris.localai.motion.VrmaGenerateTool
 import com.iris.localai.motion.MotionBindingStore
 import com.iris.localai.motion.ExpressionBindingStore
 import com.iris.localai.memory.MemoryStore
@@ -107,6 +111,8 @@ import com.iris.localai.workspace.WorkspaceStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 /**
  * 手动装配的依赖图。项目不引入 Koin/Hilt，与 IRIDIS 的做法一致；
@@ -120,6 +126,7 @@ class AppGraph(
     val settings = SettingsRepository(context, storage)
     val notifier = ChatNotifier(context, settings)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var pluginRuntimeRef: PluginRuntime? = null
     val models = ModelProfileStore(context)
     val conversations = ConversationStore(context)
     val characters = CharacterCardStore(context, storage)
@@ -149,6 +156,7 @@ class AppGraph(
     val assetDownloads = AssetDownloadManager(context, ioScope)
     val motionAssets = MotionAssetStore(context, storage)
     val vrmaMotions = VrmaMotionStore(context, storage)
+    val vrmaGeneration = VrmaGenerationEnvironment(context, models, code, vrmaMotions)
     val motionBindings = MotionBindingStore(context)
     val expressionBindings = ExpressionBindingStore(context)
     val githubAssets = GitHubAssetClient(settings)
@@ -166,6 +174,20 @@ class AppGraph(
             val provider = models.providerFor(profile, ModelRole.LANGUAGE)
             when {
                 provider.kind == ProviderKind.LOCAL -> LlamaEngine()
+                provider.kind == ProviderKind.PLUGIN -> {
+                    val runtime = pluginRuntimeRef
+                    if (runtime == null || provider.pluginProviderId.isBlank()) {
+                        StubEngine()
+                    } else {
+                        PluginAiEngine(
+                            runtime = runtime,
+                            pluginId = provider.pluginId,
+                            providerId = provider.pluginProviderId,
+                            modelName = models.modelNameFor(profile, ModelRole.LANGUAGE),
+                            contextLength = settings.current.contextLength,
+                        )
+                    }
+                }
                 provider.apiKey.isNotBlank() -> OpenAiCompatibleEngine(
                     provider = provider,
                     role = profile.role(ModelRole.LANGUAGE),
@@ -180,7 +202,14 @@ class AppGraph(
             if (provider.kind == ProviderKind.LOCAL) provider.localModelPath else settings.current.modelPath
         },
     )
-    val memoryAutoCapture = MemoryAutoCapture(context, memory, conversations, engines, settings)
+    val memoryAutoCapture = MemoryAutoCapture(context, memory, conversations, engines, settings) { conversation ->
+        val profile = models.resolve(
+            space = conversation.space,
+            characterId = conversation.characterId,
+            workspaceId = conversation.workspaceId,
+        )
+        models.providerFor(profile, ModelRole.LANGUAGE).kind == ProviderKind.CLOUD
+    }
     val mcp = McpStore(context, storage)
     val toolClips = HastMotionStore.get(context) { settings.current.mirrorEnabled }
     val integrationStore = IntegrationStore(context)
@@ -248,13 +277,41 @@ class AppGraph(
     }
     val mcpServer = McpServerService(mcp, tools)
     val plugins = PluginStore(context)
+    init {
+        tools.register(
+            VrmaGenerateTool(vrmaGeneration, vrmaMotions) {
+                plugins.plugins.value.any { it.id == "iris.vrma_generator" && it.enabled }
+            },
+        )
+        settings.syncToolCatalog(tools.all().map { it.name }.toSet())
+    }
     val pluginTerminal = PluginTerminalHost(context, code)
     val pluginRuntime = PluginRuntime(
         context,
         { plugins.plugins.value },
         tools,
         pluginTerminal,
-    ) { name -> settings.current.toolPermissions[name] ?: ToolPermission.ALLOW }
+    ) { name ->
+        val permissions = settings.current.toolPermissions
+        permissions[name]
+            ?: name.removePrefix("compat:").takeIf { name.startsWith("compat:") }
+                ?.let { permissions[it] }
+            ?: ToolPermission.ALLOW
+    }
+    init {
+        pluginRuntimeRef = pluginRuntime
+        ioScope.launch {
+            pluginRuntime.registrations.collect { registrations ->
+                models.syncPluginProviders(
+                    registrations.values.flatMap { entry ->
+                        entry.aiProviders.map { providerId ->
+                            PluginAiProviderRef(entry.pluginId, entry.pluginName, providerId)
+                        }
+                    },
+                )
+            }
+        }
+    }
     val pluginTools = PluginToolInstaller(
         store = plugins,
         registry = tools,

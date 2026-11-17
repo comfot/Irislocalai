@@ -77,6 +77,15 @@
         </service>
 
         <service
+            android:name=".plugin.PluginWidgetService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="plugin desktop widget overlay" />
+        </service>
+
+        <service
             android:name=".accessibility.IrisAccessibilityService"
             android:exported="false"
             android:label="@string/accessibility_service_label"

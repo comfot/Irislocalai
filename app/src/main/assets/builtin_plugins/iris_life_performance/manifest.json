@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "iris.life_performance",
+  "version": "1.2.2",
+  "main": "main.js",
+  "subpackages": [
+    {
+      "id": "noop",
+      "entry": "empty.js"
+    }
+  ],
+  "display_name": {
+    "zh": "生活空间自动动作表情",
+    "en": "Life Performance"
+  },
+  "description": {
+    "zh": "AI 回复后按当前动作/表情绑定自动触发；别名和动作可在 3D 控制中自行添加，无需修改插件。",
+    "en": "Automatically triggers configured motions and expressions after AI replies."
+  },
+  "enabled_by_default": true
+}

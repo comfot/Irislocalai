@@ -1,6 +1,7 @@
 package com.iris.localai
 
 import com.iris.localai.agent.ToolRegistry
+import com.iris.localai.agent.ToolSource
 import com.iris.localai.agent.tools.CurrentTimeTool
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -18,5 +19,18 @@ class ToolRegistryTest {
         assertEquals(tool, registry.find("current_time"))
         assertNull(registry.find("missing"))
         assertEquals(listOf(tool), registry.all())
+        assertEquals(ToolSource.Builtin, registry.sourceOf("current_time"))
+    }
+
+    @Test
+    fun tracksPluginSource() {
+        val registry = ToolRegistry()
+        val tool = CurrentTimeTool()
+        val source = ToolSource.Plugin("demo", "演示插件", "tools")
+
+        registry.register(tool, source)
+
+        assertEquals(source, registry.sourceOf(tool.name))
+        assertEquals("插件：演示插件", source.label)
     }
 }

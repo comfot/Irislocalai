@@ -79,6 +79,9 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   let vrmaAction = null
   let vrmaLoading = false
   let lastVrmPose = null
+  let speaking = config.speaking === true
+  let mouthAmplitude = Number(config.mouthAmplitude || 0)
+  let mouthOpen = 0
   const MOTION_BLEND_SECONDS = 0.35
   const restRotations = new Map()
   const restPoses = new Map()
@@ -89,6 +92,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   const vrmaLoader = new GLTFLoader()
   vrmaLoader.register((parser) => new VRMAnimationLoaderPlugin(parser))
   const idleMotionName = 'idle'
+  let holdIdleSeated = false
   const tapMotionName = motionPack === 'hast' ? 'right-摆动手臂' : 'wave'
   const motionAxisFix = Number(config.axisFix || 0)
   let modelHeight = 1.7
@@ -247,6 +251,10 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     }
     if (motionEndpoint) {
       if (motionIdle && !vrmaEnabled) playMotion(idleMotionName, true)
+    }
+    if (config.previewVrma) {
+      const previewUrl = String(config.previewVrma)
+      try { playVrma(previewUrl, false, previewUrl.indexOf('%E5%9D%90') >= 0 || previewUrl.indexOf('坐') >= 0) } catch (error) { }
     }
   }
 
@@ -409,7 +417,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     motion.time += dt
     if (!motion.loop && motion.time >= motion.duration) {
       activeMotion = null
-      if (motionIdle) setTimeout(() => { playMotion(idleMotionName, true) }, 120)
+      if (motionIdle && !holdIdleSeated) setTimeout(() => { playMotion(idleMotionName, true) }, 120)
       return
     }
     const time = motion.loop ? motion.time % motion.duration : motion.time
@@ -441,6 +449,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   }
 
   async function playMotion(name, loop) {
+    holdIdleSeated = !loop && String(name || '').indexOf('坐') >= 0
     if (!model || !motionEndpoint) return false
     stopVrma()
     try {
@@ -546,7 +555,7 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
       if (previous && previous !== motionAction && previous.isRunning()) {
         motionAction.crossFadeFrom(previous, MOTION_BLEND_SECONDS, true)
       }
-      if (!loop && motionIdle) {
+      if (!loop && motionIdle && !holdIdleSeated) {
         const clipDuration = data.duration || 2
         setTimeout(() => { playMotion(idleMotionName, true) }, clipDuration * 1000 + 120)
       }
@@ -565,7 +574,8 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     if (vrmaMixer) vrmaMixer.stopAllAction()
   }
 
-  async function playVrma(url, loop) {
+  async function playVrma(url, loop, holdIdle) {
+    holdIdleSeated = !loop && (!!holdIdle || String(url || '').indexOf('坐') >= 0)
     if (!vrm || !url || vrmaLoading) return false
     vrmaLoading = true
     try {
@@ -591,6 +601,14 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
       motionBlend = null
       if (motionAction) motionAction.stop()
       if (motionMixer) motionMixer.stopAllAction()
+      if (!loop && motionIdle && !holdIdleSeated) {
+        const finished = vrmaAction
+        setTimeout(() => {
+          if (vrmaAction !== finished) return
+          stopVrma()
+          playMotion(idleMotionName, true)
+        }, Math.max(0.5, clip.duration || 2) * 1000 + 120)
+      }
       hideStatus()
       return true
     } catch (error) {
@@ -604,8 +622,13 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   window.irisMotion = {
     play(name) { return playMotion(name, false) },
     idle() { return playMotion(idleMotionName, true) },
-    playVrma(url, loop) { return playVrma(url, loop === true) },
+    playVrma(url, loop, holdIdle) { return playVrma(url, loop === true, holdIdle === true) },
     stopVrma() { stopVrma() },
+    setSpeaking(value) { speaking = Boolean(value) },
+    setMouthOpen(value) {
+      const next = Number(value)
+      mouthAmplitude = Number.isFinite(next) ? Math.max(0, Math.min(1, next)) : 0
+    },
     setEndpoint(value) { motionEndpoint = String(value || '') },
     setExpression(name) {
       const manager = vrm && vrm.expressionManager
@@ -814,6 +837,24 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     })
   }
 
+  function updateMouth(now, dt) {
+    if (!vrm || !vrm.expressionManager) return
+    let target = 0
+    if (speaking) {
+      if (mouthAmplitude > 0.02) {
+        target = Math.min(1, mouthAmplitude)
+      } else {
+        target = 0.06 + Math.abs(Math.sin(now * 9.2)) * 0.34
+      }
+    }
+    mouthOpen += (target - mouthOpen) * Math.min(1, dt * 18)
+    try {
+      vrm.expressionManager.setValue('aa', mouthOpen)
+    } catch (error) {
+      try { vrm.expressionManager.setValue('a', mouthOpen) } catch (ignored) { }
+    }
+  }
+
   function animate(now = performance.now()) {
     requestAnimationFrame(animate)
     const dt = Math.min(0.05, clock.getDelta())
@@ -822,11 +863,9 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
     if (vrmaMixer) vrmaMixer.update(dt)
     if (vrm) {
       advanceMotion(dt)
+      updateMouth(now, dt)
       vrm.update(dt)
       refreshSkinning()
-    }
-    if (model && !dragging && !activeMotion && !(motionAction && motionAction.isRunning()) && !(vrmaAction && vrmaAction.isRunning()) && now - idleSince > 6000) {
-      group.rotation.y += dt * 0.045
     }
     if (model) {
       group.position.y = Math.sin(now * 0.0016) * 0.008

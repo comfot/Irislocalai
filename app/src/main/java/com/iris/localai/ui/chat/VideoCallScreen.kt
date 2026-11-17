@@ -594,6 +594,8 @@ private fun CallAvatar(
                 motionIdle = motionIdle,
                 motionPack = motionPack,
                 motionAxisFix = motionAxisFix,
+                speaking = avatarControl.speaking,
+                mouthAmplitude = mouthAmplitude,
                 modifier = Modifier.fillMaxSize(),
             )
             model == CharacterModel.THREE_D && mmdFile != null -> MMDView(

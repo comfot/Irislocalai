@@ -121,6 +121,12 @@ class ConversationStore(context: Context) {
         }
     }
 
+    fun updateSummary(conversationId: Long, summary: String, throughMessageId: Long) {
+        update(conversationId) {
+            it.copy(summary = summary, summaryThroughMessageId = throughMessageId)
+        }
+    }
+
     /** 旧版本的生活空间会话没有角色绑定，升级时归到当前角色卡。 */
     fun bindUnboundLifeConversations(characterId: String) {
         if (characterId.isBlank()) return
@@ -192,6 +198,8 @@ class ConversationStore(context: Context) {
                         put("characterId", conversation.characterId)
                         put("updatedAt", conversation.updatedAt)
                         put("archivedAt", conversation.archivedAt)
+                        put("summary", conversation.summary)
+                        put("summaryThroughMessageId", conversation.summaryThroughMessageId)
                         put("messages", buildJsonArray {
                             conversation.messages.forEach { message ->
                                 addJsonObject {
@@ -260,6 +268,8 @@ class ConversationStore(context: Context) {
                     messages = obj.messages(),
                     updatedAt = updatedAt,
                     archivedAt = obj.long("archivedAt") ?: 0L,
+                    summary = obj.string("summary").orEmpty(),
+                    summaryThroughMessageId = obj.long("summaryThroughMessageId") ?: 0L,
                 )
             }
         }.getOrElse { emptyList() }

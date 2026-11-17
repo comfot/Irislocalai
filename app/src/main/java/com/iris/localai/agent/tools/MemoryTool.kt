@@ -21,6 +21,7 @@ class MemoryTool(private val memory: MemoryStore) : Tool {
     override val description: String =
         "长期记忆工具。op=recall 详细检索（记忆/日记/知识库），op=save 保存事实。" +
             "常规对话已有记忆摘要；只有用户要求回忆、确认细节或提到上次/之前时，才用 recall。 " +
+            "save 的 type 可选 fact（默认，事实/偏好）或 episodic（发生过的事件）。 " +
             "示例：{\"op\":\"recall\",\"query\":\"上次说的猫\"} 或 " +
             "{\"op\":\"save\",\"title\":\"咖啡偏好\",\"content\":\"用户喜欢冰美式\",\"tags\":[\"生活\"],\"importance\":4}"
 
@@ -61,9 +62,13 @@ class MemoryTool(private val memory: MemoryStore) : Tool {
             .ifBlank { content.take(24) }
         val folder = arguments.string("folder").trim().take(80)
         val importance = arguments.int("importance")?.coerceIn(1, 5) ?: 3
+        val type = when (arguments.string("type").trim().lowercase()) {
+            "episodic", "event", "事件" -> MemoryType.EPISODIC
+            else -> MemoryType.FACT
+        }
         memory.addMemory(
             MemoryItem(
-                type = MemoryType.FACT,
+                type = type,
                 title = title,
                 content = content,
                 folder = folder,

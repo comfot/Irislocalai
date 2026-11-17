@@ -43,6 +43,7 @@ class MemoryAutoCapture(
     private val conversations: ConversationStore,
     private val engines: EngineManager,
     private val settings: SettingsRepository,
+    private val isCloudEngine: (Conversation) -> Boolean = { false },
 ) {
 
     private val stateFile = File(context.applicationContext.filesDir, "memory/auto_state.json")
@@ -51,6 +52,7 @@ class MemoryAutoCapture(
     private val lastProcessed = ConcurrentHashMap<String, Long>().apply {
         loadState().forEach { (key, value) -> put(key, value) }
     }
+    private val lastCaptureAt = ConcurrentHashMap<String, Long>()
 
     fun captureAsync(
         conversationId: Long,
@@ -79,13 +81,21 @@ class MemoryAutoCapture(
             if (!force && !current.memoryAutoSave) return@withContext 0
             val conversation = snapshot ?: conversations.find(conversationId) ?: return@withContext 0
             val key = conversationId.toString()
-            val lastId = if (force) 0L else lastProcessed[key] ?: 0L
+            // 始终从上次处理位置继续，force 只跳过开关与节流，不重跑已分析内容。
+            val lastId = lastProcessed[key] ?: 0L
             val fresh = conversation.messages
                 .filter { it.id > lastId && it.text.isNotBlank() }
                 .takeLast(MAX_MESSAGES)
             if (fresh.none { it.role == ChatRole.USER && it.text.isNotBlank() }) {
                 markProcessed(key, conversation)
                 return@withContext 0
+            }
+            if (!force) {
+                if (fresh.size < MIN_AUTO_MESSAGES) return@withContext 0
+                val now = System.currentTimeMillis()
+                if (now - (lastCaptureAt[key] ?: 0L) < AUTO_MIN_INTERVAL_MS) return@withContext 0
+                if (isCloudEngine(conversation) && !current.memoryAutoSaveCloud) return@withContext 0
+                lastCaptureAt[key] = now
             }
 
             val modelResult = if (engines.isReady) {
@@ -123,7 +133,8 @@ class MemoryAutoCapture(
             用户身份、长期偏好、习惯、明确事实、长期目标、重要事件、稳定人际关系。
             忽略寒暄、临时任务、助手客套、推测和敏感凭据。
             只输出严格 JSON，不要 Markdown 代码块，不要解释：
-            {"memories":[{"title":"简短标题","content":"完整事实","folder":"分类路径","tags":["标签"],"importance":1到5,"links":[{"target":"已有记忆标题","type":"RELATED","weight":0.7,"description":"关系说明"}]}]}
+            {"memories":[{"title":"简短标题","content":"完整事实","type":"FACT或EPISODIC","folder":"分类路径","tags":["标签"],"importance":1到5,"links":[{"target":"已有记忆标题","type":"RELATED","weight":0.7,"description":"关系说明"}]}]}
+            用户身份、偏好与事实用 FACT；发生过的事、经历与事件用 EPISODIC。
             没有值得保存的内容时输出 {"memories":[]}。
             已有记忆标题：
             $existing
@@ -173,9 +184,13 @@ class MemoryAutoCapture(
                 ?.take(8)
                 .orEmpty()
             val importance = obj.int("importance")?.coerceIn(1, 5) ?: 3
+            val type = when (obj.string("type").trim().uppercase()) {
+                "EPISODIC", "EVENT", "事件" -> MemoryType.EPISODIC
+                else -> MemoryType.FACT
+            }
             memory.addMemory(
                 MemoryItem(
-                    type = MemoryType.FACT,
+                    type = type,
                     title = title,
                     content = content,
                     folder = folder,
@@ -285,6 +300,8 @@ class MemoryAutoCapture(
 
     private companion object {
         const val MAX_MESSAGES = 10
+        const val MIN_AUTO_MESSAGES = 2
+        const val AUTO_MIN_INTERVAL_MS = 90_000L
         const val MAX_MESSAGE_CHARS = 1200
         const val MAX_TRANSCRIPT_CHARS = 6_000
         const val MIN_CONTENT_CHARS = 6

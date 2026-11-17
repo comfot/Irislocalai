@@ -38,12 +38,17 @@ class AgentLoop(
         maxStepsOverride: Int? = null,
         planFirst: Boolean = false,
         startInThink: Boolean = false,
+        chatId: Long? = null,
     ): Flow<AgentEvent> = flow flow@ {
         val availableTools = tools.all().filter { enabledTools == null || it.name in enabledTools }
+        val toolPromptOverride = pluginRuntime?.composeToolPrompt(chatId, availableTools, planFirst)
+        val baseSystemPrompt = systemPrompt(userSystemPrompt, availableTools, planFirst, toolPromptOverride)
+        val finalSystemPrompt = pluginRuntime?.finalizePrompt(chatId, baseSystemPrompt) ?: baseSystemPrompt
+        val estimatedSystemPrompt = pluginRuntime?.estimateFinalPrompt(chatId, finalSystemPrompt) ?: finalSystemPrompt
         val configuredLimit = maxStepsOverride ?: maxSteps
         val stepLimit = if (configuredLimit <= 0) null else configuredLimit.coerceIn(1, 100)
         val conversation = buildList {
-            add(PromptMessage(PromptMessage.SYSTEM, systemPrompt(userSystemPrompt, availableTools, planFirst)))
+            add(PromptMessage(PromptMessage.SYSTEM, estimatedSystemPrompt))
             addAll(history)
             add(PromptMessage(PromptMessage.USER, userInput, userImages))
         }.toMutableList()
@@ -157,7 +162,7 @@ class AgentLoop(
                 ) {
                     val shell = availableTools.firstOrNull { it.name == "shell" }
                     val shellPermission = toolPermissions["shell"] ?: ToolPermission.ALLOW
-                    if (shell != null && shellPermission != ToolPermission.DENY) {
+                    if (shell != null && shellPermission == ToolPermission.ALLOW) {
                         bareCommandExecuted = true
                         call = ParsedToolCall(
                             name = "shell",
@@ -187,11 +192,22 @@ class AgentLoop(
                 null
             }
             val blocked = intercept?.blocked == true
+            val executed = tool != null && permission == ToolPermission.ALLOW && !blocked
+            if (executed && tool != null) {
+                this@flow.emit(AgentEvent.ToolProgress(tool.name, "正在执行…"))
+                pluginRuntime?.notifyToolLifecycle(
+                    event = "tool_execution_started",
+                    toolName = tool.name,
+                    parameters = call.arguments.stringParameters(),
+                    description = tool.description,
+                )
+            }
             val startedAt = System.nanoTime()
             var toolFailed = false
             val result = when {
                 tool == null -> "工具 ${call.name} 未启用或不存在"
                 permission == ToolPermission.DENY -> "工具 ${call.name} 的权限为拒绝"
+                permission == ToolPermission.ASK -> "工具 ${call.name} 需要用户确认后才能执行（当前没有确认界面，已阻止）"
                 blocked -> "工具 ${call.name} 被插件阻止：${intercept?.reason.orEmpty()}"
                 else -> try {
                     tool.execute(call.arguments)
@@ -203,11 +219,29 @@ class AgentLoop(
                 }
             }
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000L
+            if (executed && tool != null) {
+                pluginRuntime?.notifyToolLifecycle(
+                    event = if (toolFailed) "tool_execution_error" else "tool_execution_result",
+                    toolName = tool.name,
+                    parameters = call.arguments.stringParameters(),
+                    description = tool.description,
+                    success = !toolFailed,
+                    resultText = if (toolFailed) null else result,
+                    errorMessage = if (toolFailed) result else null,
+                )
+                pluginRuntime?.notifyToolLifecycle(
+                    event = "tool_execution_finished",
+                    toolName = tool.name,
+                    parameters = call.arguments.stringParameters(),
+                    description = tool.description,
+                    success = !toolFailed,
+                )
+            }
 
             val agentStep = AgentStep(
                 tool = call.name,
                 arguments = call.arguments.toString(),
-                result = result.take(MAX_RESULT_CHARS),
+                result = displayResult(result),
                 status = if (tool == null || permission == ToolPermission.DENY || blocked || toolFailed) {
                     StepStatus.ERROR
                 } else {
@@ -278,6 +312,7 @@ class AgentLoop(
         userSystemPrompt: String,
         availableTools: List<Tool>,
         planFirst: Boolean,
+        toolPromptOverride: String? = null,
     ): String = buildString {
         appendLine("你是运行在 Android 上的本地 AI 助手。")
         appendLine("需要调用工具时，只输出一个工具调用块，不要附加解释：")
@@ -285,13 +320,14 @@ class AgentLoop(
         appendLine("除上述工具调用块外，不要使用 DSML、<invoke> 或其他标签。")
         appendLine("shell 等工具的命令必须放进上面的工具调用块；不要把命令只写在正文或代码块里，那样不会执行。")
         appendLine("不要在正文输出 <think>、</think> 或 Thinking Process 等思考标记。")
-        appendLine("如需角色状态卡，可使用 <maintext>正文</maintext> 和 <Status_block>...</Status_block>，状态项写成“- 键：值”；不要使用其他 HTML/XML 标签。")
+        appendLine("如需角色状态卡，可使用 <maintext>正文</maintext> 和 <Status_block>...</Status_block>，状态项写成“- 键：值”；除上述标签以及后续提示词明确允许的标签外，不要使用其他 HTML/XML 标签。")
         appendLine("工具结果会以 tool 消息返回；拿到结果后直接用自然语言回答用户。")
         if (availableTools.isEmpty()) {
             appendLine("当前为对话模式，不要调用工具。")
         } else {
             appendLine("可用工具：")
-            appendLine(availableTools.joinToString("\n") { "- ${it.name}: ${it.description}" })
+            appendLine(toolPromptOverride?.takeIf { it.isNotBlank() }
+                ?: availableTools.joinToString("\n") { "- ${it.name}: ${it.description}" })
             if (availableTools.any { it.name == "motion_control" }) {
                 appendLine("当用户要求角色做动作、比手势、跳舞、打招呼时，调用 motion_control，不要声称自己无法控制模型。")
                 appendLine("调用时必须带 arguments.action，例如 {\"action\":\"wave\"}；不确定有哪些动作时先传 action=list 查看完整清单。")
@@ -323,8 +359,16 @@ class AgentLoop(
     }
 
     private companion object {
-        const val MAX_RESULT_CHARS = 4000
+        const val MAX_RESULT_CHARS = 20_000
     }
+
+    private fun displayResult(result: String): String =
+        if (result.length > MAX_RESULT_CHARS) {
+            result.take(MAX_RESULT_CHARS) +
+                "\n…（工具输出过长，仅显示前 $MAX_RESULT_CHARS 字符）"
+        } else {
+            result
+        }
 
     private fun JsonObject.stringParameters(): Map<String, String> = entries.associate { (key, value) ->
         key to ((value as? JsonPrimitive)?.contentOrNull ?: value.toString())

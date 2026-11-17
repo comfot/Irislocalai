@@ -11,6 +11,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.iris.localai.agent.ToolRegistry
+import com.iris.localai.agent.Tool
+import com.iris.localai.engine.PromptMessage
 import com.iris.localai.data.ToolPermission
 import com.iris.localai.data.RemoteFetch
 import kotlinx.coroutines.CompletableDeferred
@@ -37,6 +39,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
@@ -58,6 +61,7 @@ import java.net.URL
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.zip.ZipFile
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -126,7 +130,48 @@ class PluginRuntime(
         subpackageId: String,
         toolName: String,
         arguments: JsonObject,
-    ): String = session(plugin).callTool(subpackageId, toolName, arguments)
+        onProgress: ((String) -> Unit)? = null,
+    ): String = session(plugin).callTool(subpackageId, toolName, arguments, onProgress)
+
+    suspend fun callAiProvider(
+        pluginId: String,
+        providerId: String,
+        method: String,
+        payload: JsonObject,
+    ): String {
+        val plugin = pluginsProvider().firstOrNull { it.id == pluginId }
+            ?: error("插件未启用：$pluginId")
+        return session(plugin).callProvider(providerId, method, payload)
+    }
+
+    suspend fun listAiProviderModels(pluginId: String, providerId: String): List<String> {
+        val payload = buildJsonObject {
+            put("event", "toolpkg_ai_provider_list_models")
+            put("eventName", "toolpkg_ai_provider_list_models")
+            putJsonObject("eventPayload") {
+                put("providerId", providerId)
+                putJsonObject("config") {
+                    put("id", providerId)
+                    put("apiProviderType", "plugin")
+                }
+            }
+        }
+        val raw = callAiProvider(pluginId, providerId, "listModels", payload)
+        val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: return emptyList()
+        val array = when (element) {
+            is JsonArray -> element
+            is JsonObject -> (element["models"] as? JsonArray)
+                ?: (element["data"] as? JsonObject)?.let { it["models"] as? JsonArray }
+            else -> null
+        } ?: return emptyList()
+        return array.mapNotNull { item ->
+            when (item) {
+                is JsonPrimitive -> item.contentOrNull?.takeIf { it.isNotBlank() }
+                is JsonObject -> item.text("name") ?: item.text("id")
+                else -> null
+            }
+        }
+    }
 
     suspend fun renderUi(plugin: InstalledPlugin, moduleId: String): Result<String> =
         runCatching { session(plugin).renderUi(moduleId) }
@@ -248,7 +293,7 @@ class PluginRuntime(
         }
     }
 
-    suspend fun transformSystemPrompt(chatId: Long, prompt: String): String {
+    suspend fun transformSystemPrompt(chatId: Long, prompt: String, space: String? = null): String {
         ensureAllRegistrations()
         var current = prompt
         withTimeoutOrNull(HOOK_TIMEOUT_MS) {
@@ -260,6 +305,7 @@ class PluginRuntime(
                         put("stage", "after_compose_system_prompt")
                         put("chatId", chatId)
                         put("systemPrompt", current)
+                        space?.let { put("space", it) }
                     }
                 }
                 val raw = withTimeoutOrNull(3_000) {
@@ -277,11 +323,491 @@ class PluginRuntime(
         return current
     }
 
+    suspend fun promptInput(chatId: Long, text: String, source: String): ChatInputDecision? {
+        ensureAllRegistrations()
+        val hooks = allHooks("prompt_input")
+        if (hooks.isEmpty()) return null
+        var current = text
+        var blocked: ChatInputDecision? = null
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "before_process")
+                    put("eventName", "before_process")
+                    putJsonObject("eventPayload") {
+                        put("stage", "before_process")
+                        put("chatId", chatId.toString())
+                        put("functionType", "chat")
+                        put("promptFunctionType", "chat")
+                        put("useEnglish", false)
+                        put("rawInput", current)
+                        put("processedInput", current)
+                        put("source", source)
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: continue
+                val result = parsePromptTextResult(element)
+                if (result != null) {
+                    when (result.first) {
+                        "block", "consume" -> {
+                            blocked = ChatInputDecision(result.first, current, result.second)
+                            return@withTimeoutOrNull
+                        }
+                        "replace" -> current = result.second ?: current
+                    }
+                }
+            }
+        }
+        return blocked ?: if (current != text) ChatInputDecision("replace", current) else null
+    }
+
+    suspend fun transformPromptHistory(
+        chatId: Long,
+        history: List<PromptMessage>,
+        strategy: String,
+    ): List<PromptMessage> {
+        ensureAllRegistrations()
+        val hooks = allHooks("prompt_history")
+        if (hooks.isEmpty()) return history
+        var current = history
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "before_prepare_history")
+                    put("eventName", "before_prepare_history")
+                    putJsonObject("eventPayload") {
+                        put("stage", "before_prepare_history")
+                        put("chatId", chatId.toString())
+                        put("strategy", strategy)
+                        put("chatHistory", promptTurns(current))
+                        put("preparedHistory", promptTurns(current))
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                val next = parsePromptHistoryResult(raw, current) ?: continue
+                current = next
+            }
+        }
+        return current
+    }
+
+    suspend fun composeToolPrompt(chatId: Long?, tools: List<Tool>, planFirst: Boolean): String? {
+        ensureAllRegistrations()
+        val hooks = allHooks("tool_prompt_compose")
+        if (hooks.isEmpty()) return null
+        var current: String? = null
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "before_compose_tool_prompt")
+                    put("eventName", "before_compose_tool_prompt")
+                    putJsonObject("eventPayload") {
+                        put("stage", "before_compose_tool_prompt")
+                        chatId?.let { put("chatId", it.toString()) }
+                        put("planFirst", planFirst)
+                        if (current != null) put("toolPrompt", current) else put("toolPrompt", "")
+                        putJsonArray("availableTools") {
+                            tools.forEach { tool ->
+                                add(buildJsonObject {
+                                    put("name", tool.name)
+                                    put("description", tool.description)
+                                })
+                            }
+                        }
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                parsePromptTextResult(runCatching { Json.parseToJsonElement(raw) }.getOrNull())
+                    ?.let { if (it.first == "replace") current = it.second }
+            }
+        }
+        return current
+    }
+
+    suspend fun finalizePrompt(chatId: Long?, prompt: String): String {
+        ensureAllRegistrations()
+        val hooks = allHooks("prompt_finalize")
+        if (hooks.isEmpty()) return prompt
+        var current = prompt
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "before_finalize_prompt")
+                    put("eventName", "before_finalize_prompt")
+                    putJsonObject("eventPayload") {
+                        put("stage", "before_finalize_prompt")
+                        chatId?.let { put("chatId", it.toString()) }
+                        put("systemPrompt", current)
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                parsePromptTextResult(runCatching { Json.parseToJsonElement(raw) }.getOrNull())
+                    ?.let { if (it.first == "replace" && it.second != null) current = it.second!! }
+            }
+        }
+        return current
+    }
+
+    suspend fun notifyChatInput(chatId: Long, text: String, event: String) {
+        ensureAllRegistrations()
+        val hooks = allHooks("chat_input")
+        if (hooks.isEmpty()) return
+        val payload = buildJsonObject {
+            put("event", event)
+            put("eventName", event)
+            putJsonObject("eventPayload") {
+                put("chatId", chatId)
+                put("text", text)
+                put("hasAttachments", false)
+                put("attachmentCount", 0)
+                put("isProcessing", true)
+            }
+        }
+        hooks.forEach { hook ->
+            withTimeoutOrNull(5_000) { runCatching { callHook(hook, payload) } }
+        }
+    }
+
+    suspend fun estimatePromptHistory(
+        chatId: Long,
+        history: List<PromptMessage>,
+    ): List<PromptMessage> {
+        ensureAllRegistrations()
+        val hooks = allHooks("prompt_estimate_history")
+        if (hooks.isEmpty()) return history
+        var current = history
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "before_prepare_history")
+                    put("eventName", "before_prepare_history")
+                    putJsonObject("eventPayload") {
+                        put("stage", "before_prepare_history")
+                        put("chatId", chatId.toString())
+                        put("chatHistory", promptTurns(current))
+                        put("preparedHistory", promptTurns(current))
+                        put("estimatedTokens", estimateTokens(current))
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                current = parsePromptHistoryResult(raw, current) ?: current
+            }
+        }
+        return current
+    }
+
+    suspend fun estimateFinalPrompt(chatId: Long?, prompt: String): String {
+        ensureAllRegistrations()
+        val hooks = allHooks("prompt_estimate_finalize")
+        if (hooks.isEmpty()) return prompt
+        var current = prompt
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "before_send_to_model")
+                    put("eventName", "before_send_to_model")
+                    putJsonObject("eventPayload") {
+                        put("stage", "before_send_to_model")
+                        chatId?.let { put("chatId", it.toString()) }
+                        put("systemPrompt", current)
+                        put("estimatedTokens", estimateTokens(current))
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                parsePromptTextResult(runCatching { Json.parseToJsonElement(raw) }.getOrNull())
+                    ?.let { if (it.first == "replace" && it.second != null) current = it.second!! }
+            }
+        }
+        return current
+    }
+
+    suspend fun generateSummary(
+        chatId: Long,
+        messages: List<PromptMessage>,
+        previousSummary: String,
+    ): String? {
+        ensureAllRegistrations()
+        val hooks = allHooks("summary_generate")
+        if (hooks.isEmpty()) return null
+        var summary: String? = null
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "before_prepare_summary_prompt")
+                    put("eventName", "before_prepare_summary_prompt")
+                    putJsonObject("eventPayload") {
+                        put("stage", "before_prepare_summary_prompt")
+                        put("chatId", chatId.toString())
+                        put("functionType", "summary")
+                        put("previousSummary", previousSummary)
+                        put("chatHistory", promptTurns(messages))
+                        put("preparedHistory", promptTurns(messages))
+                        put("summaryPrompt", "")
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: continue
+                val parsed = when (element) {
+                    is JsonPrimitive -> element.contentOrNull
+                    is JsonObject -> element.text("summaryResult")
+                        ?: element.text("summary")
+                        ?: element.text("content")
+                        ?: element.text("text")
+                    else -> null
+                }
+                if (!parsed.isNullOrBlank()) summary = parsed
+                val after = buildJsonObject {
+                    put("event", "after_generate_summary")
+                    put("eventName", "after_generate_summary")
+                    putJsonObject("eventPayload") {
+                        put("stage", "after_generate_summary")
+                        put("chatId", chatId.toString())
+                        put("previousSummary", previousSummary)
+                        put("summaryResult", summary.orEmpty())
+                    }
+                }
+                runCatching { callHook(hook, after) }
+            }
+        }
+        return summary
+    }
+
+    private fun estimateTokens(text: String): Int = text.length / 4 + 8
+
+    private fun estimateTokens(messages: List<PromptMessage>): Int =
+        messages.sumOf { estimateTokens(it.content) + it.images.size * 256 }
+
+    suspend fun inputMenuToggles(chatId: Long): List<PluginInputToggle> {
+        ensureAllRegistrations()
+        val result = mutableListOf<PluginInputToggle>()
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in allHooks("input_menu_toggle")) {
+                val payload = buildJsonObject {
+                    put("event", "create")
+                    put("eventName", "create")
+                    putJsonObject("eventPayload") {
+                        put("action", "create")
+                        put("chatId", chatId.toString())
+                        put("runtime", "chat")
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                result += parseInputToggles(raw, hook.pluginId)
+            }
+        }
+        return result
+    }
+
+    suspend fun toggleInputMenu(
+        chatId: Long,
+        toggle: PluginInputToggle,
+        checked: Boolean,
+    ): List<PluginInputToggle> {
+        ensureAllRegistrations()
+        val hook = allHooks("input_menu_toggle").firstOrNull { it.pluginId == toggle.pluginId } ?: return emptyList()
+        val payload = buildJsonObject {
+            put("event", "toggle")
+            put("eventName", "toggle")
+            putJsonObject("eventPayload") {
+                put("action", "toggle")
+                put("toggleId", toggle.id)
+                put("chatId", chatId.toString())
+                put("runtime", "chat")
+                put("isChecked", checked)
+                put("checked", checked)
+            }
+        }
+        val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: return emptyList()
+        return parseInputToggles(raw, hook.pluginId)
+    }
+
+    private fun parseInputToggles(raw: String, pluginId: String): List<PluginInputToggle> {
+        val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: return emptyList()
+        val array = when (element) {
+            is JsonArray -> element
+            is JsonObject -> element["toggles"] as? JsonArray
+            else -> null
+        } ?: return emptyList()
+        return array.mapNotNull { item ->
+            val obj = item as? JsonObject ?: return@mapNotNull null
+            val id = obj.text("id") ?: return@mapNotNull null
+            PluginInputToggle(
+                id = id,
+                pluginId = pluginId,
+                title = obj.text("title") ?: id,
+                description = obj.text("description").orEmpty(),
+                icon = obj.text("icon").orEmpty(),
+                checked = (obj["isChecked"] as? JsonPrimitive)?.booleanOrNull == true ||
+                    (obj["checked"] as? JsonPrimitive)?.booleanOrNull == true,
+                slot = obj.text("slot").orEmpty(),
+            )
+        }
+    }
+
+    suspend fun processMessage(
+        chatId: Long,
+        text: String,
+        stage: String,
+        sender: String,
+    ): ChatInputDecision? {
+        ensureAllRegistrations()
+        val hooks = allHooks("message_processing")
+        if (hooks.isEmpty()) return null
+        var current = text
+        var blocked: ChatInputDecision? = null
+        withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+            for (hook in hooks) {
+                val payload = buildJsonObject {
+                    put("event", "message_processing")
+                    put("eventName", "message_processing")
+                    putJsonObject("eventPayload") {
+                        put("chatId", chatId.toString())
+                        put("stage", stage)
+                        put("sender", sender)
+                        put("messageContent", current)
+                    }
+                }
+                val raw = runCatching { callHook(hook, payload) }.getOrNull() ?: continue
+                val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: continue
+                when (element) {
+                    is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }?.let { current = it }
+                    is JsonObject -> {
+                        val action = element.text("action")
+                        val next = element.text("content") ?: element.text("text")
+                        if (action == "block" || action == "consume") {
+                            blocked = ChatInputDecision(action, current, element.text("message"))
+                            return@withTimeoutOrNull
+                        }
+                        if (next != null) current = next
+                    }
+                    else -> Unit
+                }
+            }
+        }
+        return blocked ?: if (current != text) ChatInputDecision("replace", current) else null
+    }
+
+    suspend fun dispatchAppLifecycle(event: String, extras: JsonObject = JsonObject(emptyMap())) {
+        ensureAllRegistrations()
+        val hooks = allHooks("app_lifecycle")
+            .filter { it.event.isBlank() || it.event == event }
+        if (hooks.isEmpty()) return
+        val payload = buildJsonObject {
+            put("event", event)
+            put("eventName", event)
+            putJsonObject("eventPayload") {
+                put("extras", extras)
+            }
+        }
+        hooks.forEach { hook ->
+            withTimeoutOrNull(3_000) { runCatching { callHook(hook, payload) } }
+        }
+    }
+
+    fun notifyAppLifecycle(event: String) {
+        mainScope.launch { runCatching { dispatchAppLifecycle(event) } }
+    }
+
+    suspend fun notifyChatView(event: String, chatId: Long, title: String) {
+        ensureAllRegistrations()
+        val hooks = allHooks("chat_view")
+        if (hooks.isEmpty()) return
+        val payload = buildJsonObject {
+            put("event", event)
+            put("eventName", event)
+            putJsonObject("eventPayload") {
+                put("viewId", chatId.toString())
+                put("chatId", chatId.toString())
+                put("title", title)
+            }
+        }
+        hooks.forEach { hook ->
+            withTimeoutOrNull(5_000) { runCatching { callHook(hook, payload) } }
+        }
+    }
+
+    suspend fun notifyToolLifecycle(
+        event: String,
+        toolName: String,
+        parameters: Map<String, String> = emptyMap(),
+        description: String = "",
+        success: Boolean? = null,
+        resultText: String? = null,
+        errorMessage: String? = null,
+    ) {
+        ensureAllRegistrations()
+        val hooks = allHooks("tool_lifecycle")
+        if (hooks.isEmpty()) return
+        val payload = buildJsonObject {
+            put("event", event)
+            put("eventName", event)
+            putJsonObject("eventPayload") {
+                put("toolName", toolName)
+                if (description.isNotBlank()) put("description", description)
+                putJsonObject("parameters") { parameters.forEach { (key, value) -> put(key, value) } }
+                success?.let { put("success", it) }
+                resultText?.let { put("resultText", it.take(4000)) }
+                errorMessage?.let { put("errorMessage", it.take(4000)) }
+            }
+        }
+        hooks.forEach { hook ->
+            withTimeoutOrNull(3_000) { runCatching { callHook(hook, payload) } }
+        }
+    }
+
+    private fun parsePromptTextResult(element: JsonElement?): Pair<String, String?>? = when (element) {
+        is JsonPrimitive -> element.contentOrNull?.takeIf { it.isNotBlank() }?.let { "replace" to it }
+        is JsonObject -> {
+            val action = element.text("action")
+            if (action == "block" || action == "consume") {
+                action to (element.text("message") ?: element.text("text"))
+            } else {
+                val next = element.text("processedInput")
+                    ?: element.text("systemPrompt")
+                    ?: element.text("toolPrompt")
+                    ?: element.text("rawInput")
+                    ?: element.text("text")
+                next?.let { "replace" to it }
+            }
+        }
+        else -> null
+    }
+
+    private fun parsePromptHistoryResult(raw: String, current: List<PromptMessage>): List<PromptMessage>? {
+        val element = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: return null
+        val array = when (element) {
+            is JsonArray -> element
+            is JsonObject -> element["preparedHistory"] as? JsonArray
+                ?: element["chatHistory"] as? JsonArray
+            else -> null
+        } ?: return null
+        return array.mapNotNull { item ->
+            val obj = item as? JsonObject ?: return@mapNotNull null
+            val role = obj.text("role") ?: obj.text("kind")?.lowercase() ?: return@mapNotNull null
+            val content = obj.text("content") ?: return@mapNotNull null
+            PromptMessage(role, content)
+        }.ifEmpty { current }
+    }
+
+    private fun promptTurns(messages: List<PromptMessage>): JsonArray = buildJsonArray {
+        messages.forEach { message ->
+            add(buildJsonObject {
+                put("kind", message.role.uppercase())
+                put("role", message.role)
+                put("content", message.content)
+            })
+        }
+    }
+
     suspend fun notifyChatRuntime(
         chatId: Long,
         state: String,
         message: String? = null,
         toolName: String? = null,
+        turnToolCalls: Int = 0,
+        sessionToolCalls: Int = 0,
+        activeConversations: Int = 1,
     ) {
         ensureAllRegistrations()
         val payload = buildJsonObject {
@@ -293,9 +819,9 @@ class PluginRuntime(
                 put("state", state)
                 put("isActive", state !in setOf("idle", "completed", "error"))
                 putJsonArray("activeChatIds") { add(JsonPrimitive(chatId)) }
-                put("currentTurnToolInvocationCount", 0)
-                put("activeConversationCount", if (state == "idle") 0 else 1)
-                put("currentSessionToolCount", 0)
+                put("currentTurnToolInvocationCount", turnToolCalls)
+                put("activeConversationCount", if (state == "idle") 0 else activeConversations)
+                put("currentSessionToolCount", sessionToolCalls)
                 put("timestamp", System.currentTimeMillis())
                 if (!message.isNullOrBlank()) put("message", message)
                 if (!toolName.isNullOrBlank()) put("toolName", toolName)
@@ -421,7 +947,15 @@ class PluginRuntime(
         }
 
     private suspend fun executeTool(name: String, arguments: JsonObject, callerId: String): String {
-        compatTool(name, arguments)?.let { return it }
+        val compatName = compatToolName(name)
+        if (compatName != null) {
+            when (permissionOf("compat:$compatName")) {
+                ToolPermission.DENY -> error("工具 $compatName 的权限为拒绝")
+                ToolPermission.ASK -> error("工具 $compatName 需要用户确认，插件不能代为调用")
+                ToolPermission.ALLOW -> Unit
+            }
+            return compatTool(compatName, arguments, callerId)
+        }
         val registry = tools ?: error("宿主工具表未接入")
         val normalized = name.trim().substringAfter(':').substringBefore('@').trim()
         val candidateNames = listOf(name.trim(), normalized, name.trim().replace(':', '_'))
@@ -446,92 +980,148 @@ class PluginRuntime(
         return resolved.execute(arguments)
     }
 
-    private suspend fun compatTool(name: String, arguments: JsonObject): String? = withContext(Dispatchers.IO) {
-        when (name.trim()) {
-            "make_directory" -> {
-                val path = arguments.text("path") ?: error("缺少 path 参数")
-                if (!File(path).mkdirs() && !File(path).isDirectory) error("创建目录失败：$path")
-                "{\"success\":true}"
-            }
-            "delete_file" -> {
-                val path = arguments.text("path") ?: error("缺少 path 参数")
-                File(path).delete()
-                "{\"success\":true}"
-            }
-            "list_files" -> {
-                val path = arguments.text("path") ?: "."
-                val dir = File(path)
-                if (!dir.isDirectory) error("目录不存在：$path")
-                val names = dir.list()?.sorted().orEmpty()
-                buildJsonObject { put("entries", buildJsonArray { names.forEach { add(JsonPrimitive(it)) } }) }.toString()
-            }
-            "read_file" -> {
-                val path = arguments.text("path") ?: error("缺少 path 参数")
-                val file = File(path)
-                if (!file.isFile) error("文件不存在：$path")
-                if (file.length() > 4L * 1024 * 1024) error("文件超过 4 MB")
-                buildJsonObject {
-                    put("path", file.absolutePath)
-                    put("content", file.readText())
-                }.toString()
-            }
-            "write_file" -> {
-                val path = arguments.text("path") ?: error("缺少 path 参数")
-                val content = arguments.text("content") ?: error("缺少 content 参数")
-                val file = File(path)
-                file.parentFile?.mkdirs()
-                file.writeText(content)
-                "{\"success\":true}"
-            }
-            "http_request" -> {
-                val url = arguments.text("url") ?: error("缺少 url 参数")
-                val method = arguments.text("method")?.uppercase() ?: "GET"
-                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = method
-                    instanceFollowRedirects = true
-                    connectTimeout = 15_000
-                    readTimeout = 60_000
-                    setRequestProperty("User-Agent", "IRIS-LocalAI-Plugin/1.0")
-                    (arguments["headers"] as? JsonObject)?.forEach { (key, value) ->
-                        (value as? JsonPrimitive)?.contentOrNull?.let { setRequestProperty(key, it) }
+    private fun compatToolName(name: String): String? =
+        name.trim().takeIf { it in COMPAT_TOOL_NAMES }
+
+    private fun compatRoots(callerId: String): List<File> {
+        val plugin = pluginsProvider().firstOrNull { it.id == callerId }
+            ?: error("插件未启用或不存在：$callerId")
+        return listOf(
+            pluginDirectory(plugin),
+            File(appContext.filesDir, "plugin_config/$callerId"),
+        )
+    }
+
+    private fun compatPath(roots: List<File>, raw: String?, allowRoot: Boolean = false): File {
+        val path = raw?.trim().orEmpty()
+        if (path.isEmpty()) error("路径不能为空")
+        val file = PluginPathGuard.resolve(roots, path)
+            ?: error("路径不在插件目录或配置目录：$path")
+        if (!allowRoot && roots.any { it.canonicalFile == file }) {
+            error("不能操作插件根目录：$path")
+        }
+        return file
+    }
+
+    private suspend fun compatTool(name: String, arguments: JsonObject, callerId: String): String =
+        withContext(Dispatchers.IO) {
+            val roots = compatRoots(callerId)
+            when (name) {
+                "make_directory" -> {
+                    val target = compatPath(roots, arguments.text("path"), allowRoot = true)
+                    if (!target.mkdirs() && !target.isDirectory) error("创建目录失败：${target.absolutePath}")
+                    "{\"success\":true}"
+                }
+                "delete_file" -> {
+                    val target = compatPath(roots, arguments.text("path"))
+                    if (target.isDirectory) {
+                        if (!target.deleteRecursively()) error("删除目录失败：${target.absolutePath}")
+                    } else if (!target.delete() && target.exists()) {
+                        error("删除文件失败：${target.absolutePath}")
                     }
+                    "{\"success\":true}"
                 }
-                val body = arguments.text("body")
-                if (body != null && method != "GET" && method != "HEAD") {
-                    connection.doOutput = true
-                    connection.outputStream.use { it.write(body.toByteArray()) }
+                "list_files" -> {
+                    val target = compatPath(roots, arguments.text("path"), allowRoot = true)
+                    if (!target.isDirectory) error("目录不存在：${target.absolutePath}")
+                    val children = target.listFiles()?.sortedBy { it.name.lowercase() }
+                        ?.take(COMPAT_LIST_LIMIT).orEmpty()
+                    buildJsonObject {
+                        putJsonArray("entries") {
+                            children.forEach { child ->
+                                add(buildJsonObject {
+                                    put("name", child.name)
+                                    put("path", child.absolutePath)
+                                    put("isDirectory", child.isDirectory)
+                                    put("length", if (child.isFile) child.length() else 0L)
+                                })
+                            }
+                        }
+                    }.toString()
                 }
-                try {
-                    val code = connection.responseCode
-                    val stream = if (code in 200..399) connection.inputStream else connection.errorStream
-                    val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                    if (code !in 200..399) error("HTTP $code: ${text.take(300)}")
-                    text
-                } finally {
-                    connection.disconnect()
+                "read_file" -> {
+                    val file = compatPath(roots, arguments.text("path"))
+                    if (!file.isFile) error("文件不存在：${file.absolutePath}")
+                    if (file.length() > COMPAT_READ_BYTES) error("文件超过 4 MB")
+                    buildJsonObject {
+                        put("path", file.absolutePath)
+                        put("content", file.readText())
+                    }.toString()
+                }
+                "write_file" -> {
+                    val file = compatPath(roots, arguments.text("path"))
+                    val content = arguments.text("content") ?: error("缺少 content 参数")
+                    val bytes = content.toByteArray(Charsets.UTF_8)
+                    if (bytes.size > COMPAT_WRITE_BYTES) error("写入内容超过 2 MB")
+                    file.parentFile?.mkdirs()
+                    file.writeBytes(bytes)
+                    "{\"success\":true}"
+                }
+                "http_request" -> compatHttp(arguments)
+                "download_file" -> compatDownload(arguments, roots)
+                else -> error("不支持的兼容工具：$name")
+            }
+        }
+
+    private fun compatHttp(arguments: JsonObject): String {
+        val url = arguments.text("url") ?: error("缺少 url 参数")
+        if (!RemoteFetch.isPublicHttpUrl(url)) error("仅允许公网 HTTP/HTTPS：$url")
+        val method = (arguments.text("method")?.uppercase() ?: "GET")
+        if (method !in COMPAT_HTTP_METHODS) error("不支持的 HTTP 方法：$method")
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            instanceFollowRedirects = true
+            connectTimeout = 20_000
+            readTimeout = 60_000
+            setRequestProperty("User-Agent", "IRIS-LocalAI-Plugin/1.0")
+            (arguments["headers"] as? JsonObject)?.forEach { (key, value) ->
+                (value as? JsonPrimitive)?.contentOrNull?.let {
+                    if (key.isNotBlank()) setRequestProperty(key, it)
                 }
             }
-            "download_file" -> {
-                val url = arguments.text("url") ?: error("缺少 url 参数")
-                val path = arguments.text("destination") ?: arguments.text("path") ?: error("缺少 destination 参数")
-                val target = File(path)
-                target.parentFile?.mkdirs()
-                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = true
-                    connectTimeout = 15_000
-                    readTimeout = 120_000
-                    setRequestProperty("User-Agent", "IRIS-LocalAI-Plugin/1.0")
-                }
-                try {
-                    val code = connection.responseCode
-                    if (code !in 200..399) error("下载失败 HTTP $code")
-                    connection.inputStream.use { input -> target.outputStream().use { input.copyTo(it) } }
-                    buildJsonObject { put("success", true); put("path", target.absolutePath) }.toString()
-                } finally {
-                    connection.disconnect()
-                }
+        }
+        try {
+            val body = arguments.text("body")
+            if (body != null && method !in setOf("GET", "HEAD")) {
+                connection.doOutput = true
+                connection.outputStream.use { it.write(body.toByteArray()) }
             }
-            else -> null
+            val code = connection.responseCode
+            if (!RemoteFetch.isPublicHttpUrl(connection.url.toString())) error("重定向到非公网地址")
+            val stream = if (code in 200..399) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader()?.use { reader ->
+                val output = StringBuilder()
+                val buffer = CharArray(8192)
+                while (true) {
+                    val read = reader.read(buffer)
+                    if (read < 0) break
+                    output.append(buffer, 0, read)
+                    if (output.length > COMPAT_HTTP_BYTES) error("响应超过 1 MB")
+                }
+                output.toString()
+            }.orEmpty()
+            if (code !in 200..399) error("HTTP $code: ${text.take(300)}")
+            return text
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private suspend fun compatDownload(arguments: JsonObject, roots: List<File>): String {
+        val url = arguments.text("url") ?: error("缺少 url 参数")
+        if (!RemoteFetch.isPublicHttpUrl(url)) error("仅允许公网 HTTP/HTTPS：$url")
+        val target = compatPath(roots, arguments.text("destination") ?: arguments.text("path"))
+        target.parentFile?.mkdirs()
+        val part = File(target.parentFile, "${target.name}.part")
+        try {
+            RemoteFetch.downloadToFile(url, part, COMPAT_DOWNLOAD_BYTES, 120_000)
+            if (!part.renameTo(target)) {
+                target.delete()
+                if (!part.renameTo(target)) error("无法写入文件：${target.absolutePath}")
+            }
+            return buildJsonObject { put("success", true); put("path", target.absolutePath) }.toString()
+        } finally {
+            part.delete()
         }
     }
 
@@ -570,6 +1160,43 @@ class PluginRuntime(
 
     private companion object {
         const val HOOK_TIMEOUT_MS = 10_000L
+        const val COMPAT_READ_BYTES = 4L * 1024 * 1024
+        const val COMPAT_WRITE_BYTES = 2L * 1024 * 1024
+        const val COMPAT_HTTP_BYTES = 1_048_576
+        const val COMPAT_DOWNLOAD_BYTES = 128L * 1024 * 1024
+        const val COMPAT_LIST_LIMIT = 2_000
+        val COMPAT_TOOL_NAMES = setOf(
+            "make_directory",
+            "delete_file",
+            "list_files",
+            "read_file",
+            "write_file",
+            "http_request",
+            "download_file",
+        )
+        val COMPAT_HTTP_METHODS = setOf("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD")
+    }
+}
+
+/**
+ * 插件路径边界：绝对路径与相对路径都先 canonical 化，再校验是否落在插件目录或配置目录内，
+ * 防止 `..`、绝对路径与符号链接逃逸。
+ */
+internal object PluginPathGuard {
+    fun resolve(roots: List<File>, raw: String): File? {
+        val normalized = raw.replace('\\', '/').trim()
+        if (normalized.isEmpty()) return null
+        if (normalized.split('/').any { it == ".." }) return null
+        val absolute = normalized.startsWith("/")
+        return roots.mapNotNull { root ->
+            val base = root.canonicalFile
+            val file = if (absolute) {
+                File(normalized).canonicalFile
+            } else {
+                File(base, normalized).canonicalFile
+            }
+            if (file.path == base.path || file.path.startsWith(base.path + File.separator)) file else null
+        }.firstOrNull()
     }
 }
 
@@ -590,6 +1217,7 @@ private class PluginSession(
     private val startMutex = Mutex()
     private val callMutex = Mutex()
     private val pending = ConcurrentHashMap<String, CompletableDeferred<String>>()
+    private val progressCallbacks = ConcurrentHashMap<String, (String) -> Unit>()
     private val scriptError = AtomicReference<String?>(null)
     private val moduleErrors = ConcurrentHashMap<String, String>()
     private val ready = CompletableDeferred<Unit>()
@@ -640,6 +1268,7 @@ private class PluginSession(
                     resources = resources,
                     wasm = wasm,
                     pending = pending,
+                    onIntermediate = { id, value -> progressCallbacks[id]?.invoke(value) },
                     ready = ready,
                     registrations = registrationsJson,
                     scriptError = scriptError,
@@ -701,7 +1330,12 @@ private class PluginSession(
         }
     }
 
-    suspend fun callTool(subpackageId: String, toolName: String, arguments: JsonObject): String {
+    suspend fun callTool(
+        subpackageId: String,
+        toolName: String,
+        arguments: JsonObject,
+        onProgress: ((String) -> Unit)? = null,
+    ): String {
         start()
         val requestId = UUID.randomUUID().toString()
         return call("""
@@ -717,6 +1351,12 @@ private class PluginSession(
                 irisHost.onResult(id, output);
               }
               globalThis.__irisComplete = send;
+              globalThis.__irisToolSessionId = id;
+              globalThis.__irisSendIntermediate = function (value) {
+                try {
+                  irisHost.sendIntermediate(id, typeof value === 'string' ? value : JSON.stringify(value));
+                } catch (error) { }
+              };
               try {
                 var module = (globalThis.__irisModules || {})[%SUB%];
                 if (!module || !Object.prototype.hasOwnProperty.call(module, %TOOL%)) {
@@ -733,7 +1373,36 @@ private class PluginSession(
             .replace("%REQUEST%", requestId.js())
             .replace("%SUB%", subpackageId.js())
             .replace("%TOOL%", toolName.js())
-            .replace("%ARGS%", Json.encodeToString(String.serializer(), Json.encodeToString(JsonObject.serializer(), arguments))), requestId)
+            .replace("%ARGS%", Json.encodeToString(String.serializer(), Json.encodeToString(JsonObject.serializer(), arguments))), requestId, onProgress)
+    }
+
+    suspend fun callProvider(providerId: String, method: String, payload: JsonObject): String {
+        start()
+        val requestId = UUID.randomUUID().toString()
+        return call("""
+            (function () {
+              var id = %REQUEST%;
+              function send(value) {
+                var output = value === undefined ? 'null' : (typeof value === 'string' ? value : JSON.stringify(value));
+                irisHost.onResult(id, output === undefined ? 'null' : String(output));
+              }
+              try {
+                var provider = (globalThis.__irisProviders || {})[%PROVIDER%];
+                if (!provider || typeof provider[%METHOD%] !== 'function') {
+                  throw new Error('插件未注册 AI Provider：' + %PROVIDER%);
+                }
+                Promise.resolve(provider[%METHOD%](JSON.parse(%PAYLOAD%))).then(send).catch(function (error) {
+                  irisHost.onError(id, String(error && error.stack || error));
+                });
+              } catch (error) {
+                irisHost.onError(id, String(error && error.stack || error));
+              }
+            })();
+        """.trimIndent()
+            .replace("%REQUEST%", requestId.js())
+            .replace("%PROVIDER%", providerId.js())
+            .replace("%METHOD%", method.js())
+            .replace("%PAYLOAD%", Json.encodeToString(String.serializer(), Json.encodeToString(JsonObject.serializer(), payload))), requestId)
     }
 
     suspend fun callHook(type: String, hookId: String, payload: JsonObject): String {
@@ -751,6 +1420,8 @@ private class PluginSession(
                 irisHost.onResult(id, output);
               }
               globalThis.__irisComplete = send;
+              globalThis.__irisToolSessionId = id;
+              globalThis.__irisSendIntermediate = function () {};
               try {
                 var hooks = (globalThis.__irisHooks || {})[%TYPE%] || {};
                 var hook = hooks[%ID%];
@@ -769,16 +1440,22 @@ private class PluginSession(
             .replace("%PAYLOAD%", Json.encodeToString(String.serializer(), Json.encodeToString(JsonObject.serializer(), payload))), requestId)
     }
 
-    private suspend fun call(script: String, requestId: String): String = withContext(Dispatchers.Main.immediate) {
+    private suspend fun call(
+        script: String,
+        requestId: String,
+        onProgress: ((String) -> Unit)? = null,
+    ): String = withContext(Dispatchers.Main.immediate) {
         callMutex.withLock {
             val view = webView ?: error("插件会话尚未启动")
             val result = CompletableDeferred<String>()
             pending[requestId] = result
+            if (onProgress != null) progressCallbacks[requestId] = onProgress
             try {
                 view.evaluateJavascript(script, null)
                 withTimeout(30_000) { result.await() }
             } finally {
                 pending.remove(requestId)
+                progressCallbacks.remove(requestId)
             }
         }
     }
@@ -1066,7 +1743,7 @@ private class PluginSession(
                 title = localized(obj["title"]),
                 senders = (obj["senders"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty(),
                 order = (obj["order"] as? JsonPrimitive)?.intOrNull ?: 0,
-                icon = obj.text("icon").orEmpty(),
+                event = obj.text("event").orEmpty(),
                 screen = obj.text("screen").orEmpty(),
                 route = obj.text("route").orEmpty(),
                 surface = obj.text("surface").orEmpty(),
@@ -1077,7 +1754,13 @@ private class PluginSession(
                 else -> hooks += descriptor
             }
         }
-        return PluginRegistrations(hooks = hooks, ui = ui, aiProviders = providers)
+        return PluginRegistrations(
+            hooks = hooks,
+            ui = ui,
+            aiProviders = providers,
+            pluginId = plugin.id,
+            pluginName = plugin.name,
+        )
     }
 
     private fun localized(element: JsonElement?): String = when (element) {
@@ -1126,28 +1809,68 @@ private class PluginSession(
         private val resources: Map<String, File>,
         private val wasm: Map<String, File>,
         private val pending: ConcurrentHashMap<String, CompletableDeferred<String>>,
+        private val onIntermediate: (String, String) -> Unit,
         private val ready: CompletableDeferred<Unit>,
         private val registrations: CompletableDeferred<String>,
         private val scriptError: AtomicReference<String?>,
         private val moduleErrors: ConcurrentHashMap<String, String>,
     ) {
         private var dexLoader: ClassLoader? = null
+        private val loadedCodePaths = mutableListOf<String>()
+        private val javaHandles = ConcurrentHashMap<String, Any>()
 
         @JavascriptInterface
         fun loadDex(path: String): String {
+            val file = requirePluginDirFile(path, "dex")
+            if (file.length() > 16 * 1024 * 1024) throw IllegalArgumentException("dex 超过 16 MB")
+            installDex(file.readBytes())
+            loadedCodePaths += "dex:${file.absolutePath}"
+            return "true"
+        }
+
+        @JavascriptInterface
+        fun loadJar(path: String): String {
+            val file = requirePluginDirFile(path, "jar")
+            if (file.length() > 32 * 1024 * 1024) throw IllegalArgumentException("jar 超过 32 MB")
+            val bytes = ZipFile(file).use { zip ->
+                val entry = zip.getEntry("classes.dex")
+                    ?: throw IllegalArgumentException("jar 内缺少 classes.dex")
+                if (entry.size > 16 * 1024 * 1024) throw IllegalArgumentException("classes.dex 超过 16 MB")
+                zip.getInputStream(entry).use { it.readBytes() }
+            }
+            installDex(bytes)
+            loadedCodePaths += "jar:${file.absolutePath}"
+            return "true"
+        }
+
+        @JavascriptInterface
+        fun javaClassExists(className: String): Boolean {
+            val name = className.trim()
+            if (name.isEmpty()) return false
+            val loader = dexLoader ?: context.classLoader
+            return runCatching { Class.forName(name, false, loader) }.isSuccess
+        }
+
+        @JavascriptInterface
+        fun listLoadedCodePaths(): String = buildJsonArray {
+            loadedCodePaths.forEach { add(JsonPrimitive(it)) }
+        }.toString()
+
+        private fun requirePluginDirFile(path: String, kind: String): File {
             val file = File(path).canonicalFile
             val root = pluginDir.canonicalFile
             if (!file.path.startsWith(root.path + File.separator)) {
-                throw IllegalArgumentException("dex 必须位于插件目录内")
+                throw IllegalArgumentException("$kind 必须位于插件目录内")
             }
-            if (!file.isFile) throw IllegalArgumentException("dex 文件不存在：$path")
-            if (file.length() > 16 * 1024 * 1024) throw IllegalArgumentException("dex 超过 16 MB")
-            val bytes = file.readBytes()
+            if (!file.isFile) throw IllegalArgumentException("$kind 文件不存在：$path")
+            return file
+        }
+
+        private fun installDex(bytes: ByteArray) {
             dexLoader = dalvik.system.InMemoryDexClassLoader(
                 java.nio.ByteBuffer.wrap(bytes),
-                context.classLoader,
+                dexLoader ?: context.classLoader,
             )
-            return "true"
         }
 
         @JavascriptInterface
@@ -1187,7 +1910,126 @@ private class PluginSession(
             )
         }
 
+        @JavascriptInterface
+        fun javaNewInstance(className: String, argsJson: String): String {
+            val loader = dexLoader ?: context.classLoader
+            val type = loader.loadClass(className)
+            val args = runCatching {
+                Json.parseToJsonElement(argsJson).jsonArray
+            }.getOrElse { JsonArray(emptyList()) }
+            var lastError: Throwable? = null
+            for (constructor in type.constructors.filter { it.parameterCount == args.size }) {
+                val converted = args.mapIndexed { index, element ->
+                    convertJavaArgument(element, constructor.parameterTypes[index])
+                }
+                if (converted.any { it === Unconvertible }) continue
+                try {
+                    val value = runBlocking(Dispatchers.Main) {
+                        constructor.newInstance(*converted.toTypedArray())
+                    }
+                    return javaResultJson(value)
+                } catch (error: Throwable) {
+                    lastError = error.cause ?: error
+                }
+            }
+            throw IllegalStateException(
+                "构造 $className 失败：${lastError?.message ?: "没有匹配的构造方法"}",
+                lastError,
+            )
+        }
+
+        @JavascriptInterface
+        fun javaCallInstance(handle: String, methodName: String, argsJson: String): String {
+            val target = javaHandles[handle] ?: throw IllegalArgumentException("Java 实例句柄不存在")
+            val args = runCatching {
+                Json.parseToJsonElement(argsJson).jsonArray
+            }.getOrElse { JsonArray(emptyList()) }
+            var lastError: Throwable? = null
+            for (method in target.javaClass.methods.filter { it.name == methodName && it.parameterCount == args.size }) {
+                val converted = args.mapIndexed { index, element ->
+                    convertJavaArgument(element, method.parameterTypes[index])
+                }
+                if (converted.any { it === Unconvertible }) continue
+                try {
+                    val value = runBlocking(Dispatchers.Main) {
+                        method.invoke(target, *converted.toTypedArray())
+                    }
+                    return javaResultJson(value)
+                } catch (error: Throwable) {
+                    lastError = error.cause ?: error
+                }
+            }
+            throw IllegalStateException(
+                "调用 ${target.javaClass.name}.$methodName 失败：${lastError?.message ?: "没有匹配的实例方法"}",
+                lastError,
+            )
+        }
+
+        @JavascriptInterface
+        fun javaHasInstanceMethod(handle: String, methodName: String): Boolean {
+            val target = javaHandles[handle] ?: return false
+            return target.javaClass.methods.any { it.name == methodName }
+        }
+
+        @JavascriptInterface
+        fun javaGetInstanceField(handle: String, fieldName: String): String {
+            val target = javaHandles[handle] ?: throw IllegalArgumentException("Java 实例句柄不存在")
+            val field = findJavaField(target.javaClass, fieldName)
+                ?: throw IllegalArgumentException("字段不存在：$fieldName")
+            return javaResultJson(field.get(target))
+        }
+
+        @JavascriptInterface
+        fun javaSetInstanceField(handle: String, fieldName: String, valueJson: String): String {
+            val target = javaHandles[handle] ?: throw IllegalArgumentException("Java 实例句柄不存在")
+            val field = findJavaField(target.javaClass, fieldName)
+                ?: throw IllegalArgumentException("字段不存在：$fieldName")
+            val element = runCatching { Json.parseToJsonElement(valueJson) }.getOrNull() ?: JsonNull
+            val converted = convertJavaArgument(element, field.type)
+            if (converted === Unconvertible) throw IllegalArgumentException("字段值类型不匹配：$fieldName")
+            field.set(target, converted)
+            return """{"success":true}"""
+        }
+
+        private fun findJavaField(type: Class<*>, name: String): java.lang.reflect.Field? {
+            var current: Class<*>? = type
+            while (current != null) {
+                val field = runCatching { current.getDeclaredField(name) }.getOrNull()
+                if (field != null) {
+                    field.isAccessible = true
+                    return field
+                }
+                current = current.superclass
+            }
+            return null
+        }
+
+        private fun javaResultJson(value: Any?): String = buildJsonObject {
+            put("success", true)
+            when (value) {
+                null, Unit -> put("data", JsonNull)
+                is String -> put("data", value)
+                is Number -> put("data", JsonPrimitive(value))
+                is Boolean -> put("data", value)
+                is Char -> put("data", value.toString())
+                else -> {
+                    val handle = UUID.randomUUID().toString()
+                    javaHandles[handle] = value
+                    putJsonObject("data") {
+                        put("__irisHandle", handle)
+                        put("__irisClass", value.javaClass.name)
+                    }
+                }
+            }
+        }.toString()
+
         private fun convertJavaArgument(element: JsonElement, type: Class<*>): Any? {
+            if (element is JsonObject) {
+                element["__irisHandle"]?.jsonPrimitive?.contentOrNull?.let { handle ->
+                    val value = javaHandles[handle] ?: return Unconvertible
+                    return if (type == Any::class.java || type.isInstance(value)) value else Unconvertible
+                }
+            }
             if (element is JsonObject && element["__irisContext"]?.jsonPrimitive?.booleanOrNull == true) {
                 return if (type.isAssignableFrom(context.javaClass)) context else Unconvertible
             }
@@ -1209,8 +2051,35 @@ private class PluginSession(
         private object Unconvertible
 
         @JavascriptInterface
+        fun sendIntermediate(id: String, value: String) {
+            onIntermediate(id, value.take(4000))
+        }
+
+        @JavascriptInterface
         fun callTool(toolName: String, argsJson: String, callbackId: String) {
+            startToolCall(toolName, argsJson, callbackId, null)
+        }
+
+        @JavascriptInterface
+        fun callToolStreaming(
+            toolName: String,
+            argsJson: String,
+            callbackId: String,
+            intermediateId: String,
+        ) {
+            startToolCall(toolName, argsJson, callbackId, intermediateId)
+        }
+
+        private fun startToolCall(
+            toolName: String,
+            argsJson: String,
+            callbackId: String,
+            intermediateId: String?,
+        ) {
             scope.launch {
+                if (intermediateId != null) {
+                    emitIntermediate(intermediateId, "{\"status\":\"started\",\"tool\":${toolName.json()}}")
+                }
                 val result = runCatching {
                     val arguments = runCatching {
                         Json.parseToJsonElement(argsJson).jsonObject
@@ -1228,6 +2097,25 @@ private class PluginSession(
                         null,
                     )
                 }
+            }
+        }
+
+        @JavascriptInterface
+        fun toolIntermediate(intermediateId: String, value: String) {
+            Handler(Looper.getMainLooper()).post {
+                webViewProvider()?.evaluateJavascript(
+                    "window[${intermediateId.json()}](${value.json()})",
+                    null,
+                )
+            }
+        }
+
+        private suspend fun emitIntermediate(intermediateId: String, value: String) {
+            withContext(Dispatchers.Main) {
+                webViewProvider()?.evaluateJavascript(
+                    "window[${intermediateId.json()}](${value.json()})",
+                    null,
+                )
             }
         }
 
@@ -1572,20 +2460,8 @@ private class PluginSession(
             return uri.host?.lowercase() in setOf("127.0.0.1", "localhost", "::1", "[::1]")
         }
 
-        private fun resolve(path: String): File? {
-            val normalized = path.replace('\\', '/').trim()
-            if (normalized.split('/').any { it == ".." }) return null
-            val absolute = normalized.startsWith("/")
-            return sequenceOf(pluginDir, configDir).mapNotNull { root ->
-                val base = root.canonicalFile
-                val file = if (absolute) {
-                    File(normalized).canonicalFile
-                } else {
-                    File(base, normalized).canonicalFile
-                }
-                if (file.path == base.path || file.path.startsWith(base.path + File.separator)) file else null
-            }.firstOrNull()
-        }
+        private fun resolve(path: String): File? =
+            PluginPathGuard.resolve(listOf(pluginDir, configDir), path)
 
         private fun String.json(): String = Json.encodeToString(String.serializer(), this)
     }
@@ -1643,13 +2519,37 @@ private class PluginSession(
               return { name: String(name || ''), params: params || {} };
             }
             function __irisCallTool() {
-              var parsed = __irisToolArgs(arguments);
+              var list = Array.prototype.slice.call(arguments);
+              var options = null;
+              if (list.length && list[list.length - 1] && typeof list[list.length - 1] === 'object' &&
+                  typeof list[list.length - 1].onIntermediateResult === 'function') {
+                options = list.pop();
+              }
+              var parsed = __irisToolArgs(list);
               if (!parsed.name) return Promise.reject(new Error('toolCall 缺少工具名'));
               var id = 'tool-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+              var intermediateId = null;
+              if (options) {
+                intermediateId = 'tool-intermediate-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+                window[intermediateId] = function (value) {
+                  try {
+                    options.onIntermediateResult(typeof value === 'string' ? JSON.parse(value) : value);
+                  } catch (error) { }
+                };
+                globalThis.__irisSendIntermediate = function (value) {
+                  try {
+                    irisHost.toolIntermediate(intermediateId, typeof value === 'string' ? value : JSON.stringify(value));
+                  } catch (error) { }
+                };
+              }
               return new Promise(function (resolve, reject) {
                 globalThis.__irisToolPending[id] = { resolve: resolve, reject: reject };
                 try {
-                  irisHost.callTool(parsed.name, JSON.stringify(parsed.params), id);
+                  if (intermediateId) {
+                    irisHost.callToolStreaming(parsed.name, JSON.stringify(parsed.params), id, intermediateId);
+                  } else {
+                    irisHost.callTool(parsed.name, JSON.stringify(parsed.params), id);
+                  }
                 } catch (error) {
                   delete globalThis.__irisToolPending[id];
                   reject(error);
@@ -1668,7 +2568,28 @@ private class PluginSession(
                 });
               },
               callToolAsyncStreaming: function (callbackId, intermediateId, toolType, toolName, paramsJson) {
-                globalThis.__irisCompat.callToolAsync(callbackId, toolType, toolName, paramsJson);
+                var params = {};
+                try { params = paramsJson ? JSON.parse(paramsJson) : {}; } catch (error) { }
+                var id = 'tool-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+                globalThis.__irisSendIntermediate = function (value) {
+                  try {
+                    irisHost.toolIntermediate(String(intermediateId), typeof value === 'string' ? value : JSON.stringify(value));
+                  } catch (error) { }
+                };
+                globalThis.__irisToolPending[id] = {
+                  resolve: function (value) {
+                    try { window[callbackId](JSON.stringify(value), false); } catch (error) { }
+                  },
+                  reject: function (error) {
+                    try { window[callbackId](String(error && error.message || error), true); } catch (e) { }
+                  }
+                };
+                try {
+                  irisHost.callToolStreaming(String(toolName || toolType), JSON.stringify(params), id, String(intermediateId));
+                } catch (error) {
+                  delete globalThis.__irisToolPending[id];
+                  try { window[callbackId](String(error && error.message || error), true); } catch (e) { }
+                }
               }
             };
             globalThis.console = {
@@ -1745,7 +2666,9 @@ private class PluginSession(
             }
             function __irisUiNode(type, props, children) {
               var node = { type: String(type), props: {}, children: [] };
-              var values = props && typeof props === 'object' ? props : {};
+              var values = typeof props === 'string'
+                ? { text: props }
+                : (props && typeof props === 'object' ? props : {});
               Object.keys(values).forEach(function (key) {
                 var value = values[key];
                 if (key === 'content') {
@@ -2084,6 +3007,7 @@ private class PluginSession(
                 title: def.title || def.displayName || null,
                 senders: def.senders || null,
                 order: def.order || 0,
+                event: def.event || null,
                 icon: def.icon || null,
                 screen: def.screen || null,
                 route: def.route || def.routeId || null,
@@ -2128,10 +3052,27 @@ private class PluginSession(
               registerPromptEstimateFinalizeHook: function (def) { __irisRegister('prompt_estimate_finalize', def); },
               registerSummaryGenerateHook: function (def) { __irisRegister('summary_generate', def); },
               registerAiProvider: function (def) { __irisRegister('ai_provider', def); },
-              readResource: function (key) { return Promise.resolve(irisHost.readResource(String(key))); },
+              readResource: function (key, outputFileName, internal) {
+                return Promise.resolve(irisHost.readResource(String(key)));
+              },
               callTool: __irisCallTool,
               callToolAsync: __irisCompat.callToolAsync,
-              getConfigDir: function () { return irisHost.configDir(); },
+              callToolAsyncStreaming: __irisCompat.callToolAsyncStreaming,
+              getConfigDir: function (pluginId) { return irisHost.configDir(); },
+              ui: {
+                floatingWindows: {
+                  capabilities: function () {
+                    return Promise.resolve({ scope: 'unsupported', systemOverlay: false, applicationOverlay: false, supported: false, permissionGranted: false, positioning: false, alwaysOnTop: false, clickThrough: false, focusable: false });
+                  },
+                  requestPermission: function () { return Promise.resolve(false); },
+                  open: function () { return Promise.reject(new Error('IRIS 未支持悬浮窗口')); },
+                  update: function () { return Promise.reject(new Error('IRIS 未支持悬浮窗口')); },
+                  show: function () { return Promise.reject(new Error('IRIS 未支持悬浮窗口')); },
+                  hide: function () { return Promise.reject(new Error('IRIS 未支持悬浮窗口')); },
+                  close: function () { return Promise.reject(new Error('IRIS 未支持悬浮窗口')); },
+                  list: function () { return Promise.resolve([]); }
+                }
+              },
               ipc: {
                 on: function (channel, handler) {
                   channel = String(channel || '').trim();
@@ -2187,6 +3128,39 @@ private class PluginSession(
                 }
               }
             };
+            function __irisRegisterFromJson(register) {
+              return function (spec) {
+                try {
+                  var value = typeof spec === 'string' ? JSON.parse(spec) : spec;
+                  register(value);
+                } catch (error) {
+                  try { irisHost.log('注册失败：' + String(error && error.message || error)); } catch (ignored) { }
+                }
+              };
+            }
+            globalThis.registerToolPkgToolboxUiModule = __irisRegisterFromJson(globalThis.ToolPkg.registerToolboxUiModule);
+            globalThis.registerToolPkgUiRoute = __irisRegisterFromJson(globalThis.ToolPkg.registerUiRoute);
+            globalThis.registerToolPkgNavigationEntry = __irisRegisterFromJson(globalThis.ToolPkg.registerNavigationEntry);
+            globalThis.registerToolPkgDesktopWidget = __irisRegisterFromJson(globalThis.ToolPkg.registerDesktopWidget);
+            globalThis.registerToolPkgAppLifecycleHook = __irisRegisterFromJson(globalThis.ToolPkg.registerAppLifecycleHook);
+            globalThis.registerToolPkgMessageProcessingPlugin = __irisRegisterFromJson(globalThis.ToolPkg.registerMessageProcessingPlugin);
+            globalThis.registerToolPkgXmlRenderPlugin = __irisRegisterFromJson(globalThis.ToolPkg.registerXmlRenderPlugin);
+            globalThis.registerToolPkgInputMenuTogglePlugin = __irisRegisterFromJson(globalThis.ToolPkg.registerInputMenuTogglePlugin);
+            globalThis.registerToolPkgChatInputHook = __irisRegisterFromJson(globalThis.ToolPkg.registerChatInputHook);
+            globalThis.registerToolPkgChatViewHook = __irisRegisterFromJson(globalThis.ToolPkg.registerChatViewHook);
+            globalThis.registerToolPkgChatMessageHook = __irisRegisterFromJson(globalThis.ToolPkg.registerChatMessageHook);
+            globalThis.registerToolPkgChatMessageMenuItem = __irisRegisterFromJson(globalThis.ToolPkg.registerChatMessageMenuItem);
+            globalThis.registerToolPkgChatRuntimeHook = __irisRegisterFromJson(globalThis.ToolPkg.registerChatRuntimeHook);
+            globalThis.registerToolPkgToolLifecycleHook = __irisRegisterFromJson(globalThis.ToolPkg.registerToolLifecycleHook);
+            globalThis.registerToolPkgPromptInputHook = __irisRegisterFromJson(globalThis.ToolPkg.registerPromptInputHook);
+            globalThis.registerToolPkgPromptHistoryHook = __irisRegisterFromJson(globalThis.ToolPkg.registerPromptHistoryHook);
+            globalThis.registerToolPkgPromptEstimateHistoryHook = __irisRegisterFromJson(globalThis.ToolPkg.registerPromptEstimateHistoryHook);
+            globalThis.registerToolPkgSystemPromptComposeHook = __irisRegisterFromJson(globalThis.ToolPkg.registerSystemPromptComposeHook);
+            globalThis.registerToolPkgToolPromptComposeHook = __irisRegisterFromJson(globalThis.ToolPkg.registerToolPromptComposeHook);
+            globalThis.registerToolPkgPromptFinalizeHook = __irisRegisterFromJson(globalThis.ToolPkg.registerPromptFinalizeHook);
+            globalThis.registerToolPkgPromptEstimateFinalizeHook = __irisRegisterFromJson(globalThis.ToolPkg.registerPromptEstimateFinalizeHook);
+            globalThis.registerToolPkgSummaryGenerateHook = __irisRegisterFromJson(globalThis.ToolPkg.registerSummaryGenerateHook);
+            globalThis.registerToolPkgAiProvider = __irisRegisterFromJson(globalThis.ToolPkg.registerAiProvider);
             function __irisShellQuote(value) {
               var quote = String.fromCharCode(39);
               return quote + String(value).split(quote).join(quote + '\\' + quote + quote) + quote;
@@ -2333,6 +3307,95 @@ private class PluginSession(
                 }
               }
             };
+            function __irisUnsupported(name) {
+              return function () { throw new Error('IRIS 未支持：' + name); };
+            }
+            function __irisUnsupportedObject(prefix) {
+              return new Proxy({}, {
+                get: function (target, prop) {
+                  if (typeof prop !== 'string') return undefined;
+                  if (prop === 'then') return undefined;
+                  return __irisUnsupported(prefix + '.' + prop);
+                }
+              });
+            }
+            globalThis.Tools.calc = function (expression) {
+              try { return Promise.resolve(eval('(' + String(expression || '') + ')')); }
+              catch (error) { return Promise.reject(error); }
+            };
+            globalThis.Tools.UI = __irisUnsupportedObject('Tools.UI');
+            globalThis.Tools.FFmpeg = __irisUnsupportedObject('Tools.FFmpeg');
+            globalThis.Tools.Tasker = __irisUnsupportedObject('Tools.Tasker');
+            globalThis.Tools.Workflow = __irisUnsupportedObject('Tools.Workflow');
+            globalThis.Tools.Chat = __irisUnsupportedObject('Tools.Chat');
+            globalThis.Tools.Memory = __irisUnsupportedObject('Tools.Memory');
+            globalThis.Tools.Files.readPart = function (path, startLine, endLine, environment) {
+              var text = globalThis.Tools.Files.read(path, environment);
+              var content = typeof text === 'string' ? text : String(text && text.content || '');
+              var lines = content.split('\n');
+              var start = Math.max(1, Number(startLine) || 1);
+              var count = endLine == null ? 100 : Math.max(1, Number(endLine) - start + 1);
+              return lines.slice(start - 1, start - 1 + count).join('\n');
+            };
+            globalThis.Tools.Files.copy = function (source, destination) {
+              irisHost.writeBase64(String(destination), irisHost.readBase64(String(source)));
+              return { exitCode: 0, output: 'copied' };
+            };
+            globalThis.Tools.Files.create = function (path, content, environment) {
+              return globalThis.Tools.Files.write(path, content, environment);
+            };
+            globalThis.Tools.Files.edit = function (path, oldContent, newContent, environment) {
+              var text = globalThis.Tools.Files.read(path, environment);
+              var content = typeof text === 'string' ? text : String(text && text.content || '');
+              if (content.indexOf(String(oldContent)) < 0) throw new Error('未找到要替换的内容');
+              return globalThis.Tools.Files.write(path, content.replace(String(oldContent), String(newContent)), environment);
+            };
+            globalThis.Tools.Files.apply = function (path, type, oldContent, newContent, environment) {
+              if (type === 'delete') return globalThis.Tools.Files.deleteFile(path, false, environment);
+              if (type === 'create') return globalThis.Tools.Files.create(path, newContent, environment);
+              return globalThis.Tools.Files.edit(path, oldContent, newContent, environment);
+            };
+            globalThis.Tools.Files.grep = function (path, pattern, options, environment) {
+              var text = globalThis.Tools.Files.read(path, environment);
+              var content = typeof text === 'string' ? text : String(text && text.content || '');
+              var flags = options && options.case_insensitive ? 'i' : '';
+              var matcher = new RegExp(String(pattern), flags);
+              return content.split('\n').filter(function (line) { return matcher.test(line); });
+            };
+            globalThis.Tools.Files.zip = __irisUnsupported('Tools.Files.zip');
+            globalThis.Tools.Files.open = __irisUnsupported('Tools.Files.open');
+            globalThis.Tools.Files.share = __irisUnsupported('Tools.Files.share');
+            globalThis.Tools.Net.visit = function (url) {
+              var target = typeof url === 'object' && url ? url.url : url;
+              return globalThis.fetch(String(target), { method: 'GET' }).then(function (response) { return response.text(); });
+            };
+            globalThis.Tools.Net.uploadFile = __irisUnsupported('Tools.Net.uploadFile');
+            ['startBrowser','stopBrowser','browserNavigate','browserNavigateBack','browserClick','browserHover','browserType','browserPressKey','browserSelectOption','browserFillForm','browserDrag','browserResize','browserWaitFor','browserSnapshot','browserTakeScreenshot','browserEvaluate','browserRunCode','browserHandleDialog','browserFileUpload','browserTabs','browserClose','browserCloseAll','browserConsoleMessages','browserNetworkRequests'].forEach(function (name) {
+              globalThis.Tools.Net[name] = __irisUnsupported('Tools.Net.' + name);
+            });
+            globalThis.Tools.Net.cookies = __irisUnsupportedObject('Tools.Net.cookies');
+            globalThis.Tools.System.toast = function (message) { try { irisHost.toast(String(message)); } catch (error) { } return { success: true }; };
+            globalThis.Tools.System.getDeviceInfo = function () { return { platform: 'android', model: '', sdk: 0 }; };
+            globalThis.Tools.System.getSetting = __irisUnsupported('Tools.System.getSetting');
+            globalThis.Tools.System.setSetting = __irisUnsupported('Tools.System.setSetting');
+            globalThis.Tools.System.sendNotification = __irisUnsupported('Tools.System.sendNotification');
+            globalThis.Tools.System.listApps = __irisUnsupported('Tools.System.listApps');
+            globalThis.Tools.System.startApp = __irisUnsupported('Tools.System.startApp');
+            globalThis.Tools.System.stopApp = __irisUnsupported('Tools.System.stopApp');
+            globalThis.Tools.System.installApp = __irisUnsupported('Tools.System.installApp');
+            globalThis.Tools.System.uninstallApp = __irisUnsupported('Tools.System.uninstallApp');
+            globalThis.Tools.System.usePackage = __irisUnsupported('Tools.System.usePackage');
+            globalThis.Tools.System.shell = __irisUnsupported('Tools.System.shell');
+            globalThis.Tools.System.intent = __irisUnsupported('Tools.System.intent');
+            globalThis.Tools.System.sendBroadcast = __irisUnsupported('Tools.System.sendBroadcast');
+            globalThis.Tools.System.getNotifications = __irisUnsupported('Tools.System.getNotifications');
+            globalThis.Tools.System.getLocation = __irisUnsupported('Tools.System.getLocation');
+            globalThis.Tools.System.getAppUsageTime = __irisUnsupported('Tools.System.getAppUsageTime');
+            globalThis.Tools.System.bluetooth = __irisUnsupportedObject('Tools.System.bluetooth');
+            globalThis.Tools.System.music = __irisUnsupportedObject('Tools.System.music');
+            ['listSandboxPackages','setSandboxPackageEnabled','executeSandboxScriptDirect','restartMcpWithLogs','getSpeechServicesConfig','setSpeechServicesConfig','testTtsPlayback','listModelConfigs','createModelConfig','updateModelConfig','deleteModelConfig','listFunctionModelConfigs','getFunctionModelConfig','setFunctionModelConfig','testModelConfigConnection','listCharacterCards','getCharacterCard','createCharacterCard','updateCharacterCard','deleteCharacterCard','setActiveCharacterCard','clearActiveCharacterCard','importCharacterCardFromTavernJson','exportCharacterCardToTavernJson'].forEach(function (name) {
+              globalThis.Tools.SoftwareSettings[name] = __irisUnsupported('Tools.SoftwareSettings.' + name);
+            });
             globalThis.getEnv = function (key) {
               try { return irisHost.getEnv(String(key)); } catch (error) { return ''; }
             };
@@ -2340,6 +3403,77 @@ private class PluginSession(
               try { return Promise.resolve(irisHost.setEnv(String(key), String(value))); }
               catch (error) { return Promise.reject(error); }
             };
+            function __irisUnsupportedCtor(name) {
+              var fn = function () { throw new Error('IRIS 未支持：' + name); };
+              return new Proxy(fn, {
+                get: function (target, prop) {
+                  if (prop === 'then') return undefined;
+                  return __irisUnsupported(name + '.' + String(prop));
+                }
+              });
+            }
+            globalThis.sendIntermediateResult = function (value) {
+              if (typeof globalThis.__irisSendIntermediate === 'function') {
+                globalThis.__irisSendIntermediate(value);
+              }
+            };
+            globalThis.getPluginConfigDir = function () { return irisHost.configDir(); };
+            globalThis.getState = function () { return undefined; };
+            globalThis.getLang = function () { return 'zh'; };
+            globalThis.getCallerName = function () { return undefined; };
+            globalThis.getChatId = function () { return undefined; };
+            globalThis.getToolSessionId = function () { return globalThis.__irisToolSessionId || undefined; };
+            globalThis.getCallerCardId = function () { return undefined; };
+            globalThis.getToolExecutionContext = function () {
+              return {
+                callId: globalThis.__irisToolSessionId || '',
+                java: globalThis.Java,
+                chatId: undefined,
+                callerCardId: undefined,
+                language: 'zh',
+                emitIntermediate: function (xml) { globalThis.sendIntermediateResult(xml); }
+              };
+            };
+            globalThis.OPERIT_DOWNLOAD_DIR = irisHost.configDir() + '/downloads';
+            globalThis.OPERIT_CLEAN_ON_EXIT_DIR = irisHost.configDir() + '/clean_on_exit';
+            globalThis._ = {
+              isEmpty: function (value) {
+                if (value == null) return true;
+                if (typeof value === 'string' || Array.isArray(value)) return value.length === 0;
+                return typeof value === 'object' && Object.keys(value).length === 0;
+              },
+              isString: function (value) { return typeof value === 'string'; },
+              isNumber: function (value) { return typeof value === 'number' && isFinite(value); },
+              isBoolean: function (value) { return typeof value === 'boolean'; },
+              isObject: function (value) { return value != null && typeof value === 'object'; },
+              isArray: function (value) { return Array.isArray(value); },
+              forEach: function (collection, iteratee) {
+                if (collection == null) return collection;
+                if (Array.isArray(collection)) collection.forEach(iteratee);
+                else Object.keys(collection).forEach(function (key) { iteratee(collection[key], key, collection); });
+                return collection;
+              },
+              map: function (collection, iteratee) {
+                if (collection == null) return [];
+                if (Array.isArray(collection)) return collection.map(iteratee);
+                return Object.keys(collection).map(function (key) { return iteratee(collection[key], key, collection); });
+              }
+            };
+            globalThis.dataUtils = {
+              parseJson: function (text) { return JSON.parse(String(text)); },
+              stringifyJson: function (value) { return JSON.stringify(value); },
+              formatDate: function (value) {
+                var date = value == null ? new Date() : new Date(value);
+                return isNaN(date.getTime()) ? '' : date.toISOString();
+              }
+            };
+            globalThis.exports = {};
+            globalThis.Intent = function (action) { return { action: action, extras: {} }; };
+            globalThis.IntentFlag = {};
+            globalThis.IntentAction = {};
+            globalThis.IntentCategory = {};
+            globalThis.UINode = __irisUnsupportedCtor('UINode');
+            globalThis.Android = __irisUnsupportedCtor('Android');
             globalThis.Tools.System.getAppContext = function () {
               return globalThis.Java.getApplicationContext();
             };
@@ -2404,14 +3538,88 @@ private class PluginSession(
               return file;
             }
             var __irisJavaDexPrefixes = [];
+            function __irisJavaHandle(data) {
+              if (data && typeof data === 'object' && data.__irisHandle) {
+                return __irisJavaInstanceProxy(String(data.__irisHandle), String(data.__irisClass || ''));
+              }
+              return data;
+            }
+            function __irisJavaJson(raw) {
+              var parsed = JSON.parse(String(raw || 'null'));
+              if (parsed && parsed.success === false) throw new Error(parsed.error || 'Java 调用失败');
+              return __irisJavaHandle(parsed ? parsed.data : null);
+            }
+            function __irisJavaNewInstance(className, args) {
+              return __irisJavaJson(irisHost.javaNewInstance(String(className), JSON.stringify(args || [])));
+            }
+            function __irisJavaCallInstanceRaw(handle, method, args) {
+              return __irisJavaJson(irisHost.javaCallInstance(String(handle), String(method), JSON.stringify(args || [])));
+            }
+            function __irisJavaInstanceProxy(handle, className) {
+              var target = {
+                __irisHandle: String(handle),
+                __irisClass: String(className),
+                toString: function () { return String(className) + '@' + String(handle); }
+              };
+              return new Proxy(target, {
+                get: function (t, prop) {
+                  if (prop in t) return t[prop];
+                  if (prop === 'then') return undefined;
+                  if (prop === 'call') {
+                    return function (method) {
+                      return __irisJavaCallInstanceRaw(handle, method, Array.prototype.slice.call(arguments, 1));
+                    };
+                  }
+                  if (prop === 'get') {
+                    return function (field) {
+                      return __irisJavaJson(irisHost.javaGetInstanceField(String(handle), String(field)));
+                    };
+                  }
+                  if (prop === 'set') {
+                    return function (field, value) {
+                      irisHost.javaSetInstanceField(String(handle), String(field), JSON.stringify(value));
+                      return true;
+                    };
+                  }
+                  if (prop === 'hasMethod') {
+                    return function (method) {
+                      return !!irisHost.javaHasInstanceMethod(String(handle), String(method));
+                    };
+                  }
+                  return function () {
+                    return __irisJavaCallInstanceRaw(handle, prop, Array.prototype.slice.call(arguments));
+                  };
+                },
+                set: function (t, prop, value) {
+                  if (prop === '__irisHandle' || prop === '__irisClass') {
+                    t[prop] = value;
+                    return true;
+                  }
+                  irisHost.javaSetInstanceField(String(handle), String(prop), JSON.stringify(value));
+                  return true;
+                }
+              });
+            }
             function __irisJavaClassProxy(className) {
-              return new Proxy({}, {
+              var target = function () {
+                return __irisJavaNewInstance(className, Array.prototype.slice.call(arguments));
+              };
+              return new Proxy(target, {
                 get: function (target, method) {
                   if (method === 'then' || typeof method === 'symbol') return undefined;
                   if (method === 'class' || method === 'getName') return className;
+                  if (method === 'newInstance') {
+                    return function () {
+                      return __irisJavaNewInstance(className, Array.prototype.slice.call(arguments));
+                    };
+                  }
+                  if (method === 'exists') return function () { return irisHost.javaClassExists(className); };
                   return function () {
                     var args = Array.prototype.slice.call(arguments).map(function (value) {
                       if (value && value.__irisContext) return { __irisContext: true };
+                      if (value && value.__irisHandle) {
+                        return { __irisHandle: String(value.__irisHandle), __irisClass: String(value.__irisClass || '') };
+                      }
                       return value === undefined ? null : value;
                     });
                     var raw = irisHost.invokeJavaStatic(className, String(method), JSON.stringify(args));
@@ -2620,13 +3828,8 @@ private class PluginSession(
               implement: function () { throw new Error('Java 接口代理不在 WebView 沙箱支持范围'); },
               proxy: function () { throw new Error('Java 接口代理不在 WebView 沙箱支持范围'); },
               classExists: function (name) {
-                return [
-                  'java.io.File', 'java.lang.String', 'java.lang.StringBuilder',
-                  'java.nio.charset.StandardCharsets', 'java.nio.file.Files',
-                  'java.security.MessageDigest', 'java.util.Base64', 'java.util.ArrayList',
-                  'java.util.HashMap', 'java.io.FileOutputStream', 'java.io.OutputStreamWriter',
-                  'java.io.BufferedWriter', 'java.lang.System', 'java.util.Date'
-                ].indexOf(String(name || '').trim()) >= 0;
+                try { return irisHost.javaClassExists(String(name || '').trim()); }
+                catch (error) { return false; }
               }
             };
             globalThis.Java.getApplicationContext = function () {
@@ -2691,14 +3894,107 @@ private class PluginSession(
                 }
               };
             };
+            function __irisJavaPackage(prefix) {
+              return new Proxy({}, {
+                get: function (target, prop) {
+                  if (typeof prop !== 'string' || prop === 'then') return undefined;
+                  var name = prefix ? prefix + '.' + prop : prop;
+                  if (/^[A-Z]/.test(prop)) return __irisJavaType(name);
+                  return __irisJavaPackage(name);
+                }
+              });
+            }
+            var __irisJavaBase = globalThis.Java;
+            globalThis.Java = new Proxy(__irisJavaBase, {
+              get: function (target, prop) {
+                if (prop in target) return target[prop];
+                if (typeof prop !== 'string') return undefined;
+                if (prop === 'java' || prop === 'android' || prop === 'kotlin') {
+                  return __irisJavaPackage(prop);
+                }
+                return undefined;
+              }
+            });
+            globalThis.Java.package = __irisJavaPackage;
             globalThis.Kotlin = globalThis.Java;
             globalThis.NativeInterface = {
               callTool: __irisCallTool,
               callToolAsync: __irisCompat.callToolAsync,
+              callToolAsyncStreaming: __irisCompat.callToolAsyncStreaming,
               logInfo: function (message) { irisHost.log(String(message)); },
-              logError: function (message) { irisHost.log(String(message)); }
+              logError: function (message) { irisHost.log(String(message)); },
+              logDebug: function (message, data) { irisHost.log(String(message) + (data ? ' ' + String(data) : '')); },
+              reportError: function (type, message, line, stack) {
+                try { irisHost.log('[reportError] ' + String(type) + ': ' + String(message) + ' @' + String(line) + '\n' + String(stack || '')); } catch (error) { }
+              },
+              getPluginConfigDir: function () { return irisHost.configDir(); },
+              registerImageFromBase64: function (base64, mimeType) {
+                var dir = irisHost.configDir() + '/images';
+                irisHost.mkdirs(dir);
+                var path = dir + '/' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.bin';
+                irisHost.writeBase64(path, String(base64));
+                return '<link type="image" path="' + path + '" mime="' + String(mimeType || '') + '"/>';
+              },
+              registerImageFromPath: function (path) {
+                return '<link type="image" path="' + String(path) + '"/>';
+              },
+              javaClassExists: function (name) { return irisHost.javaClassExists(String(name)); },
+              javaLoadDex: function (path, optionsJson) {
+                try { irisHost.loadDex(String(path)); return JSON.stringify({ success: true, data: { type: 'dex', path: String(path) } }); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaLoadJar: function (path) {
+                try { irisHost.loadJar(String(path)); return JSON.stringify({ success: true, data: { type: 'jar', path: String(path) } }); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaListLoadedCodePaths: function () {
+                try { return JSON.stringify({ success: true, data: JSON.parse(irisHost.listLoadedCodePaths()) }); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaGetApplicationContext: function () { return JSON.stringify({ success: true, data: { __irisContext: true } }); },
+              javaGetCurrentActivity: function () { return JSON.stringify({ success: false, error: 'IRIS 未提供 Activity 句柄' }); },
+              javaNewInstance: function (className, argsJson) {
+                try { return irisHost.javaNewInstance(String(className), String(argsJson || '[]')); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaCallStatic: function (className, methodName, argsJson) {
+                try { return JSON.stringify({ success: true, data: irisHost.invokeJavaStatic(String(className), String(methodName), String(argsJson || '[]')) }); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaCallInstance: function (handle, methodName, argsJson) {
+                try { return irisHost.javaCallInstance(String(handle), String(methodName), String(argsJson || '[]')); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaHasInstanceMethod: function (handle, methodName) {
+                try { return JSON.stringify({ success: true, data: !!irisHost.javaHasInstanceMethod(String(handle), String(methodName)) }); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaGetStaticField: function () { return JSON.stringify({ success: false, error: 'IRIS 未支持静态字段读取' }); },
+              javaSetStaticField: function () { return JSON.stringify({ success: false, error: 'IRIS 未支持静态字段写入' }); },
+              javaGetInstanceField: function (handle, fieldName) {
+                try { return irisHost.javaGetInstanceField(String(handle), String(fieldName)); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              },
+              javaSetInstanceField: function (handle, fieldName, valueJson) {
+                try { return irisHost.javaSetInstanceField(String(handle), String(fieldName), String(valueJson || 'null')); }
+                catch (error) { return JSON.stringify({ success: false, error: String(error && error.message || error) }); }
+              }
             };
+            [
+              'registerToolPkgToolboxUiModule', 'registerToolPkgUiRoute', 'registerToolPkgNavigationEntry',
+              'registerToolPkgDesktopWidget', 'registerToolPkgAppLifecycleHook', 'registerToolPkgMessageProcessingPlugin',
+              'registerToolPkgXmlRenderPlugin', 'registerToolPkgInputMenuTogglePlugin', 'registerToolPkgChatInputHook',
+              'registerToolPkgChatViewHook', 'registerToolPkgChatMessageHook', 'registerToolPkgChatMessageMenuItem',
+              'registerToolPkgChatRuntimeHook', 'registerToolPkgToolLifecycleHook', 'registerToolPkgPromptInputHook',
+              'registerToolPkgPromptHistoryHook', 'registerToolPkgPromptEstimateHistoryHook',
+              'registerToolPkgSystemPromptComposeHook', 'registerToolPkgToolPromptComposeHook',
+              'registerToolPkgPromptFinalizeHook', 'registerToolPkgPromptEstimateFinalizeHook',
+              'registerToolPkgSummaryGenerateHook', 'registerToolPkgAiProvider'
+            ].forEach(function (name) {
+              globalThis.NativeInterface[name] = globalThis[name];
+            });
             globalThis.toolCall = __irisCallTool;
+            globalThis.__irisSendIntermediate = function () {};
             globalThis.complete = function (value) { globalThis.__irisComplete(value); };
             </script></head><body></body></html>
         """.trimIndent()

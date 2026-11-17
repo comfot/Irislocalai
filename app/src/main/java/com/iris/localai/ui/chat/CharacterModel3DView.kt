@@ -55,18 +55,24 @@ internal fun CharacterModel3DView(
     motionIdle: Boolean = false,
     motionPack: String = "",
     motionAxisFix: Int = 1,
+    previewVrmaUrl: String? = null,
+    speaking: Boolean = false,
+    mouthAmplitude: Float = 0f,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val appSettings by remember(context) {
         (context.applicationContext as IrisApp).graph.settings.settings
     }.collectAsStateWithLifecycle()
-    val vrmaEnabled = appSettings.vrmMotionEngine == VrmMotionEngine.VRMA
+    val vrmaEnabled = appSettings.vrmMotionEngine == VrmMotionEngine.VRMA || previewVrmaUrl != null
     val resolvedEndpoint = if (vrmaEnabled) "" else motionEndpoint
     val resolvedPack = if (vrmaEnabled) "vrma" else motionPack
-    val key = "${modelFile.absolutePath}|$modelType|$accentHex|$dark|$portrait|$interactive|$modelRoot|$resolvedEndpoint|$motionIdle|$resolvedPack|$motionAxisFix|$vrmaEnabled"
+    val key = "${modelFile.absolutePath}|$modelType|$accentHex|$dark|$portrait|$interactive|$modelRoot|$resolvedEndpoint|$motionIdle|$resolvedPack|$motionAxisFix|$vrmaEnabled|${previewVrmaUrl.orEmpty()}"
     var webView by remember { mutableStateOf<WebView?>(null) }
-    val motionEnabled = resolvedEndpoint.isNotBlank() || vrmaEnabled
+    LaunchedEffect(speaking, mouthAmplitude, webView) {
+        applyCharacterMouth(webView, speaking, mouthAmplitude)
+    }
+    val motionEnabled = previewVrmaUrl == null && (resolvedEndpoint.isNotBlank() || vrmaEnabled)
     DisposableEffect(motionEnabled) {
         MotionBridge.registerView(motionEnabled)
         onDispose { MotionBridge.unregisterView(motionEnabled) }
@@ -75,6 +81,7 @@ internal fun CharacterModel3DView(
     val expressionCommand by MotionBridge.expressionCommand.collectAsState()
     val vrmaCommand by MotionBridge.vrmaCommand.collectAsState()
     LaunchedEffect(motionCommand?.seq) {
+        if (previewVrmaUrl != null) return@LaunchedEffect
         val command = motionCommand ?: return@LaunchedEffect
         webView?.evaluateJavascript(
             "window.irisMotion&&window.irisMotion.play(${JSONObject.quote(command.action)})",
@@ -82,17 +89,19 @@ internal fun CharacterModel3DView(
         )
     }
     LaunchedEffect(vrmaCommand?.seq) {
+        if (previewVrmaUrl != null) return@LaunchedEffect
         val command = vrmaCommand ?: return@LaunchedEffect
         if (command.url.isBlank()) {
             webView?.evaluateJavascript("window.irisMotion&&window.irisMotion.stopVrma()", null)
         } else {
             webView?.evaluateJavascript(
-                "window.irisMotion&&window.irisMotion.playVrma(${JSONObject.quote(command.url)}, ${command.loop})",
+                "window.irisMotion&&window.irisMotion.playVrma(${JSONObject.quote(command.url)}, ${command.loop}, ${command.holdIdle})",
                 null,
             )
         }
     }
     LaunchedEffect(expressionCommand?.seq) {
+        if (previewVrmaUrl != null) return@LaunchedEffect
         val name = expressionCommand?.name ?: return@LaunchedEffect
         webView?.evaluateJavascript(
             "window.irisMotion&&window.irisMotion.setExpression(${JSONObject.quote(name)})",
@@ -126,16 +135,21 @@ internal fun CharacterModel3DView(
                         view: WebView,
                         request: WebResourceRequest,
                     ): WebResourceResponse? = interceptCharacterModel(context, request)
+
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        applyCharacterMouth(view, speaking, mouthAmplitude)
+                    }
                 }
-                loadCharacter(this, context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, resolvedEndpoint, motionIdle, resolvedPack, motionAxisFix, vrmaEnabled)
+                loadCharacter(this, context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, resolvedEndpoint, motionIdle, resolvedPack, motionAxisFix, vrmaEnabled, previewVrmaUrl, speaking, mouthAmplitude)
                 tag = key
             }
         },
         update = { view ->
             if (view.tag != key) {
                 view.tag = key
-                loadCharacter(view, view.context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, resolvedEndpoint, motionIdle, resolvedPack, motionAxisFix, vrmaEnabled)
+                loadCharacter(view, view.context, modelFile, modelType, accentHex, dark, portrait, interactive, modelRoot, resolvedEndpoint, motionIdle, resolvedPack, motionAxisFix, vrmaEnabled, previewVrmaUrl, speaking, mouthAmplitude)
             }
+            applyCharacterMouth(view, speaking, mouthAmplitude)
         },
         onRelease = { view ->
             webView = null
@@ -160,6 +174,9 @@ private fun loadCharacter(
     motionPack: String,
     motionAxisFix: Int,
     vrmaEnabled: Boolean,
+    previewVrmaUrl: String?,
+    speaking: Boolean,
+    mouthAmplitude: Float,
 ) {
     val storage = (context.applicationContext as IrisApp).graph.storage
     val root = storage.containingRoot(modelRoot, modelFile)
@@ -191,6 +208,9 @@ private fun loadCharacter(
         .put("pack", motionPack)
         .put("axisFix", motionAxisFix)
         .put("vrmaEnabled", vrmaEnabled)
+        .put("previewVrma", previewVrmaUrl.orEmpty())
+        .put("speaking", speaking)
+        .put("mouthAmplitude", mouthAmplitude.coerceIn(0f, 1f))
         .toString()
     view.loadDataWithBaseURL(
         "https://$MODEL_HOST/",
@@ -201,11 +221,41 @@ private fun loadCharacter(
     )
 }
 
+private fun applyCharacterMouth(view: WebView?, speaking: Boolean, mouthAmplitude: Float) {
+    val mouth = when {
+        mouthAmplitude > 0.02f -> mouthAmplitude.coerceIn(0f, 1f)
+        speaking -> 0.28f
+        else -> 0f
+    }
+    view?.evaluateJavascript(
+        "window.irisMotion&&window.irisMotion.setSpeaking(${if (speaking) "true" else "false"});" +
+            "window.irisMotion&&window.irisMotion.setMouthOpen($mouth);",
+        null,
+    )
+}
+
 internal fun interceptCharacterModel(context: Context, request: WebResourceRequest): WebResourceResponse? {
     val url = request.url
     if (url.host != MODEL_HOST) return null
     val path = url.path ?: return null
     if (path.startsWith("/assets/")) return assetResponse(context, Uri.decode(path.removePrefix("/assets/")))
+    if (path.startsWith("/vrma_pending/")) {
+        val name = Uri.decode(path.removePrefix("/vrma_pending/")).replace('\\', '/')
+        val file = (context.applicationContext as IrisApp).graph.vrmaGeneration.pendingFile(name)
+            ?: return notFound()
+        return WebResourceResponse(
+            "model/gltf-binary",
+            null,
+            200,
+            "OK",
+            mapOf(
+                "Access-Control-Allow-Origin" to "*",
+                "Content-Length" to file.length().toString(),
+                "Cache-Control" to "no-store",
+            ),
+            file.inputStream(),
+        )
+    }
     if (path == "/hast/motion") {
         val name = Uri.decode(url.getQueryParameter("name").orEmpty())
         val json = HastMotionStore.get(context).motionJson(name) ?: return notFound()

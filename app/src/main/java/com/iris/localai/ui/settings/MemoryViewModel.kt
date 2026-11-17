@@ -42,6 +42,8 @@ class MemoryViewModel(application: Application) : AndroidViewModel(application) 
 
     fun digestText(): String = graph.memory.digestText()
 
+    fun embeddingStatus(): String = graph.memory.embeddingStatus
+
     fun folders(): List<String> = graph.memory.memoryFolders()
 
     fun filterMemories(query: String, folder: String?): List<MemoryItem> =

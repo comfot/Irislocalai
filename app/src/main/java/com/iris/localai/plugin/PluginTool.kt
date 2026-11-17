@@ -2,6 +2,7 @@ package com.iris.localai.plugin
 
 import com.iris.localai.agent.Tool
 import com.iris.localai.agent.ToolRegistry
+import com.iris.localai.agent.ToolSource
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -105,7 +106,12 @@ class PluginToolInstaller(
             val bindings = store.enabledBindings()
             val names = bindings.map { store.runtimeName(it) }.toSet()
             registered.filterNot { it in names }.forEach(registry::unregister)
-            bindings.forEach { binding -> registry.register(PluginTool(store, runtime, binding)) }
+            bindings.forEach { binding ->
+                registry.register(
+                    PluginTool(store, runtime, binding),
+                    ToolSource.Plugin(binding.plugin.id, binding.plugin.name, binding.subpackage.id),
+                )
+            }
             registered.clear()
             registered.addAll(names)
             onChanged()

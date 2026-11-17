@@ -176,6 +176,28 @@ class ModelProfileStore(context: Context) {
         }
     }
 
+    fun syncPluginProviders(refs: List<PluginAiProviderRef>) {
+        val pluginProviders = refs.map { ref ->
+            val id = "plugin-" + ref.pluginId.map { if (it.isLetterOrDigit()) it else '_' }.joinToString("") +
+                "-" + ref.providerId.map { if (it.isLetterOrDigit()) it else '_' }.joinToString("")
+            val name = ref.displayName.ifBlank { ref.pluginName.ifBlank { ref.pluginId } }
+            ModelProvider(
+                id = id,
+                name = name,
+                kind = ProviderKind.PLUGIN,
+                vendor = CloudVendor.CUSTOM,
+                pluginId = ref.pluginId,
+                pluginProviderId = ref.providerId,
+                roles = setOf(ModelRole.LANGUAGE),
+                models = listOf(ProviderModel(ref.providerId.ifBlank { name })),
+            )
+        }
+        val next = _providers.value.filter { it.kind != ProviderKind.PLUGIN } + pluginProviders
+        if (next == _providers.value) return
+        _providers.value = next
+        persistProviders()
+    }
+
     fun addProvider(name: String, kind: ProviderKind, roles: Set<ModelRole>): ModelProvider? {
         val cleaned = name.trim()
         if (!isProviderNameAvailable(cleaned)) return null
@@ -380,6 +402,8 @@ class ModelProfileStore(context: Context) {
                 if (includeApiKey) put("apiKey", provider.apiKey)
                 put("endpoint", provider.endpoint)
                 put("localModelPath", provider.localModelPath)
+                put("pluginId", provider.pluginId)
+                put("pluginProviderId", provider.pluginProviderId)
                 putJsonArray("roles") {
                     provider.roles.sortedBy { it.ordinal }.forEach { add(it.name) }
                 }
@@ -587,6 +611,8 @@ class ModelProfileStore(context: Context) {
             apiKey = obj.string("apiKey"),
             endpoint = obj.string("endpoint"),
             localModelPath = obj.string("localModelPath"),
+            pluginId = obj.string("pluginId"),
+            pluginProviderId = obj.string("pluginProviderId"),
             roles = roles,
             models = models,
         )
@@ -611,6 +637,8 @@ class ModelProfileStore(context: Context) {
             apiKey = obj.string("apiKey"),
             endpoint = obj.string("endpoint").ifBlank { vendor.defaultEndpoint },
             localModelPath = obj.string("localModelPath"),
+            pluginId = obj.string("pluginId"),
+            pluginProviderId = obj.string("pluginProviderId"),
             roles = ModelRole.entries.toSet(),
             models = if (modelName.isBlank()) emptyList() else {
                 listOf(ProviderModel(modelName, capabilities = capabilities))
@@ -623,6 +651,8 @@ class ModelProfileStore(context: Context) {
             left.vendor == right.vendor &&
             left.endpoint == right.endpoint &&
             left.localModelPath == right.localModelPath &&
+            left.pluginId == right.pluginId &&
+            left.pluginProviderId == right.pluginProviderId &&
             left.apiKey == right.apiKey &&
             left.models.map { it.name } == right.models.map { it.name }
 

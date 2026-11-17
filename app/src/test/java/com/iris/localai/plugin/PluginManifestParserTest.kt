@@ -45,7 +45,6 @@ class PluginManifestParserTest {
         assertEquals("base.pkg", manifest.requirements.single().id)
         assertEquals("resources/logo.png", manifest.resources.single().path)
         assertEquals("modules/core.wasm", manifest.wasmModules.single().path)
-        assertEquals(listOf("add"), manifest.wasmModules.single().exports)
         assertTrue(!manifest.enabledByDefault)
     }
 

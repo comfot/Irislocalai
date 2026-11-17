@@ -235,6 +235,7 @@ class SettingsRepository(
             .putBoolean(KEY_MEMORY_SUGGEST, next.memorySuggest)
             .putBoolean(KEY_MEMORY_AUTO_DIARY, next.memoryAutoDiary)
             .putBoolean(KEY_MEMORY_AUTO_SAVE, next.memoryAutoSave)
+            .putBoolean(KEY_MEMORY_AUTO_SAVE_CLOUD, next.memoryAutoSaveCloud)
             .putString(KEY_TTS_ENGINE, next.ttsEngine.name)
             .putString(KEY_TTS_LOCAL_MODEL, next.ttsLocalModelId)
             .putFloat(KEY_TTS_SPEED, next.ttsSpeed)
@@ -337,7 +338,7 @@ class SettingsRepository(
         motionEndpoint = prefs.getString(KEY_MOTION_ENDPOINT, "") ?: "",
         motionApiKey = prefs.getString(KEY_MOTION_KEY, "") ?: "",
         motionDurationSeconds = prefs.getInt(KEY_MOTION_DURATION, 5),
-        motionAutoIdle = prefs.getBoolean(KEY_MOTION_AUTO_IDLE, false),
+        motionAutoIdle = prefs.getBoolean(KEY_MOTION_AUTO_IDLE, true),
         motionInCall = prefs.getBoolean(KEY_MOTION_IN_CALL, true),
         motionAxisFix = prefs.getInt(KEY_MOTION_AXIS, 1),
         motionServiceAutoStart = prefs.getBoolean(KEY_MOTION_AUTO_START, true),
@@ -395,6 +396,7 @@ class SettingsRepository(
         memorySuggest = prefs.getBoolean(KEY_MEMORY_SUGGEST, true),
         memoryAutoDiary = prefs.getBoolean(KEY_MEMORY_AUTO_DIARY, true),
         memoryAutoSave = prefs.getBoolean(KEY_MEMORY_AUTO_SAVE, true),
+        memoryAutoSaveCloud = prefs.getBoolean(KEY_MEMORY_AUTO_SAVE_CLOUD, false),
         ttsEngine = enumOf(prefs.getString(KEY_TTS_ENGINE, null), VoiceEngineType.SYSTEM),
         ttsLocalModelId = prefs.getString(KEY_TTS_LOCAL_MODEL, "") ?: "",
         ttsSpeed = prefs.getFloat(KEY_TTS_SPEED, 1.0f),
@@ -598,6 +600,7 @@ class SettingsRepository(
         const val KEY_MEMORY_SUGGEST = "memory_suggest"
         const val KEY_MEMORY_AUTO_DIARY = "memory_auto_diary"
         const val KEY_MEMORY_AUTO_SAVE = "memory_auto_save"
+        const val KEY_MEMORY_AUTO_SAVE_CLOUD = "memory_auto_save_cloud"
         const val KEY_TTS_ENGINE = "tts_engine"
         const val KEY_TTS_LOCAL_MODEL = "tts_local_model"
         const val KEY_TTS_SPEED = "tts_speed"

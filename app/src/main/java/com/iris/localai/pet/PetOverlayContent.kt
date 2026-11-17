@@ -247,6 +247,7 @@ private fun ModelView(
             dark = false,
             interactive = false,
             modelRoot = modelRoot,
+            speaking = speaking,
             modifier = modifier,
         )
     }

@@ -50,7 +50,9 @@ internal fun MMDView(
     val context = LocalContext.current
     val graph = remember(context) { (context.applicationContext as IrisApp).graph }
     val appSettings by graph.settings.settings.collectAsStateWithLifecycle()
-    val idleMotionAsset = appSettings.idleMotionAsset
+    val idleMotionAsset = appSettings.idleMotionAsset.ifBlank {
+        graph.motionAssets.assets.value.firstOrNull { it.category == MotionCategory.IDLE }?.id.orEmpty()
+    }
     val renderScale = appSettings.mmdRenderScale
     val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot|$idleMotionAsset"
     var webView by remember { mutableStateOf<WebView?>(null) }
@@ -75,7 +77,7 @@ internal fun MMDView(
                 view.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
             } else {
                 view.evaluateJavascript(
-                    "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop})",
+                    "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop}, ${command.holdIdle})",
                     null,
                 )
             }
@@ -117,7 +119,7 @@ internal fun MMDView(
         }
         if (asset != null) {
             webView?.evaluateJavascript(
-                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(asset.id)}, ${asset.category == MotionCategory.DANCE})",
+                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(asset.id)}, ${asset.category == MotionCategory.DANCE}, ${asset.name.contains("坐")})",
                 null,
             )
         }
@@ -185,7 +187,7 @@ internal fun MMDView(
                             view.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
                         } else {
                             view.evaluateJavascript(
-                                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop})",
+                                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop}, ${command.holdIdle})",
                                 null,
                             )
                         }

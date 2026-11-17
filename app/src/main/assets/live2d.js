@@ -309,6 +309,19 @@
     },
   }
 
+  function writeMouth(core, value) {
+    const candidates = ['ParamMouthOpenY', 'ParamMouthOpen', 'ParamMouthOpenY2', 'MouthOpenY', 'MouthOpen']
+    for (const id of candidates) {
+      try {
+        const index = core.getParameterIndex(id)
+        if (index >= 0) {
+          core.setParameterValueByIndex(index, value, 1)
+          return
+        }
+      } catch (_) { }
+    }
+  }
+
   function writeParam(core, id, value) {
     try { core.setParameterValueById(id, value, 1) } catch (_) { }
   }
@@ -396,7 +409,7 @@
     const target = mouthTarget(now)
     const rate = target > idleState.mouth ? 20 : 10
     idleState.mouth += (target - idleState.mouth) * Math.min(1, dt * rate)
-    writeParam(core, 'ParamMouthOpenY', idleState.mouth)
+    writeMouth(core, idleState.mouth)
     const formTarget = speaking ? moodMouthForm() + 0.12 : moodMouthForm()
     idleState.mouthForm += (formTarget - idleState.mouthForm) * Math.min(1, dt * 3)
     writeParam(core, 'ParamMouthForm', idleState.mouthForm)

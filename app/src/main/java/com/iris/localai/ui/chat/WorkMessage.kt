@@ -47,6 +47,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.outlined.AttachFile
@@ -533,6 +534,7 @@ internal fun WorkStepCard(step: AgentStep) {
     val context = LocalContext.current
     val meta = toolMeta(step.tool)
     val ok = step.status == StepStatus.OK
+    val running = step.result.isBlank() && step.progress.isNotBlank()
     var expanded by remember(step) { mutableStateOf(!ok) }
     var copied by remember(step) { mutableStateOf(false) }
     val accent = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
@@ -573,14 +575,22 @@ internal fun WorkStepCard(step: AgentStep) {
                             maxLines = 1,
                         )
                         Spacer(Modifier.width(6.dp))
-                        Icon(
-                            imageVector = if (ok) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
-                            contentDescription = if (ok) "完成" else "失败",
-                            tint = accent,
-                            modifier = Modifier.size(13.dp),
-                        )
+                        if (running) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(13.dp),
+                                strokeWidth = 1.6.dp,
+                                color = accent,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (ok) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
+                                contentDescription = if (ok) "完成" else "失败",
+                                tint = accent,
+                                modifier = Modifier.size(13.dp),
+                            )
+                        }
                         val duration = formatDuration(step.durationMs)
-                        if (duration.isNotEmpty()) {
+                        if (duration.isNotEmpty() && !running) {
                             Spacer(Modifier.width(6.dp))
                             Text(
                                 text = duration,
@@ -589,13 +599,13 @@ internal fun WorkStepCard(step: AgentStep) {
                             )
                         }
                     }
-                    val summary = argumentSummary(step.tool, step.arguments)
+                    val summary = if (running) step.progress else argumentSummary(step.tool, step.arguments)
                     if (summary.isNotBlank()) {
                         Text(
                             text = summary,
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
@@ -641,7 +651,7 @@ internal fun WorkStepCard(step: AgentStep) {
                             )
                         }
                     }
-                    CodeSurface(step.result.ifBlank { "（无输出）" })
+                    CodeSurface(step.result.ifBlank { if (running) step.progress.ifBlank { "（执行中）" } else "（无输出）" })
                 }
             }
         }
