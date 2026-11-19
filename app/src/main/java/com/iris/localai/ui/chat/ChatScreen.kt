@@ -91,7 +91,7 @@ fun ChatScreen(
     LaunchedEffect(space) {
         if (space != Space.LIFE) lifeFullscreen = false
     }
-    LaunchedEffect(Unit) { viewModel.loadPluginSidebarEntries() }
+    LaunchedEffect(settings.pluginDevMode) { viewModel.loadPluginSidebarEntries() }
     DisposableEffect(Unit) {
         onDispose { viewModel.closePluginChatView() }
     }

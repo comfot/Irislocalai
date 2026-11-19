@@ -1,7 +1,7 @@
 package com.iris.localai.skill
 
 import android.content.Context
-import com.iris.localai.data.ProfileCatalog
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +29,8 @@ import java.util.zip.ZipInputStream
 /** SKILL.md 技能库：导入、创建、删除、URL 下载、启用与提示词注入。 */
 class SkillStore(context: Context) {
 
+    private val appContext = context.applicationContext
+
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val root = File(context.filesDir, "skills").apply { mkdirs() }
@@ -47,83 +49,94 @@ class SkillStore(context: Context) {
     val settings: StateFlow<SkillSettings> = _settings.asStateFlow()
 
     init {
-        if (root.listFiles { file -> file.isDirectory }?.isEmpty() != false) seed()
         refresh()
-        upgradeKnowledgeSkill()
-        ensureOperationSkill()
-        ensureThemeSkill()
+        ensureBundledSkills()
     }
 
-    /** 首次启动或升级后补充主题创作技能；用户删除后不再重建。 */
-    private fun ensureThemeSkill() {
-        if (prefs.getBoolean(KEY_THEME_SKILL, false)) return
-        prefs.edit().putBoolean(KEY_THEME_SKILL, true).apply()
-        if (_skills.value.any { it.id == "theme-authoring" }) return
-        save(
-            Skill(
-                id = "theme-authoring",
-                name = "主题创作",
-                description = "生成可导入的应用主题预设 JSON",
-                instructions = "## 主题创作\n\n" +
-                    "主题预设是 IRIS LocalAI 的外观 JSON（schema 1），由用户在 设置 › 主题 右上角导入。\n\n" +
-                    "格式：\n" +
-                    "{\n  \"app\": \"IRIS LocalAI\",\n  \"schema\": 1,\n  \"name\": \"雾青玻璃\",\n" +
-                    "  \"style\": \"glass\",\n  \"accent\": \"teal\",\n  \"themeMode\": \"system\",\n" +
-                    "  \"bubbleStyle\": \"rounded\",\n  \"roleChatCard\": true\n}\n\n" +
-                    "可用取值：\n" +
-                    "- style：standard / glass / eink\n" +
-                    "- accent：teal / blue / violet / amber / rose\n" +
-                    "- themeMode：system / light / dark\n" +
-                    "- bubbleStyle：rounded / square / outlined / minimal\n" +
-                    "- roleChatCard：true / false\n\n" +
-                    "规则：\n" +
-                    "1. 先确认风格意图；玻璃适合半透明亮边，墨水屏只用黑白灰，此时 accent 会被忽略。\n" +
-                    "2. 只输出上述字段，不要添加未定义字段。\n" +
-                    "3. 生成后用 write_file 保存到工作区（例如 themes/<name>.json），并提示用户在 设置 › 主题 右上角导入。\n" +
-                    "4. 不要声称已经替用户应用主题，除非用户确认已导入。",
-                triggers = listOf("主题", "配色", "强调色", "液态玻璃", "墨水屏", "气泡样式", "theme"),
-                enabled = true,
-            ),
-        )
+    /**
+     * 内置技能来自 assets/builtin_skills。升级时保留 enabled/alwaysOn；
+     * 用户改过（hash 不符）或删除过就不覆盖。
+     */
+    private fun ensureBundledSkills() {
+        val ids = runCatching { appContext.assets.list(BUILTIN_SKILL_DIR) }.getOrNull().orEmpty()
+            .filter { it.isNotBlank() && !it.contains('.') }
+        if (ids.isEmpty()) return
+        ids.forEach { id -> installBundledSkill(id) }
+        refresh()
     }
 
-    /** 首次启动或升级后补充操作空间技能；用户删除后不再重建。 */
-    private fun ensureOperationSkill() {
-        if (prefs.getBoolean(KEY_OPERATION_SKILL, false)) return
-        prefs.edit().putBoolean(KEY_OPERATION_SKILL, true).apply()
-        if (_skills.value.any { it.id == "phone-control" }) return
-        save(
-            Skill(
-                id = "phone-control",
-                name = "手机操作",
-                description = "观察界面、按文字定位、滚动查找并校验手机操作",
-                instructions = "## 手机操作\n\n" +
-                    "1. 先用 device_ui 读取当前界面（package、nodes 的 text/desc、bounds、clickable/scrollable）。\n" +
-                    "2. 优先用 device_tap_text 按文字/描述点击；同文多处时用 match_index。\n" +
-                    "3. 目标不在屏幕内时用 device_scroll（down/up），再用 device_ui 确认。\n" +
-                    "4. 输入时先点击输入框，再 device_input_text；提交用 device_enter。\n" +
-                    "5. 每次只做一个动作；操作后用 device_wait_text 或 device_ui 校验。\n" +
-                    "6. 不要连续盲点坐标；支付、删除、卸载等不可逆操作先询问用户。",
-                triggers = listOf("操作手机", "点击", "滑动", "滚动", "打开应用", "打开设置", "通知", "最近任务"),
-                enabled = true,
-                alwaysOn = true,
+    private fun installBundledSkill(id: String) {
+        if (prefs.getBoolean(deletedKey(id), false)) return
+        val files = readAssetSkill(id) ?: return
+        val markdown = files["SKILL.md"]?.let { String(it, Charsets.UTF_8) } ?: return
+        val parsed = runCatching { SkillParser.parse(markdown, id) }.getOrNull() ?: return
+        val assetHash = hashEntries(files)
+        val installed = _skills.value.firstOrNull { it.id == id }
+        val storedHash = prefs.getString(hashKey(id), null)
+        val storedVersion = prefs.getString(versionKey(id), null)
+        val currentHash = hashSkillDir(File(root, id))
+        if (installed != null) {
+            val userModified = storedHash != null && storedHash != currentHash
+            if (userModified) return
+            if (storedVersion == parsed.version && storedHash == currentHash) return
+        }
+        val target = File(root, id)
+        if (target.exists() && !target.deleteRecursively()) return
+        files.forEach { (path, bytes) ->
+            runCatching { writeResource(target, path, bytes) }
+        }
+        val saved = save(
+            parsed.copy(
+                id = id,
+                source = "builtin",
+                enabled = installed?.enabled ?: parsed.enabled,
+                alwaysOn = installed?.alwaysOn ?: parsed.alwaysOn,
+                triggers = if (installed != null && installed.triggers.isNotEmpty()) installed.triggers else parsed.triggers,
             ),
         )
+        prefs.edit()
+            .putString(versionKey(id), saved.version)
+            .putString(hashKey(id), hashSkillDir(target))
+            .apply()
     }
 
-    private fun upgradeKnowledgeSkill() {
-        val skill = _skills.value.firstOrNull { it.id == "knowledge" } ?: return
-        if (!skill.instructions.startsWith("## 知识库") || skill.instructions.contains("memory 工具")) return
-        save(
-            skill.copy(
-                triggers = listOf("知识库", "记忆", "回忆", "上次", "之前"),
-                instructions = "## 知识库与记忆\n\n" +
-                    "常规对话只携带记忆摘要。需要确认用户过去说过的事、偏好或历史细节时，" +
-                    "调用 memory 工具：{\"op\":\"recall\",\"query\":\"要回忆的内容\"}。\n\n" +
-                    "规则：先检索再回答；检索不到就说明不确定，不要编造；只有用户明确要求记住时才调用 op=save。",
-            ),
-        )
+    private fun readAssetSkill(id: String): Map<String, ByteArray>? {
+        val rootPath = "$BUILTIN_SKILL_DIR/$id"
+        val entries = linkedMapOf<String, ByteArray>()
+        fun walk(path: String, prefix: String) {
+            val children = runCatching { appContext.assets.list(path) }.getOrNull().orEmpty()
+            if (children.isEmpty()) {
+                val bytes = runCatching { appContext.assets.open(path).use { it.readBytes() } }.getOrNull() ?: return
+                entries[prefix] = bytes
+                return
+            }
+            children.forEach { child -> walk("$path/$child", if (prefix.isBlank()) child else "$prefix/$child") }
+        }
+        runCatching { walk(rootPath, "") }
+        return entries.takeIf { it.isNotEmpty() }
     }
+
+    private fun hashEntries(files: Map<String, ByteArray>): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        files.toSortedMap().forEach { (path, bytes) ->
+            digest.update(path.toByteArray())
+            digest.update(0)
+            digest.update(bytes)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun hashSkillDir(dir: File): String {
+        if (!dir.isDirectory) return ""
+        val files = dir.walkTopDown()
+            .filter { it.isFile && it.name != META && !it.name.startsWith(".") }
+            .associate { it.relativeTo(dir).invariantSeparatorsPath to runCatching { it.readBytes() }.getOrDefault(ByteArray(0)) }
+        return hashEntries(files)
+    }
+
+    private fun deletedKey(id: String) = "deleted_$id"
+    private fun hashKey(id: String) = "bundle_hash_$id"
+    private fun versionKey(id: String) = "bundle_version_$id"
 
     fun updateSettings(transform: (SkillSettings) -> SkillSettings) {
         val next = transform(_settings.value)
@@ -166,8 +179,22 @@ class SkillStore(context: Context) {
         _skills.value.firstOrNull { it.id == id }?.let { save(it.copy(enabled = enabled)) }
     }
 
+    /** 恢复内置技能为 assets 版本；会覆盖用户对内建技能的修改。 */
+    fun rebuildBundledSkills() {
+        val ids = runCatching { appContext.assets.list(BUILTIN_SKILL_DIR) }.getOrNull().orEmpty()
+            .filter { it.isNotBlank() && !it.contains('.') }
+        prefs.edit().apply {
+            ids.forEach { id ->
+                remove(hashKey(id))
+                remove(versionKey(id))
+            }
+        }.apply()
+        ensureBundledSkills()
+    }
+
     fun delete(id: String) {
         if (id.contains('/') || id.contains("..")) return
+        prefs.edit().putBoolean(deletedKey(id), true).apply()
         File(root, id).deleteRecursively()
         refresh()
     }
@@ -303,34 +330,6 @@ class SkillStore(context: Context) {
         )
     }
 
-    private fun seed() {
-        ProfileCatalog.skills.forEach { profile ->
-            val triggers = if (profile.id == "knowledge") {
-                listOf("知识库", "记忆", "回忆", "上次", "之前")
-            } else {
-                listOf(profile.label)
-            }
-            val instructions = if (profile.id == "knowledge") {
-                "## 知识库与记忆\n\n" +
-                    "常规对话只携带记忆摘要。需要确认用户过去说过的事、偏好或历史细节时，" +
-                    "调用 memory 工具：{\"op\":\"recall\",\"query\":\"要回忆的内容\"}。\n\n" +
-                    "规则：先检索再回答；检索不到就说明不确定，不要编造；只有用户明确要求记住时才调用 op=save。"
-            } else {
-                "## ${profile.label}\n\n${profile.description}。\n\n" +
-                    "在任务需要该能力时使用它，先确认输入与目标，再执行并汇报结果。"
-            }
-            val skill = Skill(
-                id = profile.id,
-                name = profile.label,
-                description = profile.description,
-                instructions = instructions,
-                triggers = triggers,
-                enabled = true,
-            )
-            save(skill)
-        }
-    }
-
     private fun uniqueId(name: String): String {
         val base = SkillParser.slug(name)
         var index = 0
@@ -414,13 +413,12 @@ class SkillStore(context: Context) {
     private companion object {
         const val PREFS = "iris_skills"
         const val META = "meta.json"
+        const val BUILTIN_SKILL_DIR = "builtin_skills"
         const val KEY_AUTO = "auto_trigger"
         const val KEY_MAX = "max_chars"
         const val KEY_CHAT = "inject_chat"
         const val KEY_AGENT = "inject_agent"
-        const val KEY_OPERATION_SKILL = "operation_skill_seeded"
-        const val KEY_THEME_SKILL = "theme_skill_seeded"
-        const val MAX_SKILL_ZIP_BYTES = 8L * 1024 * 1024
+        const val MAX_SKILL_ZIP_BYTES = 32L * 1024 * 1024
         const val MAX_RESOURCE_BYTES = 200L * 1024
     }
 }

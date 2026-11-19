@@ -226,6 +226,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val performanceIntensity: StateFlow<Float> = _performanceIntensity.asStateFlow()
 
     private val _submitting = MutableStateFlow(false)
+    val currentPlan: StateFlow<com.iris.localai.agent.Plan?> = combine(_currentId, graph.plans.plans) { id, plans ->
+        id?.let { plans[it] }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     private var sessionToolCount = 0
     private var turnToolCount = 0
     private val _pluginMenuItems = MutableStateFlow<List<PluginHookDescriptor>>(emptyList())
@@ -250,6 +253,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         store.bindUnboundLifeConversations(graph.settings.current.characterId)
+        viewModelScope.launch {
+            _currentId.collect { id -> id?.let { graph.plans.setActive(it) } }
+        }
         // 空间既可能来自侧栏，也可能来自设置页；统一在这里切换到该空间的最近会话。
         viewModelScope.launch {
             graph.settings.settings
@@ -309,10 +315,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // 插件注册可能异步完成或随启停重建，直接跟随注册表刷新侧边栏与消息菜单。
         viewModelScope.launch {
             graph.pluginRuntime.registrations.collect { registrations ->
-                _pluginSidebarEntries.value = registrations.values
-                    .flatMap { it.ui }
-                    .filter { it.type == "navigation" && it.surface.equals("main_sidebar_plugins", ignoreCase = true) }
-                    .sortedWith(compareBy({ it.order }, { it.pluginName }, { it.id }))
+                _pluginSidebarEntries.value = sidebarEntriesOf(registrations)
                 _pluginMenuItems.value = registrations.values
                     .flatMap { it.hooksOf("chat_message_menu_item") }
                 refreshInputMenuToggles()
@@ -541,6 +544,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 
+    fun cancelPlan() {
+        graph.plans.current()?.let { graph.plans.cancel(it) }
+    }
+
+    fun clearPlan() {
+        graph.plans.clear()
+    }
+
+    fun approvePlan() {
+        val conversation = store.find(_currentId.value) ?: return
+        val plan = conversation.messages.lastOrNull { it.role == ChatRole.ASSISTANT }
+            ?.text
+            ?.let { AssistantMessageParser.mainText(it) }
+            ?.takeIf { it.isNotBlank() }
+            ?: return
+        graph.settings.update { it.copy(planMode = false) }
+        sendFromPlugin("已批准上面的计划，开始执行：\n\n" + plan.take(6000))
+    }
+
+    fun setPlanMode(enabled: Boolean) {
+        graph.settings.update { it.copy(planMode = enabled) }
+    }
+
     private fun sendFromPlugin(text: String) {
         val value = text.trim()
         if (value.isEmpty() || _running.value) return
@@ -700,7 +726,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     historyWithSummary,
                     settings.contextStrategy.name,
                 ).let { graph.pluginRuntime.estimatePromptHistory(conversation.id, it) }
-                val userInput = buildPromptContent(text, pendingAttachments, visionEnabled)
+                val stagedAttachments = stageAttachments(pendingAttachments)
+                val userInput = buildPromptContent(text, pendingAttachments, visionEnabled, stagedAttachments)
                 val character = graph.characters.get(settings.characterId)?.card
                 val userBlock = buildString {
                     if (settings.userName.isNotBlank()) {
@@ -796,6 +823,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     "读写文件调用 workspace 工具，执行命令调用 shell 工具；" +
                                     "动手前先确认事实并说明改动影响。",
                             )
+                            if (workspace.appFolder) {
+                                appendLine("PRoot 内工作区路径：/workspace；应用 Shell 的工作目录就是上面的路径。")
+                                appendLine("PRoot 挂载：/mnt/iris-private（应用私有 filesDir）、/mnt/skills（技能）、/mnt/plugins（插件）、/mnt/attachments（附件原始文件）、/mnt/iris（外置 IRIS）。")
+                            } else {
+                                appendLine("SAF 工作区：shell 与 PRoot 无法直接进入，请使用 workspace / read_file / write_file 的相对路径访问。")
+                            }
+                            val listing = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    WorkspaceFs(getApplication(), workspace).list("")
+                                }.getOrNull()
+                            }
+                            if (!listing.isNullOrBlank()) {
+                                appendLine("工作区根目录：")
+                                appendLine(listing.take(1800))
+                            }
                         }
                     }.orEmpty()
                 } else {
@@ -909,6 +951,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         else -> settings.agentMaxSteps
                     },
                     planFirst = settings.planFirst,
+                    planMode = settings.planMode &&
+                        (settings.space == Space.WORK || settings.space == Space.COMPOSITE),
                     startInThink = startInThink,
                     chatId = conversation.id,
                 ).collect { event ->
@@ -965,9 +1009,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 val finalStep = event.step.copy(
                                     reasoning = stepReasoning,
                                     reasoningMs = stepReasoningMs,
+                                    reply = event.step.reply.ifBlank { it.text.trim() },
                                 )
                                 if (index >= 0) steps[index] = finalStep else steps += finalStep
-                                it.copy(reasoning = "", steps = steps)
+                                // 正文已归入对应步骤，清掉尾部累积，避免最后堆成一大段。
+                                it.copy(text = "", reasoning = "", steps = steps)
                             }
                         }
                         is AgentEvent.Finished -> {
@@ -1299,7 +1345,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (!inCodeSpace) {
             ids = ids - codeToolIds
         } else if (graph.code.current.enabled) {
-            ids = ids + setOf("shell", "workspace")
+            ids = ids + setOf("shell", "terminal", "workspace")
         }
         val inOperateSpace = settings.space == Space.OPERATE || settings.space == Space.COMPOSITE
         if (inOperateSpace) {
@@ -1310,6 +1356,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         // 只允许生活插件通过 Hook 调用，避免模型直接调用与 <vrma_motion> 重复生成。
         ids = ids - "vrma_generate"
+        if (!settings.pluginDevMode) ids = ids - "plugin_dev"
+        if (settings.planMode && inCodeSpace) ids = ids intersect planSafeTools
         return ids
     }
 
@@ -1361,7 +1409,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return when (settings.contextStrategy) {
             ContextStrategy.SLIDING_WINDOW,
             ContextStrategy.SUMMARY,
-            ContextStrategy.KV_SHIFT -> history.takeLast((settings.contextKeepTurns * 2).coerceAtLeast(2))
+            ContextStrategy.KV_SHIFT -> {
+                val keep = (settings.contextKeepTurns * 2).coerceAtLeast(2)
+                val tail = history.takeLast(keep)
+                // 滑动窗口会丢掉会话最初的任务描述，导致模型忘记目标后反复探索。
+                val firstUser = history.firstOrNull { it.role == PromptMessage.USER && it !in tail }
+                if (firstUser != null) listOf(firstUser) + tail else tail
+            }
 
             ContextStrategy.TOKEN_BUDGET -> {
                 val budget = (settings.contextLength * settings.summaryTriggerPercent / 100)
@@ -1385,10 +1439,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun ChatMessage.promptText(visionEnabled: Boolean = true): String =
         buildPromptContent(text, attachments, visionEnabled)
 
+    /** 把本轮附件复制到应用内工作区，让 PRoot / shell 也能直接看到。 */
+    private fun stageAttachments(attachments: List<ChatAttachment>): Map<Int, String> {
+        if (attachments.isEmpty() || graph.settings.current.space != Space.WORK) return emptyMap()
+        val workspace = graph.workspaces.active() ?: return emptyMap()
+        if (!workspace.appFolder || workspace.path.isBlank()) return emptyMap()
+        val root = File(workspace.path, ".iris/attachments")
+        if (!root.mkdirs() && !root.isDirectory) return emptyMap()
+        return buildMap {
+            attachments.forEachIndexed { index, attachment ->
+                val safeName = attachment.name.replace(Regex("[^\\w.\\-\\u4e00-\\u9fa5]"), "_")
+                    .ifBlank { "attachment" }
+                    .take(80)
+                val target = File(root, "${index + 1}-$safeName")
+                val copied = runCatching {
+                    val source = when {
+                        attachment.imagePath.isNotBlank() -> File(attachment.imagePath)
+                        attachment.path.isNotBlank() -> File(attachment.path)
+                        else -> null
+                    }
+                    when {
+                        source != null && source.isFile -> {
+                            source.copyTo(target, overwrite = true)
+                            true
+                        }
+                        attachment.content.isNotBlank() -> {
+                            target.writeText(attachment.content)
+                            true
+                        }
+                        else -> false
+                    }
+                }.getOrDefault(false)
+                if (copied) put(index, ".iris/attachments/${target.name}")
+            }
+        }
+    }
+
     private fun buildPromptContent(
         text: String,
         attachments: List<ChatAttachment>,
         visionEnabled: Boolean = true,
+        stagedPaths: Map<Int, String> = emptyMap(),
     ): String {
         if (attachments.isEmpty()) return text
         return buildString {
@@ -1403,6 +1494,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     append("【附件图片：${attachment.name}")
                     if (attachment.path.isNotBlank()) append("（${attachment.path}）")
                     append("】\n")
+                    stagedPaths[index]?.let { staged ->
+                        append("工作区路径：$staged（PRoot 内 /workspace/$staged）\n")
+                    }
                     append(
                         when {
                             !visionEnabled -> "（当前模型未开启「支持识图」，这张图片未发送。）"
@@ -1414,6 +1508,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     append("【附件文件：${attachment.name}")
                     if (attachment.path.isNotBlank()) append("（${attachment.path}）")
                     append("】\n")
+                    stagedPaths[index]?.let { staged ->
+                        append("工作区路径：$staged（PRoot 内 /workspace/$staged）\n")
+                    }
                     if (attachment.sizeBytes > 0) {
                         append("大小：${formatFileSize(attachment.sizeBytes)}\n")
                     }
@@ -1460,21 +1557,65 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        val history = messages.mapIndexedNotNull { index, message ->
-            if (message.text.isBlank() && message.attachments.isEmpty()) {
-                return@mapIndexedNotNull null
+        val toolBlocks = HashMap<Int, String>()
+        var toolBudget = MAX_HISTORY_TOOL_CHARS
+        for (index in messages.indices.reversed()) {
+            if (toolBudget <= 0) break
+            val message = messages[index]
+            if (message.role != ChatRole.ASSISTANT || message.steps.isEmpty()) continue
+            val block = message.promptToolHistory(toolBudget)
+            if (block.isNotBlank()) {
+                toolBlocks[index] = block
+                toolBudget -= block.length
             }
+        }
+        val history = messages.mapIndexedNotNull { index, message ->
+            val content = buildString {
+                val text = message.promptText(visionEnabled)
+                if (text.isNotBlank()) append(text)
+                val toolBlock = toolBlocks[index]
+                if (!toolBlock.isNullOrBlank()) {
+                    if (isNotEmpty()) appendLine().appendLine()
+                    appendLine("【此前的工具调用（已执行，勿重复）】")
+                    append(toolBlock)
+                }
+            }
+            if (content.isBlank()) return@mapIndexedNotNull null
             PromptMessage(
                 role = if (message.role == ChatRole.USER) {
                     PromptMessage.USER
                 } else {
                     PromptMessage.ASSISTANT
                 },
-                content = message.promptText(visionEnabled),
+                content = content,
                 images = historyImages[index].orEmpty(),
             )
         }
         history to currentImages
+    }
+
+    private fun ChatMessage.promptToolHistory(budget: Int): String {
+        if (steps.isEmpty() || budget <= 0) return ""
+        val lines = ArrayList<String>()
+        var used = 0
+        for (step in steps.asReversed()) {
+            val args = compactPromptText(step.arguments, 120)
+            val result = compactPromptText(step.result, 200)
+            val line = buildString {
+                append("- ").append(step.tool)
+                if (args.isNotBlank()) append('(').append(args).append(')')
+                if (result.isNotBlank()) append(" → ").append(result)
+            }
+            if (used + line.length + 1 > budget) break
+            lines.add(0, line)
+            used += line.length + 1
+        }
+        return lines.joinToString("\n")
+    }
+
+    private fun compactPromptText(text: String, limit: Int): String {
+        val flat = text.replace(Regex("\\s+"), " ").trim()
+        return if (flat.length > limit) flat.take(limit) + "…" else flat
     }
 
     private fun imageDataUrl(attachment: ChatAttachment, maxSide: Int): String? {
@@ -1922,11 +2063,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         pluginSidebarLoading = true
         viewModelScope.launch {
             runCatching {
-                _pluginSidebarEntries.value = graph.pluginRuntime.sidebarEntries()
+                graph.pluginRuntime.ensureAllRegistrations()
+                _pluginSidebarEntries.value = sidebarEntriesOf(graph.pluginRuntime.registrations.value)
             }
             pluginSidebarLoading = false
         }
     }
+
+    private fun sidebarEntriesOf(registrations: Map<String, com.iris.localai.plugin.PluginRegistrations>): List<com.iris.localai.plugin.PluginHookDescriptor> =
+        registrations.values
+            .flatMap { it.ui }
+            .filter { entry ->
+                entry.type == "navigation" &&
+                    entry.surface.equals("main_sidebar_plugins", ignoreCase = true) &&
+                    (entry.pluginId != "iris.plugin_devkit" || graph.settings.current.pluginDevMode)
+            }
+            .distinctBy { it.pluginId + ":" + it.id }
+            .sortedWith(compareBy({ it.order }, { it.pluginName }, { it.id }))
 
     fun runPluginSidebarEntry(entry: PluginHookDescriptor) {
         val plugin = graph.plugins.plugins.value.firstOrNull { it.id == entry.pluginId }
@@ -2033,12 +2186,39 @@ data class PluginUiTarget(
 
 private val codeToolIds = setOf(
     "shell",
+    "terminal",
     "workspace",
     "read_file",
     "write_file",
     "edit_file",
     "list_files",
     "search_files",
+    "plugin_dev",
+    "plan",
+)
+
+/** 计划模式只开放只读探索类工具，写入/执行/设备操作全部隐藏。 */
+private val planSafeTools = setOf(
+    "current_time",
+    "device_info",
+    "random_pick",
+    "use_skill",
+    "memory",
+    "read_file",
+    "list_files",
+    "search_files",
+    "fetch_url",
+    "browser_open",
+    "browser_read",
+    "browser_snapshot",
+    "browser_scroll",
+    "browser_wait",
+    "browser_navigate",
+    "browser_back",
+    "device_ui",
+    "device_screenshot",
+    "device_wait_text",
+    "plan",
 )
 
 private const val MAX_ATTACHMENTS = 5
@@ -2047,6 +2227,9 @@ private const val MAX_ATTACHMENT_TOTAL_CHARS = 24_000
 private const val MAX_ATTACHMENT_BYTES = 256 * 1024
 private const val MAX_FILE_BYTES = 32 * 1024 * 1024
 private const val MAX_PROMPT_IMAGES = 3
+
+/** 回填到历史里的工具调用摘要上限，避免上下文被大段命令输出占满。 */
+private const val MAX_HISTORY_TOOL_CHARS = 4000
 private const val MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")

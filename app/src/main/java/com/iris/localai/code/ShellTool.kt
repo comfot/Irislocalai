@@ -40,7 +40,7 @@ class ShellTool(
         }
 
         val command = arguments["command"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        if (command.isEmpty()) return "缺少 command 参数"
+        if (command.isEmpty()) error("缺少 command 参数")
 
         val denied = splitPrefixes(settings.deniedPrefixes)
         if (denied.any { command.startsWith(it, ignoreCase = true) }) {
@@ -49,6 +49,11 @@ class ShellTool(
         val allowed = splitPrefixes(settings.allowedPrefixes)
         if (allowed.isNotEmpty() && allowed.none { command.startsWith(it, ignoreCase = true) }) {
             return "命令被拒绝：不在允许前缀内"
+        }
+        if (BACKGROUND_COMMAND.containsMatchIn(command)) {
+            return "检测到后台命令：shell 每次调用结束都会清理该会话内的子进程，nohup/& 无法跨调用存活。" +
+                "请改用 terminal 工具：{\"action\":\"start\",\"command\":\"...\"}，" +
+                "之后用 {\"action\":\"read\",\"session_id\":\"term-1\"} 查看输出。"
         }
 
         return when (settings.runtime) {
@@ -179,4 +184,8 @@ class ShellTool(
 
     private fun splitPrefixes(raw: String): List<String> =
         raw.split('\n', ',').map { it.trim() }.filter { it.isNotEmpty() }
+
+    private companion object {
+        val BACKGROUND_COMMAND = Regex("(^|[;&|]\\s*)(nohup|setsid)\\b|&\\s*$")
+    }
 }

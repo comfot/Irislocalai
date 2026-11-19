@@ -233,6 +233,7 @@ class ConversationStore(context: Context) {
                                                 put("durationMs", step.durationMs)
                                                 put("reasoning", step.reasoning)
                                                 put("reasoningMs", step.reasoningMs)
+                                                put("reply", step.reply)
                                             }
                                         }
                                     })
@@ -327,6 +328,7 @@ class ConversationStore(context: Context) {
                 durationMs = obj.long("durationMs") ?: 0L,
                 reasoning = obj.string("reasoning").orEmpty(),
                 reasoningMs = obj.long("reasoningMs") ?: 0L,
+                reply = obj.string("reply").orEmpty(),
             )
         }
     }

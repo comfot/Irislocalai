@@ -219,11 +219,16 @@ class SettingsRepository(
             .putBoolean(KEY_AGENT_MODE, next.agentMode)
             .putInt(KEY_AGENT_MAX_STEPS, next.agentMaxSteps)
             .putBoolean(KEY_PLAN_FIRST, next.planFirst)
+            .putBoolean(KEY_PLAN_MODE, next.planMode)
             .putBoolean(KEY_LAZY_TOOLS, next.lazyTools)
             .putString(KEY_ENABLED_TOOLS, next.enabledToolIds.joinToString(","))
             .putString(KEY_TOOL_PERMISSIONS, encodePermissions(next.toolPermissions))
             .putString(KEY_WORKSPACE_LOCATION, next.workspaceLocation.name)
             .putString(KEY_CUSTOM_WORKSPACE, next.customWorkspacePath)
+            .putBoolean(KEY_PLUGIN_DEV_MODE, next.pluginDevMode)
+            .putString(KEY_PLUGIN_EXPORT_DIR, next.pluginExportDir)
+            .putString(KEY_HOST_SOURCE_REPO, next.hostSourceRepo)
+            .putString(KEY_HOST_SOURCE_BRANCH, next.hostSourceBranch)
             .putString(KEY_CONTEXT_STRATEGY, next.contextStrategy.name)
             .putInt(KEY_CONTEXT_KEEP_TURNS, next.contextKeepTurns)
             .putInt(KEY_SUMMARY_TRIGGER, next.summaryTriggerPercent)
@@ -380,11 +385,16 @@ class SettingsRepository(
         agentMode = prefs.getBoolean(KEY_AGENT_MODE, true),
         agentMaxSteps = prefs.getInt(KEY_AGENT_MAX_STEPS, 4),
         planFirst = prefs.getBoolean(KEY_PLAN_FIRST, false),
+        planMode = prefs.getBoolean(KEY_PLAN_MODE, false),
         lazyTools = prefs.getBoolean(KEY_LAZY_TOOLS, false),
         enabledToolIds = readEnabledTools(),
         toolPermissions = decodePermissions(prefs.getString(KEY_TOOL_PERMISSIONS, null)),
         workspaceLocation = enumOf(prefs.getString(KEY_WORKSPACE_LOCATION, null), WorkspaceLocation.APP_PRIVATE),
         customWorkspacePath = prefs.getString(KEY_CUSTOM_WORKSPACE, "") ?: "",
+        pluginDevMode = prefs.getBoolean(KEY_PLUGIN_DEV_MODE, false),
+        pluginExportDir = prefs.getString(KEY_PLUGIN_EXPORT_DIR, "") ?: "",
+        hostSourceRepo = prefs.getString(KEY_HOST_SOURCE_REPO, "comfot/Irislocalai") ?: "comfot/Irislocalai",
+        hostSourceBranch = prefs.getString(KEY_HOST_SOURCE_BRANCH, "main") ?: "main",
         contextStrategy = enumOf(prefs.getString(KEY_CONTEXT_STRATEGY, null), ContextStrategy.SLIDING_WINDOW),
         contextKeepTurns = prefs.getInt(KEY_CONTEXT_KEEP_TURNS, 8),
         summaryTriggerPercent = prefs.getInt(KEY_SUMMARY_TRIGGER, 80),
@@ -581,6 +591,7 @@ class SettingsRepository(
         const val KEY_AGENT_MODE = "agent_mode"
         const val KEY_AGENT_MAX_STEPS = "agent_max_steps"
         const val KEY_PLAN_FIRST = "plan_first"
+        const val KEY_PLAN_MODE = "plan_mode"
         const val KEY_LAZY_TOOLS = "lazy_tools"
         const val KEY_ENABLED_TOOLS = "enabled_tools"
         const val KEY_TOOL_CATALOG = "tool_catalog_version"
@@ -589,6 +600,10 @@ class SettingsRepository(
         const val KEY_TOOL_PERMISSIONS = "tool_permissions"
         const val KEY_WORKSPACE_LOCATION = "workspace_location"
         const val KEY_CUSTOM_WORKSPACE = "custom_workspace"
+        const val KEY_PLUGIN_DEV_MODE = "plugin_dev_mode"
+        const val KEY_PLUGIN_EXPORT_DIR = "plugin_export_dir"
+        const val KEY_HOST_SOURCE_REPO = "host_source_repo"
+        const val KEY_HOST_SOURCE_BRANCH = "host_source_branch"
         const val KEY_CONTEXT_STRATEGY = "context_strategy"
         const val KEY_CONTEXT_KEEP_TURNS = "context_keep_turns"
         const val KEY_SUMMARY_TRIGGER = "summary_trigger_percent"

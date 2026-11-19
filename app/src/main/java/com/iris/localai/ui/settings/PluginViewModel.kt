@@ -21,6 +21,7 @@ class PluginViewModel(application: Application) : AndroidViewModel(application) 
 
     val plugins = store.plugins
     val busy = store.busy
+    val settings = graph.settings.settings
     val registrations = graph.pluginRuntime.registrations
     val registrationErrors = graph.pluginRuntime.errors
     val uiInvalidations = graph.pluginRuntime.uiInvalidations
@@ -87,6 +88,28 @@ class PluginViewModel(application: Application) : AndroidViewModel(application) 
 
     fun reportError(message: String) {
         _error.value = message
+    }
+
+    fun exportPlugin(plugin: InstalledPlugin) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { graph.pluginDev.packageInstalled(plugin.id) }
+                .onSuccess { result ->
+                    _message.value = "已推送到：" + (result["path"]?.toString()?.trim('"') ?: "")
+                }
+                .onFailure { _error.value = it.message ?: "导出失败" }
+        }
+    }
+
+    fun copyInstalledToProject(plugin: InstalledPlugin) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                graph.pluginDev.copyInstalled(plugin.id, "copy-" + plugin.id.replace('.', '_'))
+            }.onSuccess {
+                _message.value = "已复制为工程：$it"
+            }.onFailure {
+                _error.value = it.message ?: "复制失败"
+            }
+        }
     }
 
     fun loadRegistrations() {

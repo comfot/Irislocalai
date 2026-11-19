@@ -37,12 +37,13 @@ class AgentLoop(
         toolPermissions: Map<String, ToolPermission> = emptyMap(),
         maxStepsOverride: Int? = null,
         planFirst: Boolean = false,
+        planMode: Boolean = false,
         startInThink: Boolean = false,
         chatId: Long? = null,
     ): Flow<AgentEvent> = flow flow@ {
         val availableTools = tools.all().filter { enabledTools == null || it.name in enabledTools }
         val toolPromptOverride = pluginRuntime?.composeToolPrompt(chatId, availableTools, planFirst)
-        val baseSystemPrompt = systemPrompt(userSystemPrompt, availableTools, planFirst, toolPromptOverride)
+        val baseSystemPrompt = systemPrompt(userSystemPrompt, availableTools, planFirst, planMode, toolPromptOverride)
         val finalSystemPrompt = pluginRuntime?.finalizePrompt(chatId, baseSystemPrompt) ?: baseSystemPrompt
         val estimatedSystemPrompt = pluginRuntime?.estimateFinalPrompt(chatId, finalSystemPrompt) ?: finalSystemPrompt
         val configuredLimit = maxStepsOverride ?: maxSteps
@@ -61,6 +62,8 @@ class AgentLoop(
         var unclosedRetried = false
         var bareCommandRetried = false
         var bareCommandExecuted = false
+        // 上一段正文的起点：工具调用把整轮回复切成多段，Finished 只返回最后一段。
+        var segmentStart = 0
 
         suspend fun emitTagged(text: String) {
             if (text.isEmpty()) return
@@ -248,6 +251,7 @@ class AgentLoop(
                     StepStatus.OK
                 },
                 durationMs = durationMs,
+                reply = cleanAnswer(visible.substring(segmentStart.coerceIn(0, visible.length))).trim(),
             )
             this@flow.emit(AgentEvent.StepFinished(agentStep))
 
@@ -258,9 +262,10 @@ class AgentLoop(
             if (stepThought.text.isNotEmpty()) {
                 emitBody(stepThought.text)
             }
+            segmentStart = visible.length
 
             conversation += PromptMessage(PromptMessage.ASSISTANT, output.toString())
-            conversation += PromptMessage(PromptMessage.TOOL, "工具 ${call.name} 返回：\n$result")
+            conversation += PromptMessage(PromptMessage.TOOL, "工具 ${call.name} 返回：\n${promptResult(result)}")
             step++
 
             val separator = answerSeparator(visible)
@@ -288,7 +293,7 @@ class AgentLoop(
         if (flushed.tags.isNotEmpty()) {
             this@flow.emit(AgentEvent.Performance(flushed.tags))
         }
-        val answer = visible.toString()
+        val answer = visible.toString().substring(segmentStart.coerceIn(0, visible.length))
         val finalText = if (answer.isBlank() && thinkFilter.hasThought()) {
             "（模型只返回了思考过程，没有生成回答。请关闭「深度思考」或增大最大输出后重试。）"
         } else {
@@ -312,6 +317,7 @@ class AgentLoop(
         userSystemPrompt: String,
         availableTools: List<Tool>,
         planFirst: Boolean,
+        planMode: Boolean = false,
         toolPromptOverride: String? = null,
     ): String = buildString {
         appendLine("你是运行在 Android 上的本地 AI 助手。")
@@ -332,8 +338,24 @@ class AgentLoop(
                 appendLine("当用户要求角色做动作、比手势、跳舞、打招呼时，调用 motion_control，不要声称自己无法控制模型。")
                 appendLine("调用时必须带 arguments.action，例如 {\"action\":\"wave\"}；不确定有哪些动作时先传 action=list 查看完整清单。")
             }
-            if (availableTools.any { it.name == "memory" }) {
+            if (availableTools.any { it.name == "terminal" }) {
+                appendLine(
+                    "耗时任务、构建、转写或需要持续运行的服务用 terminal 工具 action=start 启动常驻会话，" +
+                        "再用 action=read 查看输出、action=stop 结束；不要在 shell 命令里用 nohup 或结尾 &。",
+                )
+            }
+            if (availableTools.any { it.name == "plan" }) {
+            appendLine(
+                "多步骤任务先用 plan op=create 列出计划（title + steps）；开始/完成步骤用 plan op=update，" +
+                    "用户取消或放弃任务时用 plan op=cancel；不要只在正文里列计划而不登记。",
+            )
+        }
+        if (availableTools.any { it.name == "memory" }) {
                 appendLine("用户提到“回忆”“上次”“之前”“曾经”等需要精确回忆的内容时，调用 memory 工具 op=recall；常规对话已经带有记忆摘要，不要主动展开所有记忆。")
+            }
+            if (availableTools.any { it.name == "read_file" }) {
+                appendLine("读取应用自身目录（插件、技能、工作区等）时，read_file/write_file/list_files 的 path 用 app://private/... 或 app://external/...。")
+                appendLine("PRoot 中可直接访问：/mnt/iris-private（应用私有）、/mnt/skills、/mnt/plugins、/mnt/attachments、/mnt/iris（外置 IRIS）、/workspace。")
             }
             if (availableTools.any { it.name == "read_file" }) {
                 appendLine("文件操作建议：先用 list_files / search_files 定位，再用 read_file 确认原文；" +
@@ -352,6 +374,10 @@ class AgentLoop(
         if (planFirst) {
             appendLine("调用工具前，先用一句话说明你打算做什么。")
         }
+        if (planMode) {
+            appendLine("当前处于计划模式：只做只读探索与方案设计，禁止调用写入、删除、执行命令、修改工作区或其他会产生副作用的工具。")
+            appendLine("先输出一份完整计划（目标、步骤、涉及文件/命令、风险），等待用户批准；不要声称已经执行。用户批准后会退出计划模式再执行。")
+        }
         if (userSystemPrompt.isNotBlank()) {
             appendLine()
             appendLine(userSystemPrompt)
@@ -360,7 +386,17 @@ class AgentLoop(
 
     private companion object {
         const val MAX_RESULT_CHARS = 20_000
+        const val MAX_PROMPT_RESULT_CHARS = 6_000
     }
+
+    /** 回填给模型的工具结果需要限长：本地 4k 上下文中一条 2 万字符输出会挤掉系统提示与历史。 */
+    private fun promptResult(result: String): String =
+        if (result.length > MAX_PROMPT_RESULT_CHARS) {
+            result.take(MAX_PROMPT_RESULT_CHARS) +
+                "\n…（结果过长已截断，需要更多内容请缩小读取范围或分段读取）"
+        } else {
+            result
+        }
 
     private fun displayResult(result: String): String =
         if (result.length > MAX_RESULT_CHARS) {

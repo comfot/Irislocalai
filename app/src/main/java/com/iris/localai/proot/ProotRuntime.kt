@@ -111,6 +111,10 @@ class ProotRuntime(
             ProotPaths.ROOTFS_SHARED_STORAGE,
             ProotPaths.ROOTFS_STORAGE_ROOT,
             ProotPaths.ROOTFS_APP_STORAGE,
+            ProotPaths.ROOTFS_PRIVATE_STORAGE,
+            ProotPaths.ROOTFS_SKILLS,
+            ProotPaths.ROOTFS_PLUGINS,
+            ProotPaths.ROOTFS_ATTACHMENTS,
         ).forEach { ensureGuestMountPoint(rootfs, it) }
         val tempDir = paths.tempDir(imageId).apply { mkdirs() }
         patcher.patch(rootfs)
@@ -192,6 +196,19 @@ class ProotRuntime(
     fun storageMounts(): List<Pair<String, String>> = buildList {
         context.getExternalFilesDir(null)?.takeIf { it.isDirectory }?.let { dir ->
             add(dir.absolutePath to ProotPaths.ROOTFS_APP_STORAGE)
+        }
+        val privateDir = context.filesDir
+        if (privateDir.isDirectory) {
+            add(privateDir.absolutePath to ProotPaths.ROOTFS_PRIVATE_STORAGE)
+            File(privateDir, "skills").takeIf { it.isDirectory }?.let {
+                add(it.absolutePath to ProotPaths.ROOTFS_SKILLS)
+            }
+            File(privateDir, "plugins").takeIf { it.isDirectory }?.let {
+                add(it.absolutePath to ProotPaths.ROOTFS_PLUGINS)
+            }
+            File(privateDir, "attachments").takeIf { it.isDirectory }?.let {
+                add(it.absolutePath to ProotPaths.ROOTFS_ATTACHMENTS)
+            }
         }
         val shared = Environment.getExternalStorageDirectory()
         if (shared != null && shared.isDirectory) {

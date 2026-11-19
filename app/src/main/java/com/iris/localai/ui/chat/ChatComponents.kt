@@ -82,6 +82,7 @@ import com.iris.localai.ui.theme.IrisCard
 import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
 import com.iris.localai.data.Space
+import com.iris.localai.ui.settings.PluginSlot
 
 data class ChipOption(val id: String, val label: String, val detail: String)
 
@@ -173,44 +174,86 @@ internal fun MessageBubble(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
-        if (displayText.isNotBlank() || showTyping) {
-            val visual = bubbleVisual(isUser = isUser, style = bubbleStyle)
-            Surface(
-                color = visual.color,
-                contentColor = visual.contentColor,
-                shape = visual.shape,
-                border = visual.border,
-                modifier = Modifier.widthIn(max = 340.dp),
-            ) {
-                if (showTyping) {
-                    Text(
-                        text = typingLabel,
-                        modifier = Modifier.padding(visual.padding),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                } else if (isUser) {
-                    Text(
-                        text = displayText,
-                        modifier = Modifier.padding(visual.padding),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                } else {
-                    PluginMarkupContent(
-                        text = displayText,
-                        modifier = Modifier.padding(visual.padding),
-                        renderPluginXml = renderPluginXml,
-                    ) { text ->
-                        Text(text = text, style = MaterialTheme.typography.bodyLarge)
+        val visual = bubbleVisual(isUser = isUser, style = bubbleStyle)
+        if (isUser) {
+            if (displayText.isNotBlank() || showTyping) {
+                Surface(
+                    color = visual.color,
+                    contentColor = visual.contentColor,
+                    shape = visual.shape,
+                    border = visual.border,
+                    modifier = Modifier.widthIn(max = 340.dp),
+                ) {
+                    if (showTyping) {
+                        Text(
+                            text = typingLabel,
+                            modifier = Modifier.padding(visual.padding),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    } else {
+                        Text(
+                            text = displayText,
+                            modifier = Modifier.padding(visual.padding),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
                     }
                 }
             }
-        }
-        if (showRoleChatCard) {
-            display.status?.let { status ->
-                AssistantStatusCard(status)
+        } else {
+            visibleSteps.forEach { step ->
+                val replyText = remember(step.reply) {
+                    AssistantMessageParser.parse(step.reply).mainText
+                }
+                if (replyText.isNotBlank()) {
+                    Surface(
+                        color = visual.color,
+                        contentColor = visual.contentColor,
+                        shape = visual.shape,
+                        border = visual.border,
+                        modifier = Modifier.widthIn(max = 340.dp),
+                    ) {
+                        PluginMarkupContent(
+                            text = replyText,
+                            modifier = Modifier.padding(visual.padding),
+                            renderPluginXml = renderPluginXml,
+                        ) { text ->
+                            Text(text = text, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+                AgentStepCard(step)
+            }
+            if (displayText.isNotBlank() || showTyping) {
+                Surface(
+                    color = visual.color,
+                    contentColor = visual.contentColor,
+                    shape = visual.shape,
+                    border = visual.border,
+                    modifier = Modifier.widthIn(max = 340.dp),
+                ) {
+                    if (showTyping) {
+                        Text(
+                            text = typingLabel,
+                            modifier = Modifier.padding(visual.padding),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    } else {
+                        PluginMarkupContent(
+                            text = displayText,
+                            modifier = Modifier.padding(visual.padding),
+                            renderPluginXml = renderPluginXml,
+                        ) { text ->
+                            Text(text = text, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            }
+            if (showRoleChatCard) {
+                display.status?.let { status ->
+                    AssistantStatusCard(status)
+                }
             }
         }
-        visibleSteps.forEach { step -> AgentStepCard(step) }
     }
 }
 
@@ -362,6 +405,7 @@ internal fun SelectorChip(
             )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            PluginSlot("chat.message-menu")
             options.forEach { option ->
                 DropdownMenuItem(
                     text = {

@@ -47,6 +47,14 @@ class ProotPaths(private val baseDir: File) {
         /** Rootfs 内应用专属外置目录的挂载点，无需额外权限。 */
         const val ROOTFS_APP_STORAGE = "/mnt/iris"
 
+        /** Rootfs 内应用私有 filesDir；技能、插件、开发工程都在这下面。 */
+        const val ROOTFS_PRIVATE_STORAGE = "/mnt/iris-private"
+
+        /** 常用私有目录的短路径。 */
+        const val ROOTFS_SKILLS = "/mnt/skills"
+        const val ROOTFS_PLUGINS = "/mnt/plugins"
+        const val ROOTFS_ATTACHMENTS = "/mnt/attachments"
+
         private val NAME_REGEX = Regex("[A-Za-z0-9._-]+")
         private const val LINUX_DIR = "linux"
         private const val TEMP_DIR = "tmp"

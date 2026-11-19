@@ -3,6 +3,7 @@ package com.iris.localai
 import android.content.Context
 import com.iris.localai.agent.AgentLoop
 import com.iris.localai.agent.ConversationStore
+import com.iris.localai.agent.PlanStore
 import com.iris.localai.agent.ToolRegistry
 import com.iris.localai.agent.tools.DeviceBackTool
 import com.iris.localai.agent.tools.DeviceHomeTool
@@ -41,13 +42,17 @@ import com.iris.localai.agent.tools.ExpressionControlTool
 import com.iris.localai.agent.tools.RandomPickTool
 import com.iris.localai.agent.tools.ReadFileTool
 import com.iris.localai.agent.tools.SearchFilesTool
+import com.iris.localai.agent.tools.PlanTool
 import com.iris.localai.agent.tools.UseSkillTool
 import com.iris.localai.agent.tools.WorkspaceTool
+import com.iris.localai.agent.tools.PluginDevTool
 import com.iris.localai.agent.tools.WriteFileTool
 import com.iris.localai.browser.BrowserController
 import com.iris.localai.character.CharacterCardStore
 import com.iris.localai.code.CodeSettingsStore
+import com.iris.localai.agent.tools.TerminalTool
 import com.iris.localai.code.ShellTool
+import com.iris.localai.code.TerminalSessions
 import com.iris.localai.character.CharacterModelStore
 import com.iris.localai.data.HuggingFaceClient
 import com.iris.localai.data.AssetDownloadManager
@@ -92,6 +97,8 @@ import com.iris.localai.permission.DeviceActionExecutor
 import com.iris.localai.permission.DevicePermissionStore
 import com.iris.localai.permission.VirtualDisplayController
 import com.iris.localai.plugin.PluginRuntime
+import com.iris.localai.plugin.HostActionRegistry
+import com.iris.localai.plugin.PluginDevService
 import com.iris.localai.plugin.PluginStore
 import com.iris.localai.plugin.PluginTerminalHost
 import com.iris.localai.plugin.PluginToolInstaller
@@ -129,6 +136,7 @@ class AppGraph(
     private var pluginRuntimeRef: PluginRuntime? = null
     val models = ModelProfileStore(context)
     val conversations = ConversationStore(context)
+    val plans = PlanStore(context)
     val characters = CharacterCardStore(context, storage)
     val characterModels = CharacterModelStore(context, storage)
     val petModels = CharacterModelStore(
@@ -212,6 +220,7 @@ class AppGraph(
     }
     val mcp = McpStore(context, storage)
     val toolClips = HastMotionStore.get(context) { settings.current.mirrorEnabled }
+    val terminalSessions = TerminalSessions(context, code, workspaces)
     val integrationStore = IntegrationStore(context)
     val browser = BrowserController(context) { integrationStore.settings.value.browser }
     val tools = ToolRegistry().apply {
@@ -219,6 +228,7 @@ class AppGraph(
         register(DeviceInfoTool())
         register(RandomPickTool())
         register(UseSkillTool(skills))
+        register(PlanTool(plans))
         register(WorkspaceTool(context, code, workspaces))
         register(ReadFileTool(context, code, workspaces))
         register(WriteFileTool(context, code, workspaces))
@@ -230,6 +240,7 @@ class AppGraph(
         register(MotionControlTool(toolClips, motionAssets, motionBindings, characterModels, vrmaMotions, settings))
         register(ExpressionControlTool(expressionBindings, characterModels, settings))
         register(ShellTool(code, workspaces, context))
+        register(TerminalTool(terminalSessions))
         register(DeviceOpenAppTool(deviceActions))
         register(DeviceTapTool(deviceActions))
         register(DeviceSwipeTool(deviceActions))
@@ -286,18 +297,21 @@ class AppGraph(
         settings.syncToolCatalog(tools.all().map { it.name }.toSet())
     }
     val pluginTerminal = PluginTerminalHost(context, code)
+    val hostActions = HostActionRegistry(context, tts, memory, characterModels, settings)
     val pluginRuntime = PluginRuntime(
-        context,
-        { plugins.plugins.value },
-        tools,
-        pluginTerminal,
-    ) { name ->
-        val permissions = settings.current.toolPermissions
-        permissions[name]
-            ?: name.removePrefix("compat:").takeIf { name.startsWith("compat:") }
-                ?.let { permissions[it] }
-            ?: ToolPermission.ALLOW
-    }
+        context = context,
+        pluginsProvider = { plugins.plugins.value },
+        tools = tools,
+        terminal = pluginTerminal,
+        permissionOf = { name ->
+            val permissions = settings.current.toolPermissions
+            permissions[name]
+                ?: name.removePrefix("compat:").takeIf { name.startsWith("compat:") }
+                    ?.let { permissions[it] }
+                ?: ToolPermission.ALLOW
+        },
+        hostActions = hostActions,
+    )
     init {
         pluginRuntimeRef = pluginRuntime
         ioScope.launch {
@@ -324,6 +338,14 @@ class AppGraph(
             pluginRuntime.onPluginsChanged(plugins.plugins.value)
         }
         installer.sync()
+    }
+    val pluginDev = PluginDevService(context, plugins, pluginRuntime, settings) { id ->
+        pluginRuntime.close(id)
+        pluginTools.sync()
+    }
+    init {
+        tools.register(PluginDevTool(pluginDev))
+        settings.syncToolCatalog(tools.all().map { it.name }.toSet())
     }
     val agent = AgentLoop(engines, tools, pluginRuntime = pluginRuntime)
     val integrations = IntegrationManager(

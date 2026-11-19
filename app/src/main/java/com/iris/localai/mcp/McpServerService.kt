@@ -43,7 +43,7 @@ sealed interface McpState {
  * 把内置工具以 MCP Streamable HTTP 暴露给本机其它 AI 客户端。
  * 支持 initialize / tools/list / tools/call / ping；POST 可按 Accept 返回 SSE，GET 可建立事件流。
  */
-private val LOCAL_ONLY_TOOLS = setOf("shell", "workspace")
+private val LOCAL_ONLY_TOOLS = setOf("shell", "workspace", "plugin_dev")
 private const val LATEST_PROTOCOL = "2025-06-18"
 private val SUPPORTED_PROTOCOLS = setOf("2024-11-05", "2025-03-26", LATEST_PROTOCOL)
 

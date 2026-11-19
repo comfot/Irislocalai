@@ -49,6 +49,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import com.iris.localai.ui.settings.PluginSlot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -197,6 +198,8 @@ fun CompositeSpaceScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        PluginSlot("space.composite", Modifier.align(Alignment.TopCenter))
+        PluginSlot("space.composite.overlay", Modifier.align(Alignment.BottomCenter))
         Studio3DView(
             place = place.id,
             accentHex = accentHex,

@@ -77,6 +77,7 @@ class PluginRuntime(
     private val tools: ToolRegistry? = null,
     private val terminal: PluginTerminalHost? = null,
     private val permissionOf: (String) -> ToolPermission = { ToolPermission.ALLOW },
+    private val hostActions: HostActionRegistry? = null,
 ) {
 
     private val appContext = context.applicationContext
@@ -844,6 +845,23 @@ class PluginRuntime(
         return _registrations.value.values
             .flatMap { it.ui }
             .filter { it.type == "navigation" && it.surface.equals("main_sidebar_plugins", ignoreCase = true) }
+            .distinctBy { it.pluginId + ":" + it.id }
+            .sortedWith(compareBy({ it.order }, { it.pluginName }, { it.id }))
+    }
+
+    suspend fun settingsEntries(): List<PluginHookDescriptor> {
+        ensureAllRegistrations()
+        return _registrations.value.values
+            .flatMap { it.ui }
+            .filter { it.type == "settings_entry" }
+            .sortedWith(compareBy({ it.order }, { it.pluginName }, { it.id }))
+    }
+
+    suspend fun slotEntries(surface: String): List<PluginHookDescriptor> {
+        ensureAllRegistrations()
+        return _registrations.value.values
+            .flatMap { it.ui }
+            .filter { it.type == "plugin_slot" && it.surface.equals(surface, ignoreCase = true) }
             .sortedWith(compareBy({ it.order }, { it.pluginName }, { it.id }))
     }
 
@@ -935,6 +953,7 @@ class PluginRuntime(
                 plugin = plugin,
                 toolExecutor = ::executeTool,
                 terminal = terminal,
+                hostActions = hostActions,
                 onUiInvalidate = { moduleId -> _uiInvalidations.tryEmit(moduleId) },
                 onRegistrations = { id, registrations ->
                     _registrations.update { it + (id to registrations) }
@@ -1205,6 +1224,7 @@ private class PluginSession(
     private val plugin: InstalledPlugin,
     private val toolExecutor: suspend (String, JsonObject, String) -> String,
     private val terminal: PluginTerminalHost?,
+    private val hostActions: HostActionRegistry?,
     private val onUiInvalidate: (String) -> Unit,
     private val onRegistrations: (String, PluginRegistrations) -> Unit,
     private val onError: (String, String) -> Unit,
@@ -1262,6 +1282,7 @@ private class PluginSession(
                     pluginId = plugin.id,
                     toolExecutor = toolExecutor,
                     terminal = terminal,
+                    hostActions = hostActions,
                     scope = scope,
                     webViewProvider = { webView },
                     onUiInvalidate = onUiInvalidate,
@@ -1749,7 +1770,7 @@ private class PluginSession(
                 surface = obj.text("surface").orEmpty(),
             )
             when (type) {
-                "toolbox_ui", "ui_route", "navigation", "desktop_widget" -> ui += descriptor
+                "toolbox_ui", "ui_route", "navigation", "desktop_widget", "settings_entry", "plugin_slot" -> ui += descriptor
                 "ai_provider" -> providers += id
                 else -> hooks += descriptor
             }
@@ -1802,6 +1823,7 @@ private class PluginSession(
         private val pluginId: String,
         private val toolExecutor: suspend (String, JsonObject, String) -> String,
         private val terminal: PluginTerminalHost?,
+        private val hostActions: HostActionRegistry?,
         private val scope: CoroutineScope,
         private val webViewProvider: () -> WebView?,
         private val onToast: (String) -> Unit,
@@ -2081,9 +2103,13 @@ private class PluginSession(
                     emitIntermediate(intermediateId, "{\"status\":\"started\",\"tool\":${toolName.json()}}")
                 }
                 val result = runCatching {
-                    val arguments = runCatching {
-                        Json.parseToJsonElement(argsJson).jsonObject
-                    }.getOrElse { JsonObject(emptyMap()) }
+                    val element = runCatching { Json.parseToJsonElement(argsJson) }.getOrNull()
+                    val arguments = when {
+                        element is JsonObject -> element
+                        element is JsonPrimitive && element.isString && toolName == "plugin_dev" ->
+                            buildJsonObject { put("op", element.content) }
+                        else -> JsonObject(emptyMap())
+                    }
                     toolExecutor(toolName, arguments, pluginId)
                 }
                 val text = result.fold(
@@ -2381,6 +2407,15 @@ private class PluginSession(
         fun configDir(): String = configDir.absolutePath
 
         @JavascriptInterface
+        fun hostAction(id: String, argsJson: String): String {
+            val registry = hostActions ?: return """{"ok":false,"error":"宿主动作未接入"}"""
+            val args = runCatching {
+                Json.parseToJsonElement(argsJson.ifBlank { "{}" }).jsonObject
+            }.getOrDefault(JsonObject(emptyMap()))
+            return runBlocking { registry.invoke(id.trim(), args) }.toString()
+        }
+
+        @JavascriptInterface
         fun sleep(milliseconds: Int) {
             Thread.sleep(milliseconds.coerceIn(0, 5000).toLong())
         }
@@ -2506,7 +2541,11 @@ private class PluginSession(
               var list = Array.prototype.slice.call(args);
               var name = '';
               var params = {};
-              if (list.length === 1 && list[0] && typeof list[0] === 'object' && !Array.isArray(list[0])) {
+              if (list.length >= 2 && typeof list[0] === 'string' &&
+                  list[1] && typeof list[1] === 'object' && !Array.isArray(list[1])) {
+                name = list[0];
+                params = list[1];
+              } else if (list.length === 1 && list[0] && typeof list[0] === 'object' && !Array.isArray(list[0])) {
                 name = list[0].name || '';
                 params = list[0].params || {};
               } else if (list.length >= 3) {
@@ -2835,6 +2874,13 @@ private class PluginSession(
                   return cached.value;
                 },
                 callTool: function () { return __irisCallTool.apply(null, arguments); },
+                host: {
+                  invoke: function (id, args) {
+                    try {
+                      return Promise.resolve(JSON.parse(irisHost.hostAction(String(id), JSON.stringify(args || {}))));
+                    } catch (error) { return Promise.reject(error); }
+                  }
+                },
                 getEnv: function (key) { try { return irisHost.getEnv(String(key)); } catch (error) { return ''; } },
                 setEnv: function (key, value) {
                   try { return Promise.resolve(irisHost.setEnv(String(key), String(value))); }
@@ -2977,6 +3023,7 @@ private class PluginSession(
                       var loadedModule = globalThis.__irisLoadModule(globalThis.__irisNormalize(candidates[ci], screen));
                       var loadedValue = loadedModule && (loadedModule.default || loadedModule);
                       if (loadedValue && typeof loadedValue.default === 'function') loadedValue = loadedValue.default;
+                      if (loadedValue && typeof loadedValue.screen === 'function') loadedValue = loadedValue.screen;
                       if (typeof loadedValue === 'function') screenFn = loadedValue;
                     } catch (loadError) { }
                   }
@@ -3031,6 +3078,8 @@ private class PluginSession(
               _m: function () {},
               registerToolboxUiModule: function (def) { __irisRegister('toolbox_ui', def); },
               registerUiRoute: function (def) { __irisRegister('ui_route', def); },
+              registerSettingsEntry: function (def) { __irisRegister('settings_entry', def); },
+              registerPluginSlot: function (def) { __irisRegister('plugin_slot', def); },
               registerNavigationEntry: function (def) { __irisRegister('navigation', def); },
               registerDesktopWidget: function (def) { __irisRegister('desktop_widget', def); },
               registerAppLifecycleHook: function (def) { __irisRegister('app_lifecycle', def); },
@@ -3140,6 +3189,8 @@ private class PluginSession(
             }
             globalThis.registerToolPkgToolboxUiModule = __irisRegisterFromJson(globalThis.ToolPkg.registerToolboxUiModule);
             globalThis.registerToolPkgUiRoute = __irisRegisterFromJson(globalThis.ToolPkg.registerUiRoute);
+            globalThis.registerToolPkgSettingsEntry = __irisRegisterFromJson(globalThis.ToolPkg.registerSettingsEntry);
+            globalThis.registerToolPkgPluginSlot = __irisRegisterFromJson(globalThis.ToolPkg.registerPluginSlot);
             globalThis.registerToolPkgNavigationEntry = __irisRegisterFromJson(globalThis.ToolPkg.registerNavigationEntry);
             globalThis.registerToolPkgDesktopWidget = __irisRegisterFromJson(globalThis.ToolPkg.registerDesktopWidget);
             globalThis.registerToolPkgAppLifecycleHook = __irisRegisterFromJson(globalThis.ToolPkg.registerAppLifecycleHook);

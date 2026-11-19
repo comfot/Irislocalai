@@ -67,6 +67,7 @@ import com.iris.localai.agent.Conversation
 import com.iris.localai.character.CharacterEntry
 import com.iris.localai.data.Space
 import com.iris.localai.plugin.PluginHookDescriptor
+import com.iris.localai.ui.settings.PluginSlot
 import com.iris.localai.workspace.Workspace
 import com.iris.localai.workspace.WorkspaceEntry
 import com.iris.localai.workspace.WorkspaceFs
@@ -373,6 +374,7 @@ fun Sidebar(
                 }
             }
 
+            PluginSlot("sidebar.bottom")
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
             Row(
                 modifier = Modifier

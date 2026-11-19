@@ -340,7 +340,7 @@ class PluginTerminalHost(
             session.env.putAll(values)
             return ok("")
         }
-        if (session.background != null && trimmed.contains("echo \$!")) {
+        if (session.background != null && trimmed.matches(Regex("echo\\s+\\$!"))) {
             return ok("1")
         }
         val prepared = injectLoopbackPreload(trimmed)
@@ -354,9 +354,9 @@ class PluginTerminalHost(
 
         val script = unwrapBashCommand(prepared) ?: buildScript(session, prepared)
         tryHostDownload(script)?.let { return it }
-        val isBackground = Regex("&\\s*$").containsMatchIn(prepared)
+        val isBackground = BACKGROUND_SUFFIX.containsMatchIn(prepared)
         if (isBackground) {
-            val foreground = prepared.replace(Regex("&\\s*$"), "").trim()
+            val foreground = prepared.replace(BACKGROUND_SUFFIX, "").trim()
             val sessionProcess = runCatching {
                 runtime.openSession(
                     imageId = imageId,
@@ -412,6 +412,11 @@ class PluginTerminalHost(
         val raw = command.substring(prefix.length).trim()
         if (raw.length < 2 || raw.first() != '\'' || raw.last() != '\'') return null
         return raw.substring(1, raw.length - 1).replace("'\\''", "'")
+    }
+
+    private companion object {
+        /** 结尾的后台符，允许 `cmd &` 与 `cmd & echo $!` 两种常见写法。 */
+        val BACKGROUND_SUFFIX = Regex("&\\s*(?:echo\\s+\\$!)?\\s*$")
     }
 
     private fun buildScript(session: Session, command: String): String = buildString {

@@ -142,6 +142,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
     }
 
     SettingsPage {
+        PluginSlot("settings.voice")
         SettingsCard("语音合成（TTS）") {
             VoiceEngineChips(settings.ttsEngine) { engine ->
                 viewModel.update { it.copy(ttsEngine = engine) }

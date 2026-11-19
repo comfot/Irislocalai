@@ -97,6 +97,7 @@ internal fun MemoryPage(viewModel: MemoryViewModel = viewModel()) {
     }
 
     SettingsPage {
+        PluginSlot("settings.memory")
         SettingsCard("记忆与知识") {
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),

@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -32,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,6 +47,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.localai.agent.Conversation
 import com.iris.localai.data.AppSettings
 import com.iris.localai.engine.EngineState
+import com.iris.localai.plugin.resolveUiModuleId
+import com.iris.localai.plugin.uiRouteModuleId
 import com.iris.localai.server.ApiState
 import com.iris.localai.ui.theme.IrisCard
 
@@ -60,12 +64,39 @@ fun SettingsScreen(
     val engineState by viewModel.engineState.collectAsStateWithLifecycle()
     val apiState by viewModel.apiState.collectAsStateWithLifecycle()
     val conversations by viewModel.conversations.collectAsStateWithLifecycle()
+    val pluginRegistrations by viewModel.pluginRegistrations.collectAsStateWithLifecycle()
+    val plugins by viewModel.plugins.collectAsStateWithLifecycle()
+    val pluginEntries = remember(pluginRegistrations, plugins, settings.pluginDevMode) {
+        val enabled = plugins.filter { it.enabled }.associateBy { it.id }
+        pluginRegistrations.values
+            .flatMap { it.ui }
+            .filter {
+                it.type == "settings_entry" && enabled.containsKey(it.pluginId) &&
+                    (it.pluginId != "iris.plugin_devkit" || settings.pluginDevMode)
+            }
+            .sortedWith(compareBy({ it.order }, { it.pluginName }, { it.id }))
+            .mapNotNull { item ->
+                val moduleId = pluginRegistrations[item.pluginId]?.resolveUiModuleId(item)
+                    ?: item.uiRouteModuleId()
+                if (moduleId.isBlank()) null
+                else PluginSettingsEntry(
+                    id = "plugin:${item.pluginId}:$moduleId",
+                    pluginId = item.pluginId,
+                    moduleId = moduleId,
+                    title = item.title.ifBlank { item.id },
+                    order = item.order,
+                )
+            }
+    }
 
     var entryId by rememberSaveable { mutableStateOf<String?>(null) }
     var previousEntryId by rememberSaveable { mutableStateOf<String?>(null) }
     var marketSectionName by rememberSaveable { mutableStateOf(MarketSection.MODELS.name) }
     var showThemePreset by rememberSaveable { mutableStateOf(false) }
     val entry = SettingsCatalog.find(entryId)
+        ?: pluginEntries.firstOrNull { it.id == entryId }?.let { item ->
+            SettingsEntry(item.id, item.title, "插件", Icons.Outlined.Extension)
+        }
 
     LaunchedEffect(navigationRequestId, initialEntryId) {
         if (!initialEntryId.isNullOrBlank()) {
@@ -135,10 +166,25 @@ fun SettingsScreen(
                     settings = settings,
                     engineState = engineState,
                     conversations = conversations,
+                    pluginEntries = pluginEntries,
                     onEntry = { entryId = it.id; previousEntryId = null },
                 )
+            } else if (entry.id.startsWith("plugin:")) {
+                val target = pluginEntries.firstOrNull { it.id == entry.id }
+                val plugin = plugins.firstOrNull { it.id == target?.pluginId }
+                if (target != null && plugin != null) {
+                    PluginSettingsPage(
+                        plugin = plugin,
+                        moduleId = target.moduleId,
+                        title = target.title,
+                        onClose = { goBack() },
+                    )
+                }
             } else {
-                SettingsDetail(
+                Column(modifier = Modifier.fillMaxSize()) {
+                    PluginSlot("settings.page.${entry.id}")
+                    Box(modifier = Modifier.weight(1f)) {
+                        SettingsDetail(
                     entry = entry,
                     settings = settings,
                     engineState = engineState,
@@ -169,6 +215,8 @@ fun SettingsScreen(
                     },
                     onOpenThemePreset = { showThemePreset = true },
                 )
+                    }
+                }
             }
         }
     }
@@ -187,6 +235,7 @@ private fun SettingsHome(
     settings: AppSettings,
     engineState: EngineState,
     conversations: List<Conversation>,
+    pluginEntries: List<PluginSettingsEntry>,
     onEntry: (SettingsEntry) -> Unit,
 ) {
     LazyColumn(
@@ -206,6 +255,19 @@ private fun SettingsHome(
                 SettingsSectionCard(section = section, onEntry = onEntry)
             }
         }
+        if (pluginEntries.isNotEmpty()) {
+            item(key = "plugin_settings") {
+                SettingsSectionCard(
+                    section = SettingsSection(
+                        title = "插件",
+                        entries = pluginEntries.map {
+                            SettingsEntry(it.id, it.title, "插件设置", Icons.Outlined.Extension)
+                        },
+                    ),
+                    onEntry = onEntry,
+                )
+            }
+        }
         item {
             Text(
                 text = "IRIS LocalAI 0.1.0 · 本地 AI 工作台",
@@ -217,6 +279,14 @@ private fun SettingsHome(
         }
     }
 }
+
+private data class PluginSettingsEntry(
+    val id: String,
+    val pluginId: String,
+    val moduleId: String,
+    val title: String,
+    val order: Int,
+)
 
 @Composable
 private fun SettingsHeader(
@@ -373,6 +443,7 @@ private fun SettingsDetail(
         "api" -> ApiServicePage()
         "mcp" -> McpPage()
         "plugin" -> PluginPage(onOpenMarket = { onOpenMarket(MarketSection.PLUGINS) })
+        "developer-options" -> DeveloperOptionsPage()
         "market" -> MarketPage(initialSection = initialMarketSection)
         "theme" -> ThemePage(settings, viewModel, onOpenThemePreset)
         "component" -> ComponentPage(settings, viewModel)

@@ -134,6 +134,7 @@ internal fun MarketPage(
         }
 
         if (section == MarketSection.MODELS) {
+            item { PluginSlot("market.models") }
             item {
                 TabRow(selectedTabIndex = modelTab.ordinal) {
                     ModelMarketTab.entries.forEach { tab ->
@@ -177,6 +178,7 @@ internal fun MarketPage(
                     }
                 }
                 if (characterTab == 0) {
+                    item { PluginSlot("market.character-models") }
                     item { CharacterPlazaSection() }
                 } else {
                     item { MotionMarketSection() }
@@ -391,6 +393,7 @@ private fun LazyListScope.pluginMarket(
 ) {
     item {
         SettingsCard("插件市场") {
+            PluginSlot("market.plugins")
             Text(
                 text = "安装 Operit ToolPkg 或 IRIS 插件包。仓库 ZIP 需在根目录或一级子目录包含 manifest.json / manifest.hjson。",
                 style = MaterialTheme.typography.bodySmall,

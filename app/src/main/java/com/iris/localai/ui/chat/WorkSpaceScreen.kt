@@ -21,6 +21,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.AttachFile
@@ -44,6 +46,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Button
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -54,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,12 +69,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.localai.agent.AssistantMessageParser
+import com.iris.localai.agent.ChatRole
 import com.iris.localai.data.AppSettings
 import com.iris.localai.data.ModelProfile
 import com.iris.localai.data.ProviderKind
 import com.iris.localai.data.ThemeStyle
 import com.iris.localai.agent.AttachmentKind
 import com.iris.localai.skill.Skill
+import com.iris.localai.ui.settings.PluginSlot
 import com.iris.localai.ui.theme.LocalIrisThemeStyle
 import com.iris.localai.agent.Tool
 import com.iris.localai.workspace.Workspace
@@ -88,10 +95,22 @@ fun WorkSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) {
     val workspaces by viewModel.workspaces.collectAsStateWithLifecycle()
     val activeWorkspace by viewModel.activeWorkspace.collectAsStateWithLifecycle()
     val pluginMenuItems by viewModel.pluginMenuItems.collectAsStateWithLifecycle()
+    val currentPlan by viewModel.currentPlan.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.loadPluginMenuItems() }
 
     Column(modifier = modifier.imePadding()) {
+        PluginSlot("space.work")
+        WorkPlanCard(currentPlan, onCancel = viewModel::cancelPlan, onClear = viewModel::clearPlan)
+        WorkPlanBar(
+            planMode = settings.planMode,
+            plan = messages.lastOrNull { it.role == ChatRole.ASSISTANT }
+                ?.text
+                ?.let { AssistantMessageParser.mainText(it) }
+                .orEmpty(),
+            onToggle = viewModel::setPlanMode,
+            onApprove = viewModel::approvePlan,
+        )
         if (messages.isEmpty()) {
             WorkEmptyState(
                 workspace = activeWorkspace,
@@ -124,6 +143,136 @@ fun WorkSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) {
             workspaces = workspaces,
             activeWorkspace = activeWorkspace,
         )
+        PluginSlot("space.work.footer")
+    }
+}
+
+@Composable
+private fun WorkPlanCard(
+    plan: com.iris.localai.agent.Plan?,
+    onCancel: () -> Unit,
+    onClear: () -> Unit,
+) {
+    if (plan == null) return
+    var expanded by rememberSaveable(plan.conversationId, plan.title) { mutableStateOf(false) }
+    val doneCount = plan.steps.count { it.status == com.iris.localai.agent.PlanStepStatus.DONE }
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { expanded = !expanded },
+                ) {
+                    Text(
+                        "计划：${plan.title}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "${doneCount}/${plan.steps.size} 完成" + if (plan.steps.size > doneCount) " · 点击${if (expanded) "收起" else "展开"}" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (plan.status == com.iris.localai.agent.PlanStatus.ACTIVE) {
+                    TextButton(onClick = onCancel) { Text("取消计划") }
+                }
+                TextButton(onClick = onClear) { Text("清除") }
+                IconButton(onClick = { expanded = !expanded }) {
+                    Icon(
+                        if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = if (expanded) "收起计划" else "展开计划",
+                    )
+                }
+            }
+            if (expanded) {
+                plan.steps.forEachIndexed { index, step ->
+                    val label = when (step.status) {
+                        com.iris.localai.agent.PlanStepStatus.PENDING -> "待办"
+                        com.iris.localai.agent.PlanStepStatus.IN_PROGRESS -> "进行中"
+                        com.iris.localai.agent.PlanStepStatus.DONE -> "完成"
+                        com.iris.localai.agent.PlanStepStatus.CANCELLED -> "取消"
+                    }
+                    Text(
+                        "${index + 1}. [$label] ${step.title}" + if (step.note.isNotBlank()) " — ${step.note}" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkPlanBar(
+    planMode: Boolean,
+    plan: String,
+    onToggle: (Boolean) -> Unit,
+    onApprove: () -> Unit,
+) {
+    var planExpanded by rememberSaveable { mutableStateOf(false) }
+    Surface(
+        color = if (planMode) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("计划模式", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (planMode) "只读探索并先生成计划，批准后再执行" else "开启后不会直接修改工作区",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = { onToggle(!planMode) }) {
+                    Text(if (planMode) "退出" else "进入")
+                }
+            }
+            if (planMode) {
+                if (plan.isBlank()) {
+                    Text(
+                        "发送任务后，AI 会先给出计划，等待你批准。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (planExpanded) {
+                                plan.take(1600)
+                            } else {
+                                plan.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = if (planExpanded) Int.MAX_VALUE else 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { planExpanded = !planExpanded }) {
+                            Text(if (planExpanded) "收起" else "展开")
+                        }
+                    }
+                    Button(onClick = onApprove) { Text("批准并执行") }
+                }
+            }
+        }
     }
 }
 
@@ -164,6 +313,7 @@ private fun WorkEmptyState(
             .padding(horizontal = 24.dp, vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        PluginSlot("chat.empty")
         Surface(
             modifier = Modifier.size(56.dp),
             shape = RoundedCornerShape(18.dp),
@@ -371,6 +521,8 @@ private fun WorkComposer(
                 Spacer(Modifier.height(4.dp))
             }
 
+            PluginSlot("chat.attachment")
+            PluginSlot("chat.input")
             PluginInputMenuRow(viewModel = viewModel)
             TextField(
                 value = input,

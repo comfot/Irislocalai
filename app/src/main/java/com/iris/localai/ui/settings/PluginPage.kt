@@ -55,6 +55,7 @@ internal fun PluginPage(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val registrations by viewModel.registrations.collectAsStateWithLifecycle()
     val registrationErrors by viewModel.registrationErrors.collectAsStateWithLifecycle()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     var showUrlDialog by remember { mutableStateOf(false) }
@@ -107,6 +108,19 @@ internal fun PluginPage(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            val devkit = plugins.firstOrNull { it.id == "iris.plugin_devkit" && it.enabled }
+            Button(
+                onClick = {
+                    if (devkit != null) {
+                        val entry = registrations[devkit.id]?.ui?.firstOrNull { it.type == "toolbox_ui" }
+                        val moduleId = entry?.let { registrations.getValue(devkit.id).resolveUiModuleId(it) }
+                            ?: "panel"
+                        openUi = Triple(devkit, moduleId, "插件开发套件")
+                    }
+                },
+                enabled = devkit != null && settings.pluginDevMode,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (settings.pluginDevMode) "插件开发套件" else "插件开发套件（需在开发者选项开启）") }
             if (busy) {
                 Text("正在处理插件包…", style = MaterialTheme.typography.labelSmall)
             }
@@ -262,6 +276,10 @@ internal fun PluginPage(
                         checked = plugin.enabled,
                         onCheckedChange = { viewModel.setEnabled(plugin, it) },
                     )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { viewModel.exportPlugin(plugin) }) { Text("导出 ZIP") }
+                    TextButton(onClick = { viewModel.copyInstalledToProject(plugin) }) { Text("复制为工程") }
                 }
                 if (plugin.tools.isNotEmpty()) {
                     TextButton(

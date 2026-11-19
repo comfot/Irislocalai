@@ -101,6 +101,59 @@ class ToolCallParserTest {
     }
 
     @Test
+    fun `parses fullwidth bar tool call`() {
+        val text = """<｜tool_call>{"name":"shell","arguments":{"command":"sed -n '1,20p' a.py"}}"""
+        val call = ToolCallParser.parse(text)
+        assertEquals("shell", call?.name)
+        assertEquals("sed -n '1,20p' a.py", call?.arguments?.get("command")?.jsonPrimitive?.content)
+        assertEquals(0, ToolCallParser.earliestStart(text))
+        assertEquals("", ToolCallParser.stripToolCalls(text))
+        assertTrue(ToolCallParser.holdSuffixLength("<｜tool_cal") > 0)
+    }
+
+    @Test
+    fun `parses bare json tool call`() {
+        val text = """{"command":"sed -n '420,760p' /sdcard/a.py"}"""
+        val call = ToolCallParser.parse(text)
+        assertEquals("shell", call?.name)
+        assertEquals("sed -n '420,760p' /sdcard/a.py", call?.arguments?.get("command")?.jsonPrimitive?.content)
+        assertEquals(0, ToolCallParser.earliestStart(text))
+        assertEquals("", ToolCallParser.stripToolCalls(text))
+
+        val named = ToolCallParser.parse("""{"name":"read_file","arguments":{"path":"app://private/plugins"}}""")
+        assertEquals("read_file", named?.name)
+    }
+
+    @Test
+    fun `unwraps double nested arguments string`() {
+        val text = """<tool_call>{"name":"shell","arguments":{"arguments":"{\"command\": \"cd /workspace && pwd\"}"}}</tool_call>"""
+        val call = ToolCallParser.parse(text)
+        assertEquals("shell", call?.name)
+        assertEquals("cd /workspace && pwd", call?.arguments?.get("command")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `unwraps double nested arguments object`() {
+        val call = ToolCallParser.parse("""<tool_call>{"name":"shell","arguments":{"arguments":{"command":"pwd"}}}</tool_call>""")
+        assertEquals("pwd", call?.arguments?.get("command")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `keeps arguments when outer object has other fields`() {
+        val call = ToolCallParser.parse(
+            """<tool_call>{"name":"plugin_dev","arguments":{"arguments":{"op":"x"},"project":"p"}}</tool_call>""",
+        )
+        assertEquals("p", call?.arguments?.get("project")?.jsonPrimitive?.content)
+        assertEquals("{\"op\":\"x\"}", call?.arguments?.get("arguments")?.toString())
+    }
+
+    @Test
+    fun `plain json answer is not a tool call`() {
+        assertNull(ToolCallParser.parse("""{"total":3,"items":[]}"""))
+        assertEquals(-1, ToolCallParser.earliestStart("""{"total":3}"""))
+    }
+
+    @Test
     fun `plain answer is untouched`() {
         val text = "当前目录是 /workspace，运行正常。"
         assertNull(ToolCallParser.earliestStart(text).takeIf { it >= 0 })

@@ -91,6 +91,7 @@ import com.iris.localai.agent.StepStatus
 import com.iris.localai.data.OperationSurfaceMode
 import com.iris.localai.permission.DevicePermissionState
 import com.iris.localai.permission.OperationChannel
+import com.iris.localai.ui.settings.PluginSlot
 import kotlinx.coroutines.delay
 
 private val quickActions = listOf(
@@ -151,6 +152,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
     val backgroundBlocked = backgroundMode && !permissions.shizukuReady
 
     Column(modifier = modifier.imePadding()) {
+        PluginSlot("space.operate")
         LazyColumn(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(16.dp),
@@ -504,6 +506,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
             running = running,
             onVoice = { showVoice = true },
         )
+        PluginSlot("space.operate.footer")
     }
 
     if (showVoice) {
@@ -913,12 +916,14 @@ private fun OperateComposer(
     onVoice: () -> Unit,
 ) {
     Surface(tonalElevation = 2.dp) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
+        Column {
+            PluginSlot("chat.input")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
             OutlinedTextField(
                 value = input,
                 onValueChange = viewModel::onInputChange,
@@ -941,6 +946,7 @@ private fun OperateComposer(
                     imageVector = if (running) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
                     contentDescription = if (running) "停止" else "发送",
                 )
+            }
             }
         }
     }

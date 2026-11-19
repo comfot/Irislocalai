@@ -119,6 +119,7 @@ internal fun CharacterCardsPage(viewModel: CharacterCardsViewModel = viewModel()
     val visible = cards.filter { !favoritesOnly || it.favorite }
 
     SettingsPage {
+        PluginSlot("settings.character-card")
         SettingsCard("角色卡") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
@@ -509,6 +510,7 @@ private fun CharacterEditorDialog(
                     text = if (existing == null) "创建角色卡" else "编辑角色卡",
                     style = MaterialTheme.typography.titleLarge,
                 )
+                PluginSlot("character.detail")
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

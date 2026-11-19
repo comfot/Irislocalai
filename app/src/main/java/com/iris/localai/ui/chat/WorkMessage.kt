@@ -105,6 +105,7 @@ import com.iris.localai.agent.ChatRole
 import com.iris.localai.agent.StepStatus
 import com.iris.localai.data.BubbleStyle
 import com.iris.localai.plugin.PluginHookDescriptor
+import com.iris.localai.ui.settings.PluginSlot
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -342,6 +343,20 @@ private fun WorkAssistantMessage(
                             thinking = false,
                         )
                     }
+                    val replyText = remember(step.reply) {
+                        AssistantMessageParser.parse(step.reply).mainText
+                    }
+                    if (replyText.isNotBlank()) {
+                        PluginMarkupContent(
+                            text = replyText,
+                            renderPluginXml = renderPluginXml,
+                        ) { text ->
+                            WorkMarkdown(
+                                text = text,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
                     WorkStepCard(step)
                 }
             }
@@ -398,6 +413,7 @@ private fun PluginMessageMenu(
     onSelect: (PluginHookDescriptor) -> Unit,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        PluginSlot("chat.message-menu")
         items.forEach { item ->
             DropdownMenuItem(
                 text = { Text(item.title.ifBlank { item.id }) },

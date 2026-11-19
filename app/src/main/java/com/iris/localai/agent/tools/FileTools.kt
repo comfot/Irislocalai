@@ -24,6 +24,39 @@ private class WorkspaceAccess(
     private val workspaces: WorkspaceStore,
 ) {
     private val appContext = context.applicationContext
+    private val appFiles = AppFiles(appContext)
+
+    private fun isApp(path: String): Boolean =
+        path.startsWith("app://", ignoreCase = true)
+
+    fun readNumbered(path: String, offset: Int, limit: Int): String {
+        if (!isApp(path)) return fs().readNumbered(path, offset, limit)
+        fs()
+        return appFiles.readNumbered(path, offset, limit)
+    }
+
+    fun write(path: String, content: String): String {
+        if (!isApp(path)) return fs(requireWrite = true).write(path, content)
+        fs(requireWrite = true)
+        return appFiles.write(path, content)
+    }
+
+    fun edit(path: String, oldText: String, newText: String, replaceAll: Boolean): String {
+        if (!isApp(path)) return fs(requireWrite = true).edit(path, oldText, newText, replaceAll)
+        fs(requireWrite = true)
+        return appFiles.edit(path, oldText, newText, replaceAll)
+    }
+
+    fun list(path: String): String {
+        if (!isApp(path)) return fs().list(path)
+        fs()
+        return appFiles.list(path)
+    }
+
+    fun search(query: String): String {
+        fs()
+        return appFiles.search(query)
+    }
 
     fun fs(requireWrite: Boolean = false): WorkspaceFs {
         val code = settings.current
@@ -56,7 +89,8 @@ class ReadFileTool(
 
     override val description: String =
         "读取工作区文本文件并返回带行号的内容；参数：" +
-            "{\"path\":\"README.md\",\"offset\":1,\"limit\":200}，offset 从 1 开始，limit 默认 200。"
+            "{\"path\":\"README.md\",\"offset\":1,\"limit\":200}，offset 从 1 开始，limit 默认 200。" +
+            "读取应用自身目录时用 app://private/... 或 app://external/...（如 app://private/skills/...）。"
 
     override suspend fun execute(arguments: JsonObject): String {
         val path = arguments.string("path").trim()
@@ -64,7 +98,7 @@ class ReadFileTool(
         val offset = arguments.int("offset") ?: 1
         val limit = arguments.int("limit") ?: 200
         return withContext(Dispatchers.IO) {
-            access.fs().readNumbered(path, offset, limit)
+            access.readNumbered(path, offset, limit)
         }
     }
 }
@@ -81,7 +115,7 @@ class WriteFileTool(
 
     override val description: String =
         "在工作区创建或覆盖文本文件；参数：{\"path\":\"src/main.kt\",\"content\":\"...\"}。" +
-            "上级目录需已存在，写入需在「编程管理」开启并允许文件授权。"
+            "上级目录需已存在，写入需在「编程管理」开启并允许文件授权；应用目录用 app://private/... 或 app://external/...。"
 
     override suspend fun execute(arguments: JsonObject): String {
         val path = arguments.string("path").trim()
@@ -89,7 +123,7 @@ class WriteFileTool(
         if (!arguments.containsKey("content")) return "缺少 content 参数"
         val content = arguments.string("content")
         return withContext(Dispatchers.IO) {
-            access.fs(requireWrite = true).write(path, content)
+            access.write(path, content)
         }
     }
 }
@@ -117,7 +151,7 @@ class EditFileTool(
         val newText = arguments.string("new_string")
         val replaceAll = (arguments["replace_all"] as? JsonPrimitive)?.booleanOrNull ?: false
         return withContext(Dispatchers.IO) {
-            access.fs(requireWrite = true).edit(path, oldText, newText, replaceAll)
+            access.edit(path, oldText, newText, replaceAll)
         }
     }
 }
@@ -133,12 +167,13 @@ class ListFilesTool(
     override val name: String = "list_files"
 
     override val description: String =
-        "列出工作区目录下的文件与大小；参数：{\"path\":\"src/main\"}，空路径表示根目录。"
+        "列出工作区目录下的文件与大小；参数：{\"path\":\"src/main\"}，空路径表示根目录。" +
+            "应用目录用 app:// 或 app://private/... / app://external/...。"
 
     override suspend fun execute(arguments: JsonObject): String {
         val path = arguments.string("path").trim()
         return withContext(Dispatchers.IO) {
-            access.fs().list(path)
+            access.list(path)
         }
     }
 }
@@ -154,13 +189,14 @@ class SearchFilesTool(
     override val name: String = "search_files"
 
     override val description: String =
-        "在工作区按关键词搜索文件名与内容，返回匹配文件与行号；参数：{\"query\":\"TODO\"}。"
+        "在工作区按关键词搜索文件名与内容，返回匹配文件与行号；参数：{\"query\":\"TODO\"}。" +
+            "app:// 前缀会改为搜索应用自身目录。"
 
     override suspend fun execute(arguments: JsonObject): String {
         val query = arguments.string("query").trim()
         if (query.isEmpty()) return "缺少 query 参数"
         return withContext(Dispatchers.IO) {
-            access.fs().search(query)
+            access.search(query)
         }
     }
 }

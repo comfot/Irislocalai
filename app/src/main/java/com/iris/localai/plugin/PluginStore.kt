@@ -41,10 +41,30 @@ class PluginStore(private val context: Context) {
     }
 
     fun refresh() {
-        _plugins.value = root.listFiles { file -> file.isDirectory }
+        val loaded = root.listFiles { file -> file.isDirectory }
             ?.mapNotNull { dir -> load(dir) }
-            ?.sortedByDescending { it.installedAt }
             .orEmpty()
+        _plugins.value = loaded
+            .groupBy { it.id }
+            .mapNotNull { (_, candidates) ->
+                candidates.maxWithOrNull(
+                    compareBy(
+                        { pluginScore(it) },
+                        { it.installedAt },
+                    ),
+                )
+            }
+            .sortedByDescending { it.installedAt }
+    }
+
+    /** 同一 id 有多份副本时，优先有 main 且文件更完整的目录。 */
+    private fun pluginScore(plugin: InstalledPlugin): Int {
+        val dir = File(root, plugin.directory)
+        if (!dir.isDirectory) return 0
+        val main = File(dir, plugin.main)
+        val mainScore = if (plugin.main.isNotBlank() && main.isFile) 10000 else 0
+        val files = dir.walkTopDown().count { it.isFile }
+        return mainScore + files
     }
 
     /** 随应用分发的内置插件：首次启动复制到插件目录，用户卸载后不再自动重装。 */
@@ -54,24 +74,48 @@ class PluginStore(private val context: Context) {
         var changed = false
         names.forEach { name ->
             val key = "installed_$name"
-            val target = File(root, name)
-            val bundledVersion = runCatching {
-                val text = context.assets.open("$BUILTIN_DIR/$name/manifest.json")
+            val manifestText = runCatching {
+                context.assets.open("$BUILTIN_DIR/$name/manifest.json")
                     .bufferedReader().use { it.readText() }
-                PluginManifestParser.parse(text).version
-            }.getOrDefault("")
+            }.getOrNull() ?: return@forEach
+            val manifest = runCatching { PluginManifestParser.parse(manifestText) }.getOrNull()
+                ?: return@forEach
+            val target = File(root, sanitizePluginId(manifest.id))
+            val legacy = File(root, name).takeIf { it != target && it.isDirectory }
+            if (legacy != null) {
+                if (!target.exists()) {
+                    runCatching { legacy.renameTo(target) }
+                } else if (readMeta(legacy)?.source == "builtin") {
+                    legacy.deleteRecursively()
+                }
+            }
+            val bundledVersion = manifest.version
             val installedVersion = runCatching {
                 findManifest(target)?.let { PluginManifestParser.parse(it.readText()).version }
             }.getOrNull().orEmpty()
+            val targetUsable = runCatching {
+                val manifestFile = findManifest(target) ?: return@runCatching false
+                val parsed = PluginManifestParser.parse(manifestFile.readText())
+                val mainOk = parsed.main.isBlank() || File(target, parsed.main).isFile
+                val resourcesOk = parsed.resources.all { File(target, it.path).isFile }
+                mainOk && resourcesOk
+            }.getOrDefault(false)
             val meta = readMeta(target)
             val isBuiltin = meta?.source == "builtin"
-            val shouldInstall = !target.exists() && !prefs.getBoolean(key, false)
-            val shouldUpdate = target.exists() && isBuiltin && bundledVersion != installedVersion
+            val shouldInstall = !targetUsable && (!prefs.getBoolean(key, false) || target.exists())
+            val shouldUpdate = targetUsable && isBuiltin && bundledVersion != installedVersion
             if (shouldInstall || shouldUpdate) {
                 val previousEnabled = meta?.enabled
+                val staging = File(root, ".builtin-${UUID.randomUUID()}")
                 runCatching {
-                    if (target.exists()) target.deleteRecursively()
-                    copyAssetDir("$BUILTIN_DIR/$name", target)
+                    copyAssetDir("$BUILTIN_DIR/$name", staging)
+                    val stagedManifest = findManifest(staging) ?: error("内置插件缺少清单")
+                    val staged = PluginManifestParser.parse(stagedManifest.readText())
+                    if (staged.main.isNotBlank() && !File(staging, staged.main).isFile) {
+                        error("内置插件缺少 main：${staged.main}")
+                    }
+                    if (target.exists() && !target.deleteRecursively()) error("无法替换内置插件目录")
+                    if (!staging.renameTo(target)) error("无法写入内置插件目录")
                 }.onSuccess {
                     writeMeta(
                         target,
@@ -82,6 +126,9 @@ class PluginStore(private val context: Context) {
                         ),
                     )
                     changed = true
+                }.onFailure {
+                    staging.deleteRecursively()
+                    prefs.edit().putBoolean(key, false).apply()
                 }
             }
             prefs.edit().putBoolean(key, true).apply()
@@ -171,6 +218,52 @@ class PluginStore(private val context: Context) {
         return try {
             val bytes = RemoteFetch.bytes(url, MAX_PACKAGE_BYTES, timeoutMs = 60_000)
             installZip(bytes, url, expectedSha256)
+        } finally {
+            _busy.value = false
+        }
+    }
+
+    /** 从开发工程目录安装；与 ZIP 安装共用 staging/backup 替换流程。 */
+    suspend fun installDirectory(
+        directory: File,
+        source: String,
+        enabled: Boolean? = null,
+    ): InstalledPlugin = withContext(Dispatchers.IO) {
+        _busy.value = true
+        try {
+            val manifestFile = findManifest(directory) ?: error("目录中没有 manifest.json / manifest.hjson")
+            if (manifestFile.length() > MAX_MANIFEST_BYTES) error("插件清单超过 ${MAX_MANIFEST_BYTES / (1024 * 1024)} MB")
+            val manifest = PluginManifestParser.parse(manifestFile.readText())
+            val baseDir = manifestFile.parentFile ?: directory
+            val id = sanitizePluginId(manifest.id)
+            val target = File(root, id)
+            val previous = readMeta(target)
+            val staging = File(root, ".staging-${UUID.randomUUID()}")
+            val backup = File(root, ".backup-${UUID.randomUUID()}")
+            try {
+                if (!staging.mkdirs()) error("无法创建插件安装目录")
+                copyTree(baseDir, staging)
+                writeMeta(
+                    staging,
+                    PluginMeta(
+                        enabled = enabled ?: previous?.enabled ?: manifest.enabledByDefault,
+                        installedAt = System.currentTimeMillis(),
+                        source = source,
+                    ),
+                )
+                if (target.exists() && !target.renameTo(backup)) error("无法替换已安装插件")
+                if (!staging.renameTo(target)) {
+                    if (backup.exists()) backup.renameTo(target)
+                    error("无法写入插件目录")
+                }
+                backup.deleteRecursively()
+            } catch (error: Throwable) {
+                staging.deleteRecursively()
+                throw error
+            }
+            refresh()
+            onToolsChanged?.invoke()
+            _plugins.value.firstOrNull { it.id == id } ?: error("安装后无法读取插件")
         } finally {
             _busy.value = false
         }
@@ -371,11 +464,11 @@ class PluginStore(private val context: Context) {
         const val BUILTIN_DIR = "builtin_plugins"
         const val PLUGINS_DIR = "plugins"
         const val META = "iris-plugin.json"
-        const val MAX_PACKAGE_BYTES = 64L * 1024 * 1024
-        const val MAX_EXTRACTED_BYTES = 200L * 1024 * 1024
-        const val MAX_SCRIPT_BYTES = 2L * 1024 * 1024
-        const val MAX_MANIFEST_BYTES = 2L * 1024 * 1024
+        const val MAX_PACKAGE_BYTES = 256L * 1024 * 1024
+        const val MAX_EXTRACTED_BYTES = 512L * 1024 * 1024
+        const val MAX_SCRIPT_BYTES = 4L * 1024 * 1024
+        const val MAX_MANIFEST_BYTES = 4L * 1024 * 1024
         const val MAX_META_BYTES = 64L * 1024
-        const val MAX_ENTRIES = 2000
+        const val MAX_ENTRIES = 5000
     }
 }

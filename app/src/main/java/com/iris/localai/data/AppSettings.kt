@@ -137,11 +137,18 @@ data class AppSettings(
     val agentMode: Boolean = true,
     val agentMaxSteps: Int = 4,
     val planFirst: Boolean = false,
+    val planMode: Boolean = false,
     val lazyTools: Boolean = false,
     val enabledToolIds: Set<String> = defaultEnabledTools,
     val toolPermissions: Map<String, ToolPermission> = emptyMap(),
     val workspaceLocation: WorkspaceLocation = WorkspaceLocation.APP_PRIVATE,
     val customWorkspacePath: String = "",
+
+    // 开发者选项
+    val pluginDevMode: Boolean = false,
+    val pluginExportDir: String = "",
+    val hostSourceRepo: String = "comfot/Irislocalai",
+    val hostSourceBranch: String = "main",
 
     // 上下文推理
     val contextStrategy: ContextStrategy = ContextStrategy.SLIDING_WINDOW,

@@ -85,6 +85,7 @@ internal fun ModelSettingsPage(
     var capabilityTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     SettingsPage {
+        PluginSlot("settings.model")
         SettingsCard("配置档案") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.weight(1f)) {

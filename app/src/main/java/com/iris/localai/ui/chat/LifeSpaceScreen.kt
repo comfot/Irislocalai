@@ -98,6 +98,7 @@ import com.iris.localai.data.CharacterModel
 import com.iris.localai.data.VrmMotionEngine
 import com.iris.localai.scene.SceneConfig
 import com.iris.localai.scene.StageBaseStyle
+import com.iris.localai.ui.settings.PluginSlot
 import java.io.File
 
 @Composable
@@ -189,6 +190,7 @@ fun LifeSpaceScreen(
                 .fillMaxSize()
                 .then(if (fullscreen) Modifier else Modifier.imePadding()),
         ) {
+            PluginSlot("space.life")
             CharacterStage(
                 entry = entry,
                 activeModel = activeModel,
@@ -239,6 +241,7 @@ fun LifeSpaceScreen(
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
+                        PluginSlot("chat.empty")
                         Text(
                             text = character.greeting,
                             style = MaterialTheme.typography.titleMedium,
@@ -296,6 +299,7 @@ fun LifeSpaceScreen(
                     motionPack = if (settings.vrmMotionEngine == VrmMotionEngine.HAST_SEC) "hast" else "vrma",
                     motionAxisFix = settings.motionAxisFix,
                 )
+                PluginSlot("space.life.footer")
             }
         }
 
@@ -765,6 +769,7 @@ private fun FullscreenGlassComposer(
             .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 18.dp),
     ) {
+        PluginSlot("chat.input")
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -964,6 +969,8 @@ private fun LifeComposer(
                 }
             }
 
+            PluginSlot("chat.attachment")
+            PluginSlot("chat.input")
             PluginInputMenuRow(viewModel = viewModel)
             Row(verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(

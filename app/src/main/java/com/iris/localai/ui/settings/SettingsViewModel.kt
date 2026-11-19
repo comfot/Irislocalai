@@ -52,6 +52,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val modelProviders = graph.models.providers
 
     val permissions = graph.permissions.state
+    val pluginRegistrations = graph.pluginRuntime.registrations
+    val plugins = graph.plugins.plugins
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) { runCatching { graph.pluginRuntime.ensureAllRegistrations() } }
+    }
 
     private val _connectionTest = MutableStateFlow<ConnectionTestState>(ConnectionTestState.Idle)
     val connectionTest: StateFlow<ConnectionTestState> = _connectionTest.asStateFlow()

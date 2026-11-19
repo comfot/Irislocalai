@@ -22,6 +22,7 @@ object ToolCallParser {
 
     fun parse(text: String): ParsedToolCall? {
         parseToolCallJsonBlock(text)?.let { return it }
+        parseBareJsonToolCall(text)?.let { return it }
         val invoke = DSML_INVOKE.find(text) ?: return null
         val name = invoke.groupValues[1].trim()
         if (name.isEmpty()) return null
@@ -38,10 +39,11 @@ object ToolCallParser {
 
     /** 正文中最早出现的工具调用起始位置；用于流式阶段停止展示后续文本。 */
     fun earliestStart(text: String): Int {
-        var earliest = text.indexOf(TOOL_CALL_START).takeIf { it >= 0 } ?: Int.MAX_VALUE
+        var earliest = TOOL_CALL_START_REGEX.find(text)?.range?.first ?: Int.MAX_VALUE
         DSML_MARKER.find(text)?.let { match ->
             earliest = minOf(earliest, match.range.first)
         }
+        bareJsonStart(text).takeIf { it >= 0 }?.let { earliest = minOf(earliest, it) }
         return if (earliest == Int.MAX_VALUE) -1 else earliest
     }
 
@@ -65,10 +67,14 @@ object ToolCallParser {
         var result = removeToolCallBlocks(text)
         result = DSML_INVOKE.replace(result, "")
         result = DSML_TAG.replace(result, "")
-        val dangling = listOf(TOOL_CALL_START) + STREAM_PREFIXES
-        val cut = dangling.mapNotNull { marker ->
-            result.indexOf(marker, ignoreCase = true).takeIf { it >= 0 }
-        }.minOrNull()
+        val cuts = buildList {
+            TOOL_CALL_START_REGEX.find(result)?.range?.first?.let { add(it) }
+            bareJsonStart(result).takeIf { it >= 0 }?.let { add(it) }
+            STREAM_PREFIXES.mapNotNull { marker ->
+                result.indexOf(marker, ignoreCase = true).takeIf { it >= 0 }
+            }.forEach { add(it) }
+        }
+        val cut = cuts.minOrNull()
         if (cut != null) result = result.substring(0, cut)
         return result.trim()
     }
@@ -80,16 +86,17 @@ object ToolCallParser {
     private fun parseToolCallJsonBlock(text: String): ParsedToolCall? {
         var from = 0
         while (true) {
-            val start = text.indexOf(TOOL_CALL_START, from, ignoreCase = true)
-            if (start < 0) return null
-            val brace = text.indexOf('{', start + TOOL_CALL_START.length)
+            val match = TOOL_CALL_START_REGEX.find(text, from) ?: return null
+            val start = match.range.first
+            val tagEnd = match.range.last + 1
+            val brace = text.indexOf('{', tagEnd)
             if (brace >= 0) {
                 val end = jsonObjectEnd(text, brace)
                 if (end > brace) {
                     parseJson(text.substring(brace, end + 1))?.let { return it }
                 }
             }
-            from = start + TOOL_CALL_START.length
+            from = tagEnd
         }
     }
 
@@ -97,13 +104,15 @@ object ToolCallParser {
         val out = StringBuilder()
         var cursor = 0
         while (true) {
-            val start = text.indexOf(TOOL_CALL_START, cursor, ignoreCase = true)
-            if (start < 0) {
+            val match = TOOL_CALL_START_REGEX.find(text, cursor)
+            if (match == null) {
                 out.append(text, cursor, text.length)
                 break
             }
+            val start = match.range.first
+            val tagEnd = match.range.last + 1
             out.append(text, cursor, start)
-            val brace = text.indexOf('{', start + TOOL_CALL_START.length)
+            val brace = text.indexOf('{', tagEnd)
             val end = if (brace >= 0) jsonObjectEnd(text, brace) else -1
             if (end > brace) {
                 var next = end + 1
@@ -115,7 +124,7 @@ object ToolCallParser {
                 }
                 cursor = next
             } else {
-                val close = text.indexOf("</", start + TOOL_CALL_START.length)
+                val close = text.indexOf("</", tagEnd)
                 val gt = if (close >= 0) text.indexOf('>', close) else -1
                 cursor = if (gt >= 0) gt + 1 else text.length
             }
@@ -123,11 +132,32 @@ object ToolCallParser {
         return out.toString()
     }
 
+    /** 模型偶尔省略标签，直接输出一个工具参数 JSON；只接受工具名或 command 字段明确的形态。 */
+    private fun parseBareJsonToolCall(text: String): ParsedToolCall? {
+        val trimmed = text.trim()
+        if (!trimmed.startsWith("{")) return null
+        val end = jsonObjectEnd(trimmed, 0)
+        if (end <= 0) return null
+        val rest = trimmed.substring(end + 1).trim()
+        if (rest.isNotEmpty() && !rest.startsWith("</")) return null
+        val json = runCatching { Json.parseToJsonElement(trimmed.substring(0, end + 1)).jsonObject }
+            .getOrNull() ?: return null
+        val explicitName = json.keys.any { it in setOf("name", "tool", "tool_name") }
+        val explicitCommand = json.keys.any { it in setOf("command", "cmd") }
+        if (!explicitName && !explicitCommand) return null
+        return parseJson(trimmed.substring(0, end + 1))
+    }
+
+    private fun bareJsonStart(text: String): Int {
+        val trimmed = text.trimStart()
+        if (!BARE_JSON_KEY.containsMatchIn(trimmed)) return -1
+        return text.length - trimmed.length
+    }
+
     /** 输出里有 <tool_call> 起始但 JSON 没闭合，通常是被输出长度截断。 */
     fun hasUnclosedToolCall(text: String): Boolean {
-        val start = text.lastIndexOf(TOOL_CALL_START, ignoreCase = true)
-        if (start < 0) return false
-        val brace = text.indexOf('{', start + TOOL_CALL_START.length)
+        val last = TOOL_CALL_START_REGEX.findAll(text).lastOrNull() ?: return false
+        val brace = text.indexOf('{', last.range.last + 1)
         if (brace < 0) return true
         return jsonObjectEnd(text, brace) <= brace
     }
@@ -135,9 +165,13 @@ object ToolCallParser {
     /** 整段回答只是一条命令（模型忘了包 <tool_call>），只用于提示，不自动执行。 */
     fun looksLikeBareCommand(text: String): Boolean {
         val trimmed = text.trim()
-        if (trimmed.isEmpty() || trimmed.length > 600) return false
-        if (trimmed.contains(TOOL_CALL_START, ignoreCase = true) || trimmed.contains("```")) return false
-        if ('\n' in trimmed) return false
+        if (trimmed.isEmpty() || trimmed.length > 2000) return false
+        if (TOOL_CALL_START_REGEX.containsMatchIn(trimmed) || trimmed.contains("```")) return false
+        if ('\n' in trimmed) {
+            val first = trimmed.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+            return first.isNotEmpty() && BARE_COMMAND.matches(first) &&
+                trimmed.lineSequence().count { it.isNotBlank() } >= 2
+        }
         // 只把带路径、管道、分号、赋值或引号的单行当成命令，避开“cd 是切换目录”这类普通回答。
         if (trimmed.none { it == '/' || it == '|' || it == ';' || it == '=' || it == '\'' || it == '"' || it == '-' }) {
             return false
@@ -204,21 +238,70 @@ object ToolCallParser {
     }
 
     private fun parseJson(raw: String): ParsedToolCall? = try {
-        val json = Json.parseToJsonElement(raw).jsonObject
-        val name = json["name"]?.jsonPrimitive?.contentOrNull ?: return null
-        val arguments = when (val element = json["arguments"]) {
-            is JsonObject -> element
-            is JsonPrimitive -> runCatching {
-                Json.parseToJsonElement(element.content).jsonObject
-            }.getOrElse { buildJsonObject { } }
-            else -> buildJsonObject { }
-        }
-        ParsedToolCall(name, arguments)
+        parseJsonStrict(raw)
     } catch (_: Exception) {
-        null
+        runCatching { parseJsonStrict(repairJson(raw)) }.getOrNull()
     }
 
-    private const val TOOL_CALL_START = "<tool_call>"
+    /** 模型偶尔会输出尾逗号；先做最小修复再重试，不改变正常 JSON。 */
+    private fun repairJson(raw: String): String =
+        raw.replace(Regex(",\\s*([}\\]])"), "$1")
+
+    private fun parseJsonStrict(raw: String): ParsedToolCall {
+        val json = Json.parseToJsonElement(raw).jsonObject
+        val name = json["name"]?.jsonPrimitive?.contentOrNull
+            ?: json["tool"]?.jsonPrimitive?.contentOrNull
+            ?: json["tool_name"]?.jsonPrimitive?.contentOrNull
+            ?: inferToolName(json)
+            ?: error("缺少工具名")
+        val argElement = json["arguments"] ?: json["args"] ?: json["parameters"]
+        val arguments = when (argElement) {
+            is JsonObject -> argElement
+            is JsonPrimitive -> runCatching {
+                Json.parseToJsonElement(elementContent(argElement)).jsonObject
+            }.getOrElse {
+                Json.parseToJsonElement(repairJson(elementContent(argElement))).jsonObject
+            }
+            else -> if (json.containsKey("name") || json.containsKey("tool") || json.containsKey("tool_name")) {
+                JsonObject(json - setOf("name", "tool", "tool_name"))
+            } else {
+                json
+            }
+        }
+        return ParsedToolCall(name, unwrapArguments(arguments))
+    }
+
+    /**
+     * 模型偶尔把参数再包一层：`arguments={"arguments":"{\"command\":...}"}`。
+     * 仅当外层只有一个 arguments/args/parameters 键时解包，避免误伤正常多参数工具。
+     */
+    private fun unwrapArguments(arguments: JsonObject): JsonObject {
+        if (arguments.size != 1) return arguments
+        val nested = arguments["arguments"] ?: arguments["args"] ?: arguments["parameters"] ?: return arguments
+        return when (nested) {
+            is JsonObject -> nested
+            is JsonPrimitive -> runCatching {
+                Json.parseToJsonElement(nested.content).jsonObject
+            }.getOrNull() ?: arguments
+            else -> arguments
+        }
+    }
+
+    private fun elementContent(element: JsonPrimitive): String = element.content
+
+    /** 模型常省略 name，直接给 shell 参数；只对明确的 command/cmd 做推断。 */
+    private fun inferToolName(json: JsonObject): String? = when {
+        json.containsKey("command") || json.containsKey("cmd") -> "shell"
+        json.containsKey("op") -> "plugin_dev"
+        else -> null
+    }
+
+    private val TOOL_CALL_START_REGEX = Regex(
+        "<[|｜]?\\s*(?:tool_calls?|call_calls?|call_tools?|tools_call)\\b[^>]*>",
+        setOf(RegexOption.IGNORE_CASE),
+    )
+
+    private val BARE_JSON_KEY = Regex("^\\{\\s*\"(?:name|tool|tool_name|command|cmd)\"\\s*:")
     private const val DSML_BARS = "[|｜]{1,2}"
     private const val DSML_NAME = "$DSML_BARS\\s*DSML\\s*$DSML_BARS"
     private const val DSML_OPEN = "<$DSML_NAME"
@@ -246,12 +329,36 @@ object ToolCallParser {
     )
 
     private val STREAM_PREFIXES = listOf(
-        TOOL_CALL_START,
+        "<｜tool_call>",
+        "<|tool_call>",
+        "<｜tool_calls>",
+        "<|tool_calls>",
+        "<｜tool_call",
+        "<|tool_call",
+        "<｜tool_calls",
+        "<|tool_calls",
+        "<tool_call>",
+        "<tool_calls>",
+        "<call_call>",
+        "<call_calls>",
+        "<call_tool>",
+        "<call_tools>",
+        "<tools_call>",
+        "<tool_call",
+        "<tool_calls",
+        "<call_call",
+        "<call_tool",
+        "<tools_call",
         "<｜｜DSML｜｜",
         "<|DSML|",
         "<||DSML||",
         "<｜DSML｜",
         "<|｜DSML｜|",
         "<DSML",
+        "{\"command\"",
+        "{\"cmd\"",
+        "{\"name\"",
+        "{\"tool\"",
+        "{\"tool_name\"",
     )
 }

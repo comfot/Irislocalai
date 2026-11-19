@@ -81,6 +81,7 @@ object SettingsCatalog {
                 SettingsEntry("plugin", "插件", "插件安装与权限", Icons.Outlined.Extension),
                 SettingsEntry("market", "市场", "模型与扩展市场", Icons.Outlined.Storefront),
                 SettingsEntry("skill", "Skill 技能", "技能的安装与触发", Icons.Outlined.AutoAwesome),
+                SettingsEntry("developer-options", "开发者选项", "插件开发模式、导出目录与源码", Icons.Outlined.Code),
                 SettingsEntry("code", "编程管理", "代码执行与工作区", Icons.Outlined.Code),
                 SettingsEntry("space", "空间管理", "四个空间的会话与偏好", Icons.Outlined.Workspaces),
                 SettingsEntry(

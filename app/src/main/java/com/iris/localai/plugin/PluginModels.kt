@@ -135,7 +135,9 @@ fun PluginHookDescriptor.uiRouteModuleId(): String {
 
 fun PluginRegistrations.resolveUiModuleId(entry: PluginHookDescriptor): String {
     val direct = entry.uiRouteModuleId()
-    val screens = ui.filter { it.type == "ui_route" || it.type == "toolbox_ui" }
+    val screens = ui.filter {
+        it.type == "ui_route" || it.type == "toolbox_ui" || it.type == "settings_entry" || it.type == "plugin_slot"
+    }
     if (screens.any { it.id == direct }) return direct
     screens.firstOrNull { it.uiRouteModuleId() == direct }?.let { return it.id }
     if (entry.route.isNotBlank()) {

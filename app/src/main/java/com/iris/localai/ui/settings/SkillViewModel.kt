@@ -38,6 +38,13 @@ class SkillViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setEnabled(id: String, enabled: Boolean) = store.setEnabled(id, enabled)
 
+    fun readResource(skillId: String, path: String): Result<String> = store.readResource(skillId, path)
+
+    fun rebuildBundledSkills() {
+        store.rebuildBundledSkills()
+        _message.value = "已检查内置技能"
+    }
+
     fun updateSettings(transform: (SkillSettings) -> SkillSettings) {
         store.updateSettings(transform)
     }

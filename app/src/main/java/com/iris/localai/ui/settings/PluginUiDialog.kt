@@ -108,8 +108,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.data.RemoteFetch
+import com.iris.localai.IrisApp
 import com.iris.localai.plugin.InstalledPlugin
+import com.iris.localai.ui.chat.CharacterModel3DView
 import com.iris.localai.ui.chat.PluginAiChatBridge
+import com.iris.localai.ui.chat.SceneBackground
 import com.iris.localai.ui.chat.WorkMarkdown
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -304,9 +307,13 @@ internal fun PluginWidgetSurface(
 }
 
 @Composable
-internal fun PluginInlineUi(raw: String, modifier: Modifier = Modifier) {
+internal fun PluginInlineUi(
+    raw: String,
+    modifier: Modifier = Modifier,
+    onEvent: (String?, String?) -> Unit = { _, _ -> },
+) {
     val node = remember(raw) { parsePluginUiTree(raw) }
-    Box(modifier = modifier) { PluginUiNodeView(node, { _, _ -> }) }
+    Box(modifier = modifier) { PluginUiNodeView(node, onEvent) }
 }
 
 @Composable
@@ -848,6 +855,22 @@ private fun PluginUiNodeView(
         "Image" -> PluginImage(props, modifier)
 
         "AiChat" -> PluginAiChat(props, modifier)
+        "HostChat" -> PluginAiChat(props, modifier)
+        "HostCharacter3DView" -> PluginHostCharacterView(props, modifier)
+        "HostModelPicker" -> PluginHostModelPicker(props, modifier, onEvent)
+        "HostModelProfilePicker" -> PluginHostModelProfilePicker(props, modifier, onEvent)
+        "HostScenePicker" -> PluginHostScenePicker(props, modifier, onEvent)
+        "HostCharacterPicker" -> PluginHostCharacterPicker(props, modifier, onEvent)
+        "HostModelProviderPicker" -> PluginHostModelProviderPicker(props, modifier, onEvent)
+        "HostWorkspacePicker" -> PluginHostWorkspacePicker(props, modifier, onEvent)
+        "HostToolList" -> PluginHostToolList(props, modifier)
+        "HostSceneBackground" -> PluginHostSceneBackground(props, modifier)
+        "HostMemorySearch" -> PluginHostMemorySearch(props, modifier)
+        "HostSkillPicker" -> PluginHostSkillPicker(props, modifier, onEvent)
+        "HostLorebookPicker" -> PluginHostLorebookPicker(props, modifier, onEvent)
+        "HostMemoryList" -> PluginHostMemoryList(props, modifier)
+        "HostCharacterAvatar" -> PluginHostCharacterAvatar(props, modifier)
+        "HostStatus" -> PluginHostStatus(props, modifier)
 
         "Markdown" -> WorkMarkdown(
             text = props.string("text").orEmpty(),
@@ -1265,6 +1288,10 @@ private fun PluginAiChat(props: JsonObject, modifier: Modifier) {
         return
     }
     var input by remember(host.title) { mutableStateOf("") }
+    val title = props.string("title").orEmpty().ifBlank { host.title }
+    val placeholder = props.string("placeholder").orEmpty().ifBlank { "输入消息" }
+    val height = (props.int("height") ?: 360).dp
+    val readOnly = props.bool("readOnly") == true
     val listState = rememberLazyListState()
     LaunchedEffect(host.messages.size) {
         if (host.messages.isNotEmpty()) listState.scrollToItem(host.messages.lastIndex)
@@ -1272,12 +1299,12 @@ private fun PluginAiChat(props: JsonObject, modifier: Modifier) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .height(360.dp),
+            .height(height),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = host.title,
+                text = title,
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
@@ -1342,22 +1369,485 @@ private fun PluginAiChat(props: JsonObject, modifier: Modifier) {
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("输入消息") },
-                maxLines = 3,
-            )
-            TextButton(
-                enabled = input.isNotBlank(),
-                onClick = {
-                    host.onSend(input)
-                    input = ""
-                },
-            ) { Text("发送") }
+            if (readOnly) {
+                Text(
+                    "只读",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text(placeholder) },
+                    maxLines = 3,
+                )
+                TextButton(
+                    enabled = input.isNotBlank(),
+                    onClick = {
+                        host.onSend(input)
+                        input = ""
+                    },
+                ) { Text("发送") }
+            }
         }
     }
+}
+
+@Composable
+private fun PluginHostCharacterView(props: JsonObject, modifier: Modifier) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val models by graph.characterModels.models.collectAsStateWithLifecycle()
+    val activeId by graph.characterModels.activeId.collectAsStateWithLifecycle()
+    val requested = props.string("modelId")
+    val model = if (requested.isNullOrBlank()) {
+        models.firstOrNull { it.id == activeId } ?: graph.characterModels.active()
+    } else {
+        models.firstOrNull { it.id == requested }
+    }
+    val file = model?.let { entry ->
+        graph.storage.modelFile("character_models", entry.directory, entry.entryFile)
+    }
+    if (model == null || file == null) {
+        Text(
+            "没有可显示的角色模型，请先在角色模型页导入并激活。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = modifier,
+        )
+        return
+    }
+    val height = (props.int("height") ?: 320).dp
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    CharacterModel3DView(
+        modelFile = file,
+        modelType = model.type.name,
+        accentHex = null,
+        dark = dark,
+        portrait = props.bool("portrait") == true,
+        interactive = props.bool("interactive") != false,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(height),
+    )
+}
+
+@Composable
+private fun PluginHostModelPicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val models by graph.characterModels.models.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty()
+    val handler = props.handler("onSelect")
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        props.string("title")?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+        if (models.isEmpty()) {
+            Text(
+                "还没有角色模型",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+        models.take(50).forEach { model ->
+            TextButton(
+                onClick = {
+                    if (handler != null) {
+                        onEvent(handler, buildJsonObject {
+                            put("id", model.id)
+                            put("name", model.name)
+                            put("type", model.type.name)
+                        }.toString())
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = model.name + " · " + model.type.label + if (model.id == selected) "（当前）" else "",
+                    modifier = Modifier.weight(1f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Start,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PluginHostModelProfilePicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val profiles by graph.models.profiles.collectAsStateWithLifecycle()
+    val activeId by graph.models.activeId.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty().ifBlank { activeId }
+    PluginHostPickerLayout(
+        title = props.string("title") ?: "选择模型档案",
+        empty = "还没有模型档案",
+        items = profiles.map { Triple(it.id, it.name, if (it.globalEnabled) "全局" else "") },
+        selected = selected,
+        handler = props.handler("onSelect"),
+        onEvent = onEvent,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun PluginHostScenePicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val scenes by graph.scenes.scenes.collectAsStateWithLifecycle()
+    val activeId by graph.scenes.activeId.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty().ifBlank { activeId }
+    PluginHostPickerLayout(
+        title = props.string("title") ?: "选择场景",
+        empty = "还没有场景",
+        items = scenes.map { Triple(it.id, it.name, "") },
+        selected = selected,
+        handler = props.handler("onSelect"),
+        onEvent = onEvent,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun PluginHostCharacterPicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val characters by graph.characters.cards.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty()
+    PluginHostPickerLayout(
+        title = props.string("title") ?: "选择角色卡",
+        empty = "还没有角色卡",
+        items = characters.map { Triple(it.id, it.card.name, if (it.favorite) "收藏" else "") },
+        selected = selected,
+        handler = props.handler("onSelect"),
+        onEvent = onEvent,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun PluginHostPickerLayout(
+    title: String,
+    empty: String,
+    items: List<Triple<String, String, String>>,
+    selected: String,
+    handler: String?,
+    onEvent: (String?, String?) -> Unit,
+    modifier: Modifier,
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        if (items.isEmpty()) {
+            Text(
+                empty,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+        items.take(80).forEach { (id, name, detail) ->
+            TextButton(
+                onClick = {
+                    if (handler != null) {
+                        onEvent(handler, buildJsonObject {
+                            put("id", id)
+                            put("name", name)
+                        }.toString())
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = name + (if (detail.isBlank()) "" else " · $detail") +
+                        if (id == selected) "（当前）" else "",
+                    modifier = Modifier.weight(1f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Start,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PluginHostModelProviderPicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val providers by graph.models.providers.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty()
+    PluginHostPickerLayout(
+        title = props.string("title") ?: "选择模型提供商",
+        empty = "还没有模型提供商",
+        items = providers.map { Triple(it.id, it.name, it.kind.name) },
+        selected = selected,
+        handler = props.handler("onSelect"),
+        onEvent = onEvent,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun PluginHostWorkspacePicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val workspaces by graph.workspaces.workspaces.collectAsStateWithLifecycle()
+    val activeId by graph.workspaces.activeId.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty().ifBlank { activeId }
+    PluginHostPickerLayout(
+        title = props.string("title") ?: "选择工作区",
+        empty = "还没有工作区",
+        items = workspaces.map { Triple(it.id, it.name, if (it.id == activeId) "当前" else "") },
+        selected = selected,
+        handler = props.handler("onSelect"),
+        onEvent = onEvent,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun PluginHostToolList(props: JsonObject, modifier: Modifier) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val limit = (props.int("limit") ?: 40).coerceIn(1, 200)
+    val tools = remember { graph.tools.all() }
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        props.string("title")?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+        tools.take(limit).forEach { tool ->
+            Text(
+                text = "${tool.name}：${tool.description.take(120)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PluginHostSceneBackground(props: JsonObject, modifier: Modifier) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val scenes by graph.scenes.scenes.collectAsStateWithLifecycle()
+    val activeId by graph.scenes.activeId.collectAsStateWithLifecycle()
+    val requested = props.string("sceneId").orEmpty()
+    val scene = scenes.firstOrNull { it.id == (requested.ifBlank { activeId }) }
+    val height = (props.int("height") ?: 180).dp
+    if (scene == null || scene.backgroundPath.isBlank()) {
+        Text(
+            "没有可显示的场景背景",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = modifier,
+        )
+        return
+    }
+    SceneBackground(
+        scene = scene,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(height)
+            .clip(RoundedCornerShape(14.dp)),
+    )
+}
+
+@Composable
+private fun PluginHostMemorySearch(props: JsonObject, modifier: Modifier) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    var query by remember { mutableStateOf(props.string("query").orEmpty()) }
+    var hits by remember { mutableStateOf(emptyList<String>()) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        props.string("title")?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text(props.string("placeholder") ?: "检索记忆") },
+                singleLine = true,
+            )
+            TextButton(
+                enabled = !busy && query.isNotBlank(),
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        val result = runCatching {
+                            graph.memory.recall(query, (props.int("limit") ?: 6).coerceIn(1, 20))
+                        }.getOrNull()
+                        hits = result?.hits?.map { "${it.title}：${it.content.take(160)}" }.orEmpty()
+                        busy = false
+                    }
+                },
+            ) { Text(if (busy) "检索中" else "检索") }
+        }
+        hits.forEach { hit ->
+            Text(
+                hit,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PluginHostSkillPicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val skills by graph.skills.skills.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty()
+    PluginHostPickerLayout(
+        title = props.string("title") ?: "选择技能",
+        empty = "还没有技能",
+        items = skills.map { Triple(it.id, it.name, if (it.enabled) "已启用" else "已停用") },
+        selected = selected,
+        handler = props.handler("onSelect"),
+        onEvent = onEvent,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun PluginHostLorebookPicker(
+    props: JsonObject,
+    modifier: Modifier,
+    onEvent: (String?, String?) -> Unit,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val books by graph.worldBooks.books.collectAsStateWithLifecycle()
+    val selected = props.string("selected").orEmpty()
+    PluginHostPickerLayout(
+        title = props.string("title") ?: "选择世界书",
+        empty = "还没有世界书",
+        items = books.map { Triple(it.id, it.name, "${it.entries.size} 条") },
+        selected = selected,
+        handler = props.handler("onSelect"),
+        onEvent = onEvent,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun PluginHostMemoryList(props: JsonObject, modifier: Modifier) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val memories by graph.memory.memories.collectAsStateWithLifecycle()
+    val limit = (props.int("limit") ?: 20).coerceIn(1, 100)
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        props.string("title")?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+        if (memories.isEmpty()) {
+            Text(
+                "还没有记忆",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
+        }
+        memories.take(limit).forEach { item ->
+            Text(
+                text = "${item.title.ifBlank { item.type.name } }：${item.content.take(120)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PluginHostCharacterAvatar(props: JsonObject, modifier: Modifier) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val characters by graph.characters.cards.collectAsStateWithLifecycle()
+    val settings by graph.settings.settings.collectAsStateWithLifecycle()
+    val requested = props.string("characterId").orEmpty()
+    val entry = characters.firstOrNull { it.id == (requested.ifBlank { settings.characterId }) }
+    val size = (props.int("size") ?: 72).dp
+    if (entry == null) {
+        Text(
+            "没有可用角色卡",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = modifier,
+        )
+        return
+    }
+    val bitmap = remember(entry.avatar?.absolutePath) {
+        entry.avatar?.let { file ->
+            runCatching { android.graphics.BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+        }
+    }
+    if (bitmap != null) {
+        androidx.compose.foundation.Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = entry.card.name,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            modifier = modifier
+                .size(size)
+                .clip(RoundedCornerShape(size / 2f)),
+        )
+    } else {
+        Text(
+            entry.card.name.take(1),
+            style = MaterialTheme.typography.titleLarge,
+            modifier = modifier
+                .size(size)
+                .clip(RoundedCornerShape(size / 2f))
+                .background(MaterialTheme.colorScheme.primaryContainer)
+                .padding(16.dp),
+        )
+    }
+}
+
+@Composable
+private fun PluginHostStatus(props: JsonObject, modifier: Modifier) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val engine by graph.engines.state.collectAsStateWithLifecycle()
+    val settings by graph.settings.settings.collectAsStateWithLifecycle()
+    val memories by graph.memory.memories.collectAsStateWithLifecycle()
+    Text(
+        text = "空间：${settings.space.label} · 引擎：${engine} · 记忆：${memories.size} 条",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier,
+    )
 }
 
 private fun pluginNodeText(element: JsonElement?): String? = when (element) {

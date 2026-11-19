@@ -11,6 +11,8 @@ data class AgentStep(
     val durationMs: Long = 0L,
     /** 本轮工具调用前的思考内容，按轮次展示在步骤卡片上方。 */
     val reasoning: String = "",
+    /** 调用该工具之前助手已经输出的正文，穿插在思考与工具卡之间。 */
+    val reply: String = "",
     val reasoningMs: Long = 0L,
     /** 执行中的中间进度；最终结果写入 result 后不再展示。 */
     val progress: String = "",

@@ -3,6 +3,7 @@ package com.iris.localai.ui.settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,6 +59,7 @@ internal fun SkillPage(viewModel: SkillViewModel = viewModel()) {
     var editor by remember { mutableStateOf<SkillEditor?>(null) }
     var pendingDelete by remember { mutableStateOf<Skill?>(null) }
     var showDownload by remember { mutableStateOf(false) }
+    var resourceView by remember { mutableStateOf<Pair<Skill, String>?>(null) }
 
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -151,6 +153,7 @@ internal fun SkillPage(viewModel: SkillViewModel = viewModel()) {
                 onEnabled = { enabled -> viewModel.setEnabled(skill.id, enabled) },
                 onEdit = { editor = SkillEditor.Edit(skill) },
                 onDelete = { pendingDelete = skill },
+                onResource = { path -> resourceView = skill to path },
             )
             Spacer(Modifier.width(8.dp))
         }
@@ -186,6 +189,26 @@ internal fun SkillPage(viewModel: SkillViewModel = viewModel()) {
         )
     }
 
+    resourceView?.let { (skill, path) ->
+        val content = remember(skill.id, path) {
+            viewModel.readResource(skill.id, path).getOrElse { error -> "读取失败：${error.message}" }
+        }
+        AlertDialog(
+            onDismissRequest = { resourceView = null },
+            title = { Text("${skill.name} · $path") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) { Text(content, style = MaterialTheme.typography.bodySmall) }
+            },
+            confirmButton = {
+                TextButton(onClick = { resourceView = null }) { Text("关闭") }
+            },
+        )
+    }
+
     pendingDelete?.let { skill ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
@@ -212,6 +235,7 @@ private fun SkillRow(
     onEnabled: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onResource: (String) -> Unit = {},
 ) {
     Surface(
         shape = RoundedCornerShape(14.dp),
@@ -249,6 +273,18 @@ private fun SkillRow(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                if (skill.resources.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        skill.resources.take(6).forEach { path ->
+                            TextButton(onClick = { onResource(path) }) {
+                                Text(path.substringAfterLast('/'), style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
             }
             Switch(checked = skill.enabled, onCheckedChange = onEnabled)

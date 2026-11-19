@@ -350,6 +350,11 @@ internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
                 summary = "调用工具前先说明计划",
                 checked = settings.planFirst,
             ) { on -> viewModel.update { it.copy(planFirst = on) } }
+            BasicSwitchRow(
+                title = "计划模式",
+                summary = "工作空间只读探索并先生成计划，批准后再执行",
+                checked = settings.planMode,
+            ) { on -> viewModel.update { it.copy(planMode = on) } }
         }
 
         ExpandableSettingsCard(

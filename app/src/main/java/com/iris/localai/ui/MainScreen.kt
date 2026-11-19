@@ -14,6 +14,7 @@ import com.iris.localai.IrisApp
 import com.iris.localai.data.Space
 import com.iris.localai.pet.PetDestination
 import com.iris.localai.pet.PetNavigator
+import com.iris.localai.plugin.HostNavigator
 import com.iris.localai.ui.chat.ChatScreen
 import com.iris.localai.ui.settings.SettingsScreen
 
@@ -43,6 +44,16 @@ fun MainScreen() {
             PetDestination.LIFE_CHAT -> {
                 showSettings = false
                 graph.settings.update { it.copy(space = Space.LIFE) }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        HostNavigator.settingsRoutes.collect { route ->
+            if (route.isNotBlank()) {
+                settingsEntry = route
+                settingsRequestId += 1
+                showSettings = true
             }
         }
     }
