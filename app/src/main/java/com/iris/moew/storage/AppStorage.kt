@@ -22,8 +22,16 @@ class AppStorage(context: Context) {
     val isExternal: Boolean = externalRoot != null
     val legacyRoot: File get() = privateRoot
 
+    /**
+     * 包名从 com.iris.localai 改为 com.iris.moew 后外置根路径随之变化。
+     * 外置根为空（全新安装）且已授予「所有文件访问」时自动整包搬迁；
+     * 否则可用设置页的迁移按钮按资源目录合并，不覆盖新包已有文件。
+     */
     init {
-        migrateFromRenamedPackage()
+        val external = externalRoot
+        if (external != null && external.list()?.isNotEmpty() == false) {
+            migrateFromLegacyPackage(includeConfig = true)
+        }
     }
 
     val models: File get() = writeDir("models")
@@ -72,6 +80,12 @@ class AppStorage(context: Context) {
             File(root, "$directory/$entryFile").takeIf { it.isFile }
         }
 
+    /** 下载资源类目录：迁移时按文件级合并，目标已有同名文件跳过。 */
+    private val MIGRATABLE_DIRS = listOf(
+        "models", "character_models", "voice_models", "motion_assets",
+        "pet_models", "stage_assets", "studio_models", "scenes",
+    )
+
     companion object {
         const val ROOT_DIR = "IRIS"
         const val SETTINGS_FILE = "settings.json"
@@ -82,49 +96,57 @@ class AppStorage(context: Context) {
     }
 
     /**
-     * 包名从 com.iris.localai 改为 com.iris.moew 后外置根路径随之变化。
-     * 首次安装且已授予「所有文件访问」（能 listFiles）时，把旧包外置根整体搬迁过来；
-     * 无法读取（未授权、旧包已清）则静默跳过，旧包 filesDir 的私有数据不可迁移，需用备份导出。
+     * 从旧包 com.iris.localai 合并迁移已下载的模型与素材，避免重复下载。
+     * 返回人类可读的报告；无旧数据返回提示。幂等，可重复触发。
      */
-    private fun migrateFromRenamedPackage() {
-        val external = externalRoot ?: return
-        if (external.list()?.isNotEmpty() == true) return
-        val legacy = File(
-            external.parentFile?.parentFile?.parentFile ?: return,
-            "${PREVIOUS_PACKAGE}/files/$ROOT_DIR",
-        )
-        if (!legacy.isDirectory || runCatching { legacy.list() }.getOrNull().isNullOrEmpty()) return
+    fun migrateFromLegacyPackage(includeConfig: Boolean = false): String {
+        val external = externalRoot
+            ?: return "外置存储不可用，已回退私有目录，无法迁移"
+        val dataDir = external.parentFile?.parentFile
+            ?: return "外置根路径异常"
+        val legacy = File(dataDir, "${PREVIOUS_PACKAGE}/files/$ROOT_DIR")
+        if (!legacy.isDirectory || runCatching { legacy.list() }.getOrNull().isNullOrEmpty()) {
+            return "未找到旧包 ${PREVIOUS_PACKAGE} 的下载数据"
+        }
 
-        val report = mutableListOf<String>()
-        legacy.listFiles().orEmpty().forEach { item ->
-            val target = File(external, item.name)
-            val moved = runCatching { item.renameTo(target) && target.exists() }
-                .getOrDefault(false)
-            if (moved) return@forEach
-            val copied = runCatching {
-                if (item.isDirectory) {
-                    item.copyRecursively(target, overwrite = true)
-                    item.deleteRecursively()
-                } else {
-                    item.copyTo(target, overwrite = true).let { item.delete() }
+        var movedFiles = 0
+        var skippedFiles = 0
+        val failures = mutableListOf<String>()
+        val dirs = if (includeConfig) MIGRATABLE_DIRS + listOf("settings", "mcp") else MIGRATABLE_DIRS
+        dirs.forEach { name ->
+            val source = File(legacy, name)
+            if (!source.isDirectory) return@forEach
+            val target = File(external, name).apply { mkdirs() }
+            source.walkTopDown().filter { it.isFile }.forEach { file ->
+                val relative = file.relativeTo(source).path
+                val destination = File(target, relative)
+                if (destination.exists()) {
+                    skippedFiles++
+                    return@forEach
                 }
-            }.isSuccess
-            if (!copied) report += "${item.name}：搬迁失败，请手动从旧目录复制"
+                destination.parentFile?.mkdirs()
+                val moved = runCatching {
+                    file.renameTo(destination) && destination.isFile
+                }.getOrDefault(false)
+                if (moved) {
+                    movedFiles++
+                } else {
+                    val copied = runCatching {
+                        file.copyTo(destination, overwrite = true).isFile
+                    }.getOrDefault(false)
+                    if (copied) movedFiles++ else failures += "$name/$relative"
+                }
+            }
         }
-        runCatching {
-            val marker = File(legacy.parentFile, "$ROOT_DIR.migrated-${System.currentTimeMillis()}")
-            legacy.renameTo(marker) || legacy.deleteRecursively()
-        }
-        runCatching {
-            File(external, "migrated_from_${PREVIOUS_PACKAGE}.txt")
-                .writeText(
-                    buildString {
-                        appendLine("已从 ${PREVIOUS_PACKAGE} 的外置目录搬迁到 $external")
-                        if (report.isEmpty()) appendLine("全部搬迁成功") else report.forEach(::appendLine)
-                        appendLine("旧包 filesDir 里的私有数据（会话、记忆、技能等）不会自动迁移；")
-                        appendLine("如需保留请在旧版本用 数据管理 › 备份 导出后在此导入。")
-                    },
-                )
-        }
+        return buildString {
+            appendLine("从旧包 ${PREVIOUS_PACKAGE} 合并完成")
+            appendLine("新搬入：$movedFiles 个文件")
+            if (skippedFiles > 0) appendLine("已存在跳过：$skippedFiles 个")
+            if (failures.isNotEmpty()) {
+                appendLine("失败 ${failures.size} 个：")
+                failures.take(5).forEach { appendLine("- $it") }
+            }
+            appendLine("旧包私有目录（会话、记忆、技能、HAST 动作）不在迁移范围；如需保留请在旧版备份导出。")
+        }.trim()
     }
 }

@@ -71,6 +71,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun reloadSettingsFromMirror(): Result<String> = graph.settings.reloadSettingsFromMirror()
 
+    /** 从旧包 IrisLocalAI 合并迁移已下载模型与素材；在 IO 线程执行，完成后回调报告。 */
+    fun migrateLegacyPackage(onDone: (String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val report = runCatching { storage.migrateFromLegacyPackage() }
+                .getOrElse { "迁移失败：${it.message ?: it.javaClass.simpleName}" }
+            withContext(Dispatchers.Main) { onDone(report) }
+        }
+    }
+
     fun refreshPermissions() = graph.permissions.refresh()
 
     fun requestShizukuPermission(): Boolean = graph.permissions.requestShizukuPermission()

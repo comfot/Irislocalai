@@ -84,6 +84,29 @@ internal fun StoragePage(viewModel: SettingsViewModel = viewModel()) {
             )
         }
 
+        SettingsCard("从旧包 IrisLocalAI 迁移") {
+            Text(
+                text = "把旧安装 com.iris.localai 已下载的语言模型、角色模型、语音模型、动作素材、桌宠模型、舞台与综合空间模型合并到当前目录；" +
+                    "已有同名文件不覆盖，可重复执行。需要「所有文件访问」权限（编程管理 › 本机存储挂载）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            var migrating by remember { mutableStateOf(false) }
+            OutlinedButton(
+                onClick = {
+                    migrating = true
+                    notice = "迁移中，请稍候…（大模型可能需要数分钟）"
+                    viewModel.migrateLegacyPackage { report ->
+                        migrating = false
+                        notice = report
+                        statusTick++
+                    }
+                },
+                enabled = !migrating,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (migrating) "迁移中…" else "开始迁移") }
+        }
+
         SettingsCard("目录") {
             listOf(
                 "本地模型" to storage.models,
