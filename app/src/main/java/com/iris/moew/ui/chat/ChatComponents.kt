@@ -1,0 +1,612 @@
+package com.iris.moew.ui.chat
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.PhoneAndroid
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.iris.moew.voice.StreamingAsrHandle
+import com.iris.moew.voice.VoiceRecorder
+import java.io.File
+import kotlinx.coroutines.launch
+import com.iris.moew.agent.AgentStep
+import kotlinx.coroutines.launch
+import com.iris.moew.agent.ChatMessage
+import com.iris.moew.agent.AssistantDisplay
+import com.iris.moew.agent.AssistantMessageParser
+import com.iris.moew.agent.StatusCardData
+import com.iris.moew.data.BubbleStyle
+import com.iris.moew.ui.theme.IrisCard
+import com.iris.moew.agent.ChatRole
+import com.iris.moew.agent.StepStatus
+import com.iris.moew.data.Space
+import com.iris.moew.ui.settings.PluginSlot
+
+data class ChipOption(val id: String, val label: String, val detail: String)
+
+internal fun Space.icon(): ImageVector = when (this) {
+    Space.WORK -> Icons.Outlined.Terminal
+    Space.LIFE -> Icons.Outlined.FavoriteBorder
+    Space.OPERATE -> Icons.Outlined.PhoneAndroid
+    Space.COMPOSITE -> Icons.Outlined.Dashboard
+}
+
+@Composable
+internal fun ChatMessageList(
+    messages: List<ChatMessage>,
+    running: Boolean,
+    modifier: Modifier = Modifier,
+    bubbleStyle: BubbleStyle = BubbleStyle.ROUNDED,
+    showRoleChatCard: Boolean = true,
+    renderPluginXml: suspend (String, String) -> String? = { _, _ -> null },
+) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            info.totalItemsCount == 0 || lastVisible >= info.totalItemsCount - 1
+        }
+    }
+
+    Box(modifier = modifier) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(messages, key = { it.id }) { message ->
+                MessageBubble(
+                    message = message,
+                    isGenerating = running && message.id == messages.last().id,
+                    bubbleStyle = bubbleStyle,
+                    showRoleChatCard = showRoleChatCard,
+                    renderPluginXml = renderPluginXml,
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = messages.isNotEmpty() && !atBottom,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 14.dp),
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut(),
+        ) {
+            FilledTonalIconButton(
+                onClick = {
+                    scope.launch { listState.animateScrollToItem(messages.lastIndex) }
+                },
+            ) {
+                Icon(Icons.Filled.ArrowDownward, contentDescription = "回到底部")
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MessageBubble(
+    message: ChatMessage,
+    isGenerating: Boolean,
+    bubbleStyle: BubbleStyle = BubbleStyle.ROUNDED,
+    showRoleChatCard: Boolean = true,
+    renderPluginXml: suspend (String, String) -> String? = { _, _ -> null },
+) {
+    val isUser = message.role == ChatRole.USER
+    val display = remember(message.text, isUser) {
+        if (isUser) AssistantDisplay(message.text, null)
+        else AssistantMessageParser.parse(message.text)
+    }
+    val displayText = display.mainText
+    val visibleSteps = remember(message.steps) {
+        message.steps.filterNot {
+            it.tool == "motion_control" || it.tool == "expression_control" || it.tool == "vrma_generate"
+        }
+    }
+    val showTyping = !isUser && displayText.isBlank() && visibleSteps.isEmpty() && isGenerating
+    val typingLabel = if (message.reasoning.isNotBlank()) "思考中…" else "正在生成…"
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+    ) {
+        val visual = bubbleVisual(isUser = isUser, style = bubbleStyle)
+        if (isUser) {
+            if (displayText.isNotBlank() || showTyping) {
+                Surface(
+                    color = visual.color,
+                    contentColor = visual.contentColor,
+                    shape = visual.shape,
+                    border = visual.border,
+                    modifier = Modifier.widthIn(max = 340.dp),
+                ) {
+                    if (showTyping) {
+                        Text(
+                            text = typingLabel,
+                            modifier = Modifier.padding(visual.padding),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    } else {
+                        Text(
+                            text = displayText,
+                            modifier = Modifier.padding(visual.padding),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                }
+            }
+        } else {
+            visibleSteps.forEach { step ->
+                val replyText = remember(step.reply) {
+                    AssistantMessageParser.parse(step.reply).mainText
+                }
+                if (replyText.isNotBlank()) {
+                    Surface(
+                        color = visual.color,
+                        contentColor = visual.contentColor,
+                        shape = visual.shape,
+                        border = visual.border,
+                        modifier = Modifier.widthIn(max = 340.dp),
+                    ) {
+                        PluginMarkupContent(
+                            text = replyText,
+                            modifier = Modifier.padding(visual.padding),
+                            renderPluginXml = renderPluginXml,
+                        ) { text ->
+                            Text(text = text, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+                AgentStepCard(step)
+            }
+            if (displayText.isNotBlank() || showTyping) {
+                Surface(
+                    color = visual.color,
+                    contentColor = visual.contentColor,
+                    shape = visual.shape,
+                    border = visual.border,
+                    modifier = Modifier.widthIn(max = 340.dp),
+                ) {
+                    if (showTyping) {
+                        Text(
+                            text = typingLabel,
+                            modifier = Modifier.padding(visual.padding),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    } else {
+                        PluginMarkupContent(
+                            text = displayText,
+                            modifier = Modifier.padding(visual.padding),
+                            renderPluginXml = renderPluginXml,
+                        ) { text ->
+                            Text(text = text, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            }
+            if (showRoleChatCard) {
+                display.status?.let { status ->
+                    AssistantStatusCard(status)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AssistantStatusCard(data: StatusCardData) {
+    var expanded by remember { mutableStateOf(false) }
+    IrisCard(
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .widthIn(max = 340.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "角色状态",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "收起" else "展开")
+                }
+            }
+            listOfNotNull(
+                data.date?.let { "日期 · $it" },
+                data.time?.let { "时间 · $it" },
+                data.location?.let { "地点 · $it" },
+            ).forEach { line ->
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    data.sections.forEach { section ->
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            if (section.title.isNotBlank()) {
+                                Text(
+                                    text = section.title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            section.items.forEach { item ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = item.label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        text = item.value,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun AgentStepCard(step: AgentStep) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .widthIn(max = 340.dp),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("工具 · ${step.tool}", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (step.status == StepStatus.OK) "完成" else "失败",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (step.status == StepStatus.OK) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+            }
+            if (step.result.isNotBlank()) {
+                Text(
+                    text = step.result,
+                    modifier = Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 6,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** 通用单选下拉：工作区、模型、权限等工具条都用它。 */
+@Composable
+internal fun SelectorChip(
+    icon: ImageVector,
+    label: String,
+    options: List<ChipOption>,
+    onSelect: (String) -> Unit,
+    compact: Boolean = false,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        if (compact) {
+            IconButton(
+                onClick = { expanded = true },
+                modifier = Modifier.size(40.dp),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = label,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        } else {
+            AssistChip(
+                onClick = { expanded = true },
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                },
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            PluginSlot("chat.message-menu")
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(option.label)
+                            Text(
+                                text = option.detail,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    onClick = {
+                        onSelect(option.id)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun PluginInputMenuRow(
+    viewModel: ChatViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val toggles by viewModel.inputMenuToggles.collectAsStateWithLifecycle()
+    if (toggles.isEmpty()) return
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        toggles.forEach { toggle ->
+            FilterChip(
+                selected = toggle.checked,
+                onClick = { viewModel.toggleInputMenu(toggle) },
+                label = {
+                    Text(
+                        text = toggle.title.ifBlank { toggle.id },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+            )
+        }
+    }
+}
+
+@Composable
+internal fun VoiceInputDialog(
+    onDismiss: () -> Unit,
+    onInsert: (String) -> Unit,
+    onTranscribe: suspend (File) -> Result<String>,
+    startStreaming: (suspend () -> StreamingAsrHandle?)? = null,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val recorder = remember { VoiceRecorder(context) }
+    var recording by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var result by remember { mutableStateOf("") }
+
+    fun startRecording() {
+        if (recording) return
+        recording = true
+        message = "正在录音，请说话…"
+        scope.launch {
+            val session = startStreaming?.invoke()
+            var lastPartial = ""
+            var partialAt = 0L
+            val file = recorder.record(
+                maxMillis = 15_000,
+                onFrame = session?.let { stream ->
+                    { samples: ShortArray, size: Int ->
+                        stream.accept(samples, size)
+                        val now = System.currentTimeMillis()
+                        if (now - partialAt >= 300) {
+                            partialAt = now
+                            val text = runCatching { stream.text() }.getOrDefault("")
+                            if (text.isNotBlank()) {
+                                lastPartial = text
+                                scope.launch { message = "正在听：$text" }
+                            }
+                        }
+                    }
+                },
+            )
+            val streamed = session?.let { runCatching { it.finishAndGetText(1_200) }.getOrDefault("") }
+                ?.ifBlank { lastPartial }
+                .orEmpty()
+            session?.close()
+            recording = false
+            if (streamed.isNotBlank()) {
+                file?.delete()
+                result = streamed
+                message = null
+                return@launch
+            }
+            if (file == null) {
+                message = "没有录到有效语音，请靠近麦克风再试"
+                return@launch
+            }
+            message = "正在识别…"
+            val transcribed = onTranscribe(file)
+            file.delete()
+            transcribed.onSuccess {
+                result = it
+                message = null
+            }.onFailure {
+                message = "识别失败：${it.message ?: "未知错误"}"
+            }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startRecording() else message = "未授予录音权限"
+    }
+
+    fun requestRecording() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            startRecording()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("语音输入", style = MaterialTheme.typography.titleLarge)
+                val transition = rememberInfiniteTransition(label = "voice")
+                val scale by transition.animateFloat(
+                    initialValue = 1f,
+                    targetValue = if (recording) 1.18f else 1.02f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(700),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "voiceScale",
+                )
+                Box(modifier = Modifier.size(108.dp), contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .size((88 * scale).dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp),
+                    )
+                }
+                Text(
+                    text = when {
+                        recording -> "正在录音，最多 6 秒"
+                        result.isNotBlank() -> result
+                        else -> "点击下方按钮开始录音，识别后可直接插入输入框。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                message?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (it.startsWith("识别失败")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    TextButton(onClick = { requestRecording() }, enabled = !recording) {
+                        Text(if (recording) "录音中…" else "开始录音")
+                    }
+                    TextButton(
+                        onClick = { if (result.isNotBlank()) onInsert(result) },
+                        enabled = result.isNotBlank(),
+                    ) { Text("插入") }
+                }
+            }
+        }
+    }
+}

@@ -1,9 +1,9 @@
-# IRIS LocalAI （自用未完善）
+# IrisMoew （自用未完善）
 
-IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里完成本地 GGUF 推理、云端模型接入、Agent 工具调用、角色陪伴、内容创作与设备操作。应用采用单模块 `:app`，Kotlin + Jetpack Compose 构建，依赖由 `AppGraph` 手动装配。
+IrisMoew 是运行在 Android 上的本地 AI 工作台：在一个应用里完成本地 GGUF 推理、云端模型接入、Agent 工具调用、角色陪伴、内容创作与设备操作。应用采用单模块 `:app`，Kotlin + Jetpack Compose 构建，依赖由 `AppGraph` 手动装配。
 
-- 应用名：`IRIS LocalAI`
-- 包名 / Application ID：`com.iris.localai`
+- 应用名：`IrisMoew`
+- 包名 / Application ID：`com.iris.moew`
 - 当前版本：`0.1.0`（versionCode `1`）
 - 模块：单模块 `:app`
 - SDK：minSdk `31`，compileSdk / targetSdk `35`
@@ -231,8 +231,10 @@ app/src/main/
 新下载或导入的模型、素材与角色卡写入：
 
 ```text
-/storage/emulated/0/Android/data/com.iris.localai/files/IRIS
+/storage/emulated/0/Android/data/com.iris.moew/files/IRIS
 ```
+
+> **从旧包名迁移**：应用更名自 `com.iris.localai`。首次安装若已授予「所有文件访问」，启动时会自动把旧包外置根整体搬迁到新根，并在新根写入 `migrated_from_com.iris.localai.txt` 报告；未授权则跳过。旧包 `filesDir` 的私有数据（会话、记忆、技能等）系统层隔离，无法自动迁移，可先在旧版用 数据管理 › 备份 导出后导入。
 
 | 目录 | 内容 |
 |---|---|
@@ -328,7 +330,7 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 - **自动沉淀**：每轮回复结束后触发一次增量抽取，归档会话时再补一次；只处理上次位置之后的新消息，同一会话 90 秒内不重复调用模型，`force` 只跳过开关与节流、不重跑已分析内容。云端语言模型默认不参与自动沉淀，需在设置 › 上下文推理 › 记忆与知识库开启“云端模型自动沉淀”；归档与手动整理不受该限制。引擎不可用、失败或返回非 JSON 时回退用户陈述规则提取。记忆页“整理最近对话”只补处理未分析内容。删除归档会话不会删除已写入的记忆。自动抽取质量受模型能力影响。
 - **工作区位置**：`workspaceLocation` / `customWorkspacePath` 已持久化，但 Shell、PRoot 与文件工具仍以 `WorkspaceStore` 的活动工作区为准。
 - **角色模型**：VRM/GLB、Live2D、MMD 已接入实际渲染；MMD VMD 动作编排、VRM 表情/动作切换与更多口型细节仍有缺口。TTS 播放已通过 Visualizer 提供真实振幅并驱动 Live2D 口型；Live2D 另带眨眼、视线游移、头部/身体摆动与呼吸，口型按振幅平滑并叠加音节包络，通话与生活空间共用同一套动作。
-- **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。AR 网格默认是 **IMU 姿态驱动的 3DoF 地平面锚定**（后置相机 + 固定相机高度）；设置 › 交互 可开启实验性 **OpenCV 光流位移**（后置相机 `ImageReader` YUV 灰度帧 + RANSAC 仿射估计平移/尺度，水平视场角由焦距/传感器尺寸估算，尺度变化用于微调相机高度），但仍是平面假设下的近似，没有单应分解、特征地图或 EKF，光照差、快速转动或走动会漂移，可在通话中点「重新定位」；双 Surface 会话失败时会退回纯预览。横屏时退回静态网格。开发者选项可再开启实验性 **MenthaAR 6DoF SLAM**（ORB-SLAM2）：预编译 `libMenthaAR_Engine.so` + 手写 Binder 接口跑在独立 `:slam_process` 进程，锁定后模型按真实世界位姿渲染并支持锚点地图持久化，短时丢失用 IMU 增量保持，失败回退 IMU + 光流；未在所有机型验证。模型尺寸直接绑定地面环的屏幕直径（高度 = 环直径 × 人物高度 / 2.4m），远近变化时与网格严格同比例；脚底位置按模型类型取默认值（Live2D 0.99 / MMD 0.70 / 3D 0.82），可用「脚底微调」修正。开启实验开关后可在通话中点「记录日志」，CSV 写到 `Android/data/com.iris.localai/files/tracking/`（逐帧 IMU、仿射、单应、特征点对与估计位移），用于校准符号和选解。
+- **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。AR 网格默认是 **IMU 姿态驱动的 3DoF 地平面锚定**（后置相机 + 固定相机高度）；设置 › 交互 可开启实验性 **OpenCV 光流位移**（后置相机 `ImageReader` YUV 灰度帧 + RANSAC 仿射估计平移/尺度，水平视场角由焦距/传感器尺寸估算，尺度变化用于微调相机高度），但仍是平面假设下的近似，没有单应分解、特征地图或 EKF，光照差、快速转动或走动会漂移，可在通话中点「重新定位」；双 Surface 会话失败时会退回纯预览。横屏时退回静态网格。开发者选项可再开启实验性 **MenthaAR 6DoF SLAM**（ORB-SLAM2）：预编译 `libMenthaAR_Engine.so` + 手写 Binder 接口跑在独立 `:slam_process` 进程，锁定后模型按真实世界位姿渲染并支持锚点地图持久化，短时丢失用 IMU 增量保持，失败回退 IMU + 光流；未在所有机型验证。模型尺寸直接绑定地面环的屏幕直径（高度 = 环直径 × 人物高度 / 2.4m），远近变化时与网格严格同比例；脚底位置按模型类型取默认值（Live2D 0.99 / MMD 0.70 / 3D 0.82），可用「脚底微调」修正。开启实验开关后可在通话中点「记录日志」，CSV 写到 `Android/data/com.iris.moew/files/tracking/`（逐帧 IMU、仿射、单应、特征点对与估计位移），用于校准符号和选解。
 - **桌宠与虚拟屏**：桌宠依赖悬浮窗权限；虚拟屏依赖 Shizuku + HiddenApiBypass，freeform 依赖 ROM 支持。
 - **插件兼容**：Operit Compose DSL UI 通过兼容渲染器打开，支持 Column/Row/Box/Text/TextField/Button/Switch/Checkbox/Slider/Card/Surface/Icon/Image/Dialog/Lazy 列表/WebView/Markdown 等组件，复杂组件会降级；AiChat 可嵌入当前主聊天（无活跃会话时显示提示）。依赖任意 Java 反射、`Java.implement` 或宿主单例的插件无法等价运行；`loadDex`/`loadJar` 仅支持插件目录内文件，dex 类支持构造、实例方法与实例字段。已接入 chat_input、chat_message、chat_runtime、system_prompt_compose、tool_lifecycle、chat_message_menu_item、prompt_input、prompt_history、prompt_estimate_history、tool_prompt_compose、prompt_finalize、prompt_estimate_finalize、message_processing、chat_view、app_lifecycle、summary_generate、input_menu_toggle、desktop_widget、xml_render 与工具流式中间回调；插件 AI Provider 会同步为“插件”类型模型提供商，非流式返回。desktop_widget 以悬浮窗近似实现（Android AppWidget 无法渲染 Compose DSL）。跨工具调用已转译到宿主工具表，但插件内嵌套调用自身工具仍不支持。
 - **VRMA 生成**：内置 Text-To-VRMA 需要 PRoot 已安装 Node 20+，首次启动会复制约 43 MB 运行时；云端使用当前语言模型 provider（OpenAI 兼容或 Anthropic Claude），Gemini 与未配置 provider 会失败。生成走 8787 本地 API，ARDY 本地引擎未在手机启用。生活空间插件设置 `VRMA_GENERATION=TRUE` 时改用 `<vrma_motion>` 指令与 `vrma_generate`，FALSE 回退原动作/表情表。

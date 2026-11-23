@@ -29,5 +29,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "IRISLocalAI"
+rootProject.name = "IrisMoew"
 include(":app")

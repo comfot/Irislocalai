@@ -1,0 +1,371 @@
+package com.iris.moew.ui.chat
+
+import android.content.Context
+import android.graphics.Color
+import android.media.MediaPlayer
+import android.net.Uri
+import android.util.Log
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.moew.IrisApp
+import com.iris.moew.motion.MotionBridge
+import com.iris.moew.motion.MotionCategory
+import kotlinx.coroutines.delay
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * MMD（PMX/PMD）渲染：Babylon.js + babylon-mmd WASM 运行时，
+ * 支持 VMD 动作、IK、表情和 WASM 物理；模型与贴图通过虚拟 https 源拦截读取。
+ */
+@Composable
+internal fun MMDView(
+    modelFile: File,
+    accentHex: String?,
+    dark: Boolean,
+    mood: String = "neutral",
+    moodIntensity: Float = 0.85f,
+    speaking: Boolean = false,
+    mouthAmplitude: Float = 0f,
+    fullscreen: Boolean = false,
+    portrait: Boolean = false,
+    arLook: Pair<Float, Float>? = null,
+    arWorld: ArWorldPose? = null,
+    interactive: Boolean = true,
+    modelRoot: String = "character_models",
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val graph = remember(context) { (context.applicationContext as IrisApp).graph }
+    val appSettings by graph.settings.settings.collectAsStateWithLifecycle()
+    val idleMotionAsset = appSettings.idleMotionAsset.ifBlank {
+        graph.motionAssets.assets.value.firstOrNull { it.category == MotionCategory.IDLE }?.id.orEmpty()
+    }
+    val renderScale = appSettings.mmdRenderScale
+    val key = "${modelFile.absolutePath}|$accentHex|$dark|$portrait|$interactive|$modelRoot|$idleMotionAsset"
+    var webView by remember { mutableStateOf<WebView?>(null) }
+    var bgmPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    val sentAssetSeq = remember { mutableStateOf(0L) }
+    val assetCommand by MotionBridge.assetCommand.collectAsStateWithLifecycle()
+    val cameraCommand by MotionBridge.cameraCommand.collectAsStateWithLifecycle()
+    val motionCommand by MotionBridge.command.collectAsStateWithLifecycle()
+    val expressionCommand by MotionBridge.expressionCommand.collectAsStateWithLifecycle()
+    DisposableEffect(Unit) {
+        MotionBridge.registerMmdView()
+        onDispose {
+            MotionBridge.unregisterMmdView()
+            bgmPlayer?.release()
+            bgmPlayer = null
+        }
+    }
+    LaunchedEffect(assetCommand?.seq) {
+        val command = assetCommand ?: return@LaunchedEffect
+        webView?.let { view ->
+            if (command.path.isBlank()) {
+                view.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
+            } else {
+                view.evaluateJavascript(
+                    "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop}, ${command.holdIdle})",
+                    null,
+                )
+            }
+            sentAssetSeq.value = command.seq
+        }
+        if (command.path.isBlank()) {
+            bgmPlayer?.release()
+            bgmPlayer = null
+            return@LaunchedEffect
+        }
+        bgmPlayer?.release()
+        bgmPlayer = null
+        val bgm = command.bgmPath
+        if (appSettings.danceBgmEnabled && !bgm.isNullOrBlank() && File(bgm).isFile) {
+            runCatching {
+                MediaPlayer.create(context, Uri.fromFile(File(bgm)))
+            }.onSuccess { player ->
+                player.setOnCompletionListener {
+                    it.release()
+                    bgmPlayer = null
+                    webView?.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
+                }
+                player.start()
+                bgmPlayer = player
+            }
+        }
+    }
+    LaunchedEffect(motionCommand?.seq) {
+        val action = motionCommand?.action ?: return@LaunchedEffect
+        val assets = graph.motionAssets
+        val asset = when (action.lowercase()) {
+            "wave", "挥手", "摆手", "打招呼" ->
+                assets.assets.value.firstOrNull { it.category == MotionCategory.GREET }
+            "dance", "跳舞" ->
+                assets.assets.value.firstOrNull { it.category == MotionCategory.DANCE }
+            "idle", "待机" ->
+                assets.assets.value.firstOrNull { it.category == MotionCategory.IDLE }
+            else -> assets.findByName(action)
+        }
+        if (asset != null) {
+            webView?.evaluateJavascript(
+                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(asset.id)}, ${asset.category == MotionCategory.DANCE}, ${asset.name.contains("坐")})",
+                null,
+            )
+        }
+    }
+    LaunchedEffect(expressionCommand?.seq) {
+        val name = expressionCommand?.name ?: return@LaunchedEffect
+        webView?.evaluateJavascript(
+            "window.irisMmd&&window.irisMmd.setMood(${JSONObject.quote(name)}, 1.0)",
+            null,
+        )
+    }
+    LaunchedEffect(arWorld, webView) {
+        val view = webView ?: return@LaunchedEffect
+        val pose = arWorld
+        while (true) {
+            if (pose == null) {
+                view.evaluateJavascript("window.irisMmd&&window.irisMmd.clearWorld()", null)
+            } else {
+                val model = pose.model.joinToString(",", "[", "]")
+                val viewMatrix = pose.view.joinToString(",", "[", "]")
+                val projection = pose.projection.joinToString(",", "[", "]")
+                val up = pose.worldUp.joinToString(",", "[", "]")
+                view.evaluateJavascript(
+                    "window.irisMmd&&window.irisMmd.setWorld($viewMatrix,$model,$projection," +
+                        "${pose.modelHeightMeters.toDouble()},$up)",
+                    null,
+                )
+            }
+            delay(33)
+        }
+    }
+    LaunchedEffect(arLook, webView) {
+        val view = webView ?: return@LaunchedEffect
+        val look = arLook ?: return@LaunchedEffect
+        // 模型页面加载完成后 window.irisMmd 才存在；周期性重发 AR 视角。
+        while (true) {
+            view.evaluateJavascript(
+                "window.irisMmd&&window.irisMmd.setArLook(${look.first.toDouble()}, ${look.second.toDouble()})",
+                null,
+            )
+            delay(500)
+        }
+    }
+    LaunchedEffect(cameraCommand?.seq) {
+        val command = cameraCommand ?: return@LaunchedEffect
+        if (command.path.isBlank()) {
+            webView?.evaluateJavascript("window.irisMmd&&window.irisMmd.stopCamera()", null)
+        } else {
+            webView?.evaluateJavascript(
+                "window.irisMmd&&window.irisMmd.playCamera(${JSONObject.quote(command.path)}, ${command.loop})",
+                null,
+            )
+        }
+    }
+    LaunchedEffect(renderScale) {
+        webView?.evaluateJavascript(
+            "window.irisMmd&&window.irisMmd.setRenderScale($renderScale)",
+            null,
+        )
+    }
+    AndroidView(
+        factory = { ctx ->
+            WebView(ctx).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = true
+                settings.allowContentAccess = true
+                @Suppress("DEPRECATION")
+                settings.allowFileAccessFromFileURLs = true
+                @Suppress("DEPRECATION")
+                settings.allowUniversalAccessFromFileURLs = true
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                        Log.d(
+                            "MMDView",
+                            "${message.message()} (${message.sourceId()}:${message.lineNumber()})",
+                        )
+                        return true
+                    }
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(
+                        view: WebView,
+                        request: WebResourceRequest,
+                    ): WebResourceResponse? = interceptCharacterModel(context, request)
+
+                    /** 页面或模型晚于动作指令就绪时，补发最近一次动作（超时则丢弃）。 */
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        val command = MotionBridge.assetCommand.value ?: return
+                        if (command.seq == sentAssetSeq.value) return
+                        if (System.currentTimeMillis() - command.createdAt > 15_000) {
+                            sentAssetSeq.value = command.seq
+                            return
+                        }
+                        if (command.path.isBlank()) {
+                            view.evaluateJavascript("window.irisMmd&&window.irisMmd.stop()", null)
+                        } else {
+                            view.evaluateJavascript(
+                                "window.irisMmd&&window.irisMmd.playAsset(${JSONObject.quote(command.path)}, ${command.loop}, ${command.holdIdle})",
+                                null,
+                            )
+                        }
+                        sentAssetSeq.value = command.seq
+                    }
+
+                    override fun onRenderProcessGone(
+                        view: WebView,
+                        detail: android.webkit.RenderProcessGoneDetail,
+                    ): Boolean {
+                        Log.e("MMDView", "renderer gone crash=${detail.didCrash()}")
+                        return true
+                    }
+                }
+                loadMmd(this, ctx, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset, renderScale)
+                tag = key
+                webView = this
+            }
+        },
+        update = { view ->
+            if (view.tag != key) {
+                view.tag = key
+                loadMmd(view, view.context, modelFile, accentHex, dark, mood, speaking, portrait, interactive, modelRoot, idleMotionAsset, renderScale)
+            }
+            applyMmdState(view, mood, speaking, moodIntensity, mouthAmplitude)
+            view.postDelayed({
+                view.evaluateJavascript("window.irisMmd&&window.irisMmd.resize()", null)
+            }, if (fullscreen) 180 else 80)
+        },
+        onRelease = { view ->
+            webView = null
+            releaseModelWebView(view)
+        },
+        modifier = modifier,
+    )
+}
+
+private fun loadMmd(
+    view: WebView,
+    context: Context,
+    modelFile: File,
+    accentHex: String?,
+    dark: Boolean,
+    mood: String,
+    speaking: Boolean,
+    portrait: Boolean,
+    interactive: Boolean,
+    modelRoot: String,
+    idleMotionAsset: String,
+    renderScale: Float,
+) {
+    val storage = (context.applicationContext as IrisApp).graph.storage
+    val root = storage.containingRoot(modelRoot, modelFile)
+        ?: File(context.filesDir, modelRoot).canonicalFile
+    val relative = runCatching {
+        modelFile.canonicalFile.relativeTo(root).invariantSeparatorsPath
+    }.getOrNull()
+    if (relative.isNullOrBlank() || !modelFile.isFile) {
+        view.loadDataWithBaseURL(
+            "https://iris.local/",
+            "<html><body style='background:transparent;color:#fff;font:13px sans-serif;display:grid;place-items:center'>MMD 模型文件不存在</body></html>",
+            "text/html",
+            "UTF-8",
+            null,
+        )
+        return
+    }
+    val prefix = if (modelRoot == "character_models") "/models/" else "/petmodels/"
+    val modelUrl = "https://iris.local$prefix${relative.split('/').joinToString("/") { Uri.encode(it) }}"
+    val config = JSONObject()
+        .put("model", modelUrl)
+        .put("accent", accentHex ?: "#0D84FF")
+        .put("dark", dark)
+        .put("mood", mood)
+        .put("speaking", speaking)
+        .put("portrait", portrait)
+        .put("interactive", interactive)
+        .put("renderScale", renderScale.toDouble())
+    Log.d("MMDView", "load portrait=$portrait root=$modelRoot file=${modelFile.name} mood=$mood")
+    findMmdMotion(modelFile, context, modelRoot)?.let { config.put("motion", it) }
+    if (idleMotionAsset.isNotBlank()) config.put("idleMotion", motionAssetUrl(idleMotionAsset))
+    view.loadDataWithBaseURL(
+        "https://iris.local/",
+        mmdHtml(context, config.toString()),
+        "text/html",
+        "UTF-8",
+        null,
+    )
+}
+
+private fun applyMmdState(
+    view: WebView,
+    mood: String,
+    speaking: Boolean,
+    moodIntensity: Float,
+    mouthAmplitude: Float,
+) {
+    val safeMood = mood.replace("'", "").replace("\\", "")
+    val intensity = moodIntensity.coerceIn(0f, 1f)
+    val mouth = if (mouthAmplitude > 0.02f) {
+        mouthAmplitude.coerceIn(0f, 1f)
+    } else if (speaking) {
+        0.28f
+    } else {
+        0f
+    }
+    view.evaluateJavascript(
+        "window.irisMmd&&window.irisMmd.setMood('$safeMood', $intensity);" +
+            "window.irisMmd&&window.irisMmd.setMouthOpen($mouth);",
+        null,
+    )
+}
+
+private fun findMmdMotion(modelFile: File, context: Context, modelRoot: String): String? {
+    val storage = (context.applicationContext as IrisApp).graph.storage
+    val root = storage.containingRoot(modelRoot, modelFile)
+        ?: File(context.filesDir, modelRoot).canonicalFile
+    val motions = modelFile.parentFile?.listFiles()
+        ?.filter { it.isFile && it.extension.equals("vmd", ignoreCase = true) }
+        ?.sortedBy { it.name.lowercase() }
+        .orEmpty()
+    val motion = motions.firstOrNull { it.name.contains("idle", ignoreCase = true) } ?: motions.firstOrNull()
+        ?: return null
+    val relative = runCatching { motion.canonicalFile.relativeTo(root).invariantSeparatorsPath }.getOrNull()
+        ?: return null
+    val prefix = if (modelRoot == "character_models") "/models/" else "/petmodels/"
+    return "https://iris.local$prefix${relative.split('/').joinToString("/") { Uri.encode(it) }}"
+}
+
+private fun motionAssetUrl(relative: String): String {
+    val normalized = relative.replace('\\', '/').substringAfterLast("motion_assets/", relative)
+    val parts = normalized.split('/').filter { it.isNotBlank() && it != "." && it != ".." }
+    if (parts.isEmpty()) return ""
+    return "https://iris.local/motionassets/" +
+        parts.joinToString("/") { Uri.encode(it) }
+}
+
+private var cachedMmdTemplate: String? = null
+
+private fun mmdHtml(context: Context, configJson: String): String {
+    val template = cachedMmdTemplate ?: context.assets.open("mmd.html")
+        .bufferedReader()
+        .use { it.readText() }
+        .also { cachedMmdTemplate = it }
+    return template.replace("__MMD_CONFIG_JSON__", configJson)
+}

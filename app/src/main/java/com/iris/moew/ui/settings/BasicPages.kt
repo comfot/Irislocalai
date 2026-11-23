@@ -1,0 +1,731 @@
+package com.iris.moew.ui.settings
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.iris.moew.agent.Tool
+import com.iris.moew.data.AppSettings
+import com.iris.moew.data.ContextStrategy
+import com.iris.moew.data.ToolPermission
+import com.iris.moew.engine.Backend
+import com.iris.moew.engine.EngineState
+import com.iris.localai.engine.llama.LlamaNative
+import java.io.File
+
+@Composable
+internal fun BackendPage(settings: AppSettings, engineState: EngineState, viewModel: SettingsViewModel) {
+    val runtimeStatus = remember {
+        LlamaNative.unavailableReason ?: "可用 · llama.cpp（预编译 libiris_llama.so）"
+    }
+    val gpuAvailable = remember {
+        listOf(
+            "/vendor/lib64/libOpenCL.so",
+            "/system/vendor/lib64/libOpenCL.so",
+            "/system/lib64/libOpenCL.so",
+        ).any { File(it).exists() }
+    }
+    SettingsPage {
+        SettingsCard("推理后端") {
+            Backend.entries
+                .filter { it != Backend.NPU || settings.backend == Backend.NPU }
+                .forEach { backend ->
+                    OptionRow(
+                        selected = settings.backend == backend,
+                        title = backend.name,
+                        summary = backendSummary(backend),
+                        onClick = { viewModel.update { it.copy(backend = backend) } },
+                    )
+                }
+            if (settings.backend == Backend.NPU) {
+                Text(
+                    text = "当前预编译运行库不支持 NPU，请改选 CPU 或 GPU。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            BasicSwitchRow(
+                title = "GPU 失败时回退 CPU",
+                summary = "GPU 加载失败时自动降级，避免模型无法使用",
+                checked = settings.backendFallback,
+            ) { on -> viewModel.update { it.copy(backendFallback = on) } }
+        }
+
+        SettingsCard("运行状态") {
+            InfoRow("GGUF / llama.cpp", runtimeStatus)
+            InfoRow("OpenCL GPU", if (gpuAvailable) "已检测到驱动" else "未检测到，仅 CPU")
+            InfoRow("当前本地模型", settings.modelPath.ifBlank { "未选择" })
+            Text(
+                text = "部分设备（如小米 HyperOS + 高通 Adreno）的厂商 Vulkan/OpenCL 驱动对" +
+                    " llama.cpp 的 GPU 后端存在兼容性问题（pipeline 创建失败或驱动崩溃），" +
+                    "此类设备建议使用 CPU 后端。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SettingsCard("本地推理引擎") {
+            Text(engineState.display(), style = MaterialTheme.typography.bodyLarge)
+            val details = (engineState as? EngineState.Ready)?.details
+            if (details != null) {
+                InfoRow("已加载", details.name)
+                InfoRow("上下文", details.contextLength.toString())
+                InfoRow("后端", details.backend.name)
+                if (details.gpuNote.isNotBlank()) {
+                    Text(
+                        text = details.gpuNote,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Button(
+                onClick = viewModel::reloadEngine,
+                enabled = engineState !is EngineState.Loading,
+            ) { Text("重新加载引擎") }
+            Text(
+                text = "语言模型选择本地提供商时使用对应的 GGUF；云端提供商通过 OpenAI 兼容接口请求。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun GenerationPage(settings: AppSettings, viewModel: SettingsViewModel) {
+    var showPrompt by remember { mutableStateOf(false) }
+    var promptText by remember(settings.systemPrompt) { mutableStateOf(settings.systemPrompt) }
+
+    SettingsPage {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = viewModel::resetGeneration) { Text("恢复默认") }
+        }
+
+        SettingsCard("提示词与思考") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "系统提示词",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { showPrompt = true }) { Text("编辑") }
+            }
+            Text(
+                text = settings.systemPrompt.ifBlank { "未设置，使用内置提示词" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            BasicSwitchRow(
+                title = "深度思考",
+                summary = "让模型先推理再回答",
+                checked = settings.deepThinking,
+            ) { on -> viewModel.update { it.copy(deepThinking = on) } }
+            if (settings.deepThinking) {
+                SliderRow(
+                    title = "思考预算",
+                    value = settings.thinkingBudget.toFloat(),
+                    range = 0f..8192f,
+                    steps = 31,
+                    format = { if (it <= 0f) "自动" else "${it.toInt()} tokens" },
+                    onCommit = { value ->
+                        viewModel.update { it.copy(thinkingBudget = (value / 256).toInt() * 256) }
+                    },
+                )
+            }
+        }
+
+        SettingsCard("输出") {
+            BasicSwitchRow(
+                title = "使用模型档案参数",
+                summary = "温度、Top-P 与最大输出改用语言模型档案的值；高级采样始终全局生效",
+                checked = settings.useProfileGenerationParams,
+            ) { on -> viewModel.update { it.copy(useProfileGenerationParams = on) } }
+            SliderRow(
+                title = "最大输出",
+                value = settings.maxNewTokens.toFloat(),
+                range = 256f..8192f,
+                steps = 30,
+                format = { "${it.toInt()} tokens" },
+                onCommit = { value ->
+                    viewModel.update { it.copy(maxNewTokens = (value / 256).toInt() * 256) }
+                },
+            )
+            SliderRow(
+                title = "温度",
+                value = settings.temperature,
+                range = 0f..2f,
+                steps = 39,
+                format = { "%.2f".format(it) },
+                onCommit = { value ->
+                    viewModel.update { it.copy(temperature = (value * 20).toInt() / 20f) }
+                },
+            )
+        }
+
+        ExpandableSettingsCard(
+            title = "高级采样",
+            summary = "Top-P、Top-K、重复惩罚与随机种子（始终使用全局设置，不随模型档案变化）",
+        ) {
+            SliderRow(
+                title = "Top-P",
+                value = settings.topP,
+                range = 0.05f..1f,
+                steps = 18,
+                format = { "%.2f".format(it) },
+                onCommit = { value ->
+                    viewModel.update { it.copy(topP = (value * 20).toInt() / 20f) }
+                },
+            )
+            SliderRow(
+                title = "Top-K",
+                value = settings.topK.toFloat(),
+                range = 0f..100f,
+                steps = 19,
+                format = { if (it <= 0f) "关闭" else it.toInt().toString() },
+                onCommit = { value -> viewModel.update { it.copy(topK = (value / 5).toInt() * 5) } },
+            )
+            SliderRow(
+                title = "Min-P",
+                value = settings.minP,
+                range = 0f..0.3f,
+                steps = 14,
+                format = { "%.2f".format(it) },
+                onCommit = { value ->
+                    viewModel.update { it.copy(minP = (value * 100).toInt() / 100f) }
+                },
+            )
+            SliderRow(
+                title = "重复惩罚",
+                value = settings.repeatPenalty,
+                range = 1f..1.5f,
+                steps = 9,
+                format = { "%.2f".format(it) },
+                onCommit = { value ->
+                    viewModel.update { it.copy(repeatPenalty = (value * 100).toInt() / 100f) }
+                },
+            )
+            SliderRow(
+                title = "重复窗口",
+                value = settings.repeatLastN.toFloat(),
+                range = 0f..512f,
+                steps = 31,
+                format = { "${it.toInt()} tokens" },
+                onCommit = { value ->
+                    viewModel.update { it.copy(repeatLastN = (value / 16).toInt() * 16) }
+                },
+            )
+            SliderRow(
+                title = "存在惩罚",
+                value = settings.presencePenalty,
+                range = -2f..2f,
+                steps = 39,
+                format = { "%.2f".format(it) },
+                onCommit = { value ->
+                    viewModel.update { it.copy(presencePenalty = (value * 20).toInt() / 20f) }
+                },
+            )
+            SliderRow(
+                title = "频率惩罚",
+                value = settings.frequencyPenalty,
+                range = -2f..2f,
+                steps = 39,
+                format = { "%.2f".format(it) },
+                onCommit = { value ->
+                    viewModel.update { it.copy(frequencyPenalty = (value * 20).toInt() / 20f) }
+                },
+            )
+            BasicSwitchRow(
+                title = "固定随机种子",
+                summary = "关闭时为每次请求使用随机种子",
+                checked = settings.seedEnabled,
+            ) { on -> viewModel.update { it.copy(seedEnabled = on) } }
+            if (settings.seedEnabled) {
+                IntField(
+                    label = "种子",
+                    value = settings.seedValue,
+                    maxLength = 6,
+                    onCommit = { value -> viewModel.update { it.copy(seedValue = value) } },
+                )
+            }
+        }
+    }
+
+    if (showPrompt) {
+        AlertDialog(
+            onDismissRequest = { showPrompt = false },
+            title = { Text("系统提示词") },
+            text = {
+                OutlinedTextField(
+                    value = promptText,
+                    onValueChange = { promptText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("留空则只使用内置提示词") },
+                    minLines = 4,
+                    maxLines = 8,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.update { it.copy(systemPrompt = promptText.trim()) }
+                        showPrompt = false
+                    },
+                ) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPrompt = false }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
+internal fun PerformancePage(settings: AppSettings, viewModel: SettingsViewModel) {
+    SettingsPage {
+        SettingsCard("运行") {
+            SliderRow(
+                title = "线程数",
+                value = settings.threads.toFloat(),
+                range = 0f..12f,
+                steps = 11,
+                format = { if (it <= 0f) "自动" else it.toInt().toString() },
+                onCommit = { value -> viewModel.update { it.copy(threads = value.toInt()) } },
+            )
+            Text(
+                text = "线程数在下次加载模型时生效。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BasicSwitchRow(
+                title = "屏幕常亮",
+                summary = "应用在前台时不自动息屏",
+                checked = settings.keepScreenOn,
+            ) { on -> viewModel.update { it.copy(keepScreenOn = on) } }
+        }
+    }
+}
+
+
+@Composable
+internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
+    val skills by viewModel.skills.collectAsStateWithLifecycle()
+    SettingsPage {
+        SettingsCard("智能体") {
+            BasicSwitchRow(
+                title = "智能体模式",
+                summary = "关闭后只对话，不调用工具",
+                checked = settings.agentMode,
+            ) { on -> viewModel.update { it.copy(agentMode = on) } }
+            SliderRow(
+                title = "最大工具步数（生活/操作）",
+                value = settings.agentMaxSteps.toFloat(),
+                range = 1f..20f,
+                steps = 18,
+                format = { "${it.toInt()} 步" },
+                onCommit = { value -> viewModel.update { it.copy(agentMaxSteps = value.toInt()) } },
+            )
+            Text(
+                text = "工作空间与综合空间不限制工具步数；此设置仅作用于生活/操作空间。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BasicSwitchRow(
+                title = "计划优先",
+                summary = "调用工具前先说明计划",
+                checked = settings.planFirst,
+            ) { on -> viewModel.update { it.copy(planFirst = on) } }
+            BasicSwitchRow(
+                title = "计划模式",
+                summary = "工作空间只读探索并先生成计划，批准后再执行",
+                checked = settings.planMode,
+            ) { on -> viewModel.update { it.copy(planMode = on) } }
+        }
+
+        ExpandableSettingsCard(
+            title = "工具（${viewModel.toolEntries.size}）",
+            summary = "开关、来源与每个工具的权限",
+        ) {
+            Text(
+                text = "shell / workspace / terminal 还需在「编程管理」开启命令执行并允许授权；" +
+                    "device_* 工具需要无障碍或 Shizuku 可用。权限提供允许、询问与拒绝。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            viewModel.toolEntries.forEach { entry ->
+                ToolSettingRow(
+                    tool = entry.tool,
+                    sourceLabel = entry.source.label,
+                    enabled = entry.tool.name in settings.enabledToolIds,
+                    permission = settings.toolPermissions[entry.tool.name] ?: ToolPermission.ALLOW,
+                    onToggle = { enabled ->
+                        viewModel.update {
+                            it.copy(
+                                enabledToolIds = if (enabled) {
+                                    it.enabledToolIds + entry.tool.name
+                                } else {
+                                    it.enabledToolIds - entry.tool.name
+                                },
+                            )
+                        }
+                    },
+                    onPermission = { permission ->
+                        viewModel.update {
+                            it.copy(toolPermissions = it.toolPermissions + (entry.tool.name to permission))
+                        }
+                    },
+                )
+            }
+        }
+
+        ExpandableSettingsCard(
+            title = "插件兼容工具（${compatToolSettings.size}）",
+            summary = "插件通过 toolCall 调用的伪工具，仅限插件目录与配置目录",
+        ) {
+            Text(
+                text = "这些工具不进入 Agent 工具表，模型不能直接调用；它们只允许访问插件目录/配置目录，HTTP 仅公网地址。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            compatToolSettings.forEach { item ->
+                CompatToolSettingRow(
+                    name = item.first,
+                    summary = item.second,
+                    permission = settings.toolPermissions["compat:${item.first}"]
+                        ?: settings.toolPermissions[item.first]
+                        ?: ToolPermission.ALLOW,
+                    onPermission = { permission ->
+                        viewModel.update {
+                            it.copy(
+                                toolPermissions = it.toolPermissions +
+                                    ("compat:${item.first}" to permission),
+                            )
+                        }
+                    },
+                )
+            }
+        }
+
+        SettingsCard("技能（${skills.size}）") {
+            if (skills.isEmpty()) {
+                Text("暂无技能，可在「Skill 技能」页导入。", style = MaterialTheme.typography.bodySmall)
+            }
+            skills.forEach { skill ->
+                BasicSwitchRow(
+                    title = skill.name,
+                    summary = skill.description,
+                    checked = skill.enabled,
+                ) { enabled -> viewModel.setSkillEnabled(skill.id, enabled) }
+            }
+        }
+
+    }
+}
+
+@Composable
+internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
+    SettingsPage {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = viewModel::resetContext) { Text("恢复默认") }
+        }
+
+        SettingsCard("上下文窗口") {
+            SliderRow(
+                title = "上下文长度",
+                value = settings.contextLength.coerceIn(1024, 131072).toFloat(),
+                range = 1024f..131072f,
+                steps = 126,
+                format = { "${it.toInt()} tokens" },
+                onCommit = { value ->
+                    viewModel.update { it.copy(contextLength = (value / 1024).toInt() * 1024) }
+                },
+            )
+            Text(
+                text = "实际可用长度还受模型档案与引擎限制。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SettingsCard("上下文策略") {
+            ContextStrategy.entries.forEach { strategy ->
+                OptionRow(
+                    selected = settings.contextStrategy == strategy,
+                    title = strategy.label,
+                    summary = strategy.hint,
+                    onClick = { viewModel.update { it.copy(contextStrategy = strategy) } },
+                )
+            }
+            if (settings.contextStrategy == ContextStrategy.TOKEN_BUDGET) {
+                SliderRow(
+                    title = "预算占比",
+                    value = settings.summaryTriggerPercent.toFloat(),
+                    range = 40f..95f,
+                    steps = 54,
+                    format = { "上下文窗口的 ${it.toInt()}%" },
+                    onCommit = { value ->
+                        viewModel.update { it.copy(summaryTriggerPercent = value.toInt()) }
+                    },
+                )
+            } else {
+                SliderRow(
+                    title = "保留轮数",
+                    value = settings.contextKeepTurns.toFloat(),
+                    range = 1f..32f,
+                    steps = 30,
+                    format = { "${it.toInt()} 轮" },
+                    onCommit = { value -> viewModel.update { it.copy(contextKeepTurns = value.toInt()) } },
+                )
+            }
+            BasicSwitchRow(
+                title = "自动压缩历史",
+                summary = "超出策略限制时裁剪较早的消息",
+                checked = settings.autoCompact,
+            ) { on -> viewModel.update { it.copy(autoCompact = on) } }
+        }
+
+        SettingsCard("记忆与知识库") {
+            BasicSwitchRow(
+                title = "启用记忆",
+                summary = "长期记忆总开关",
+                checked = settings.memoryEnabled,
+            ) { on -> viewModel.update { it.copy(memoryEnabled = on) } }
+            BasicSwitchRow(
+                title = "注入对话",
+                summary = "对话时携带相关记忆",
+                checked = settings.memoryInjectChat,
+                enabled = settings.memoryEnabled,
+            ) { on -> viewModel.update { it.copy(memoryInjectChat = on) } }
+            BasicSwitchRow(
+                title = "注入智能体",
+                summary = "智能体任务携带相关记忆",
+                checked = settings.memoryInjectAgent,
+                enabled = settings.memoryEnabled,
+            ) { on -> viewModel.update { it.copy(memoryInjectAgent = on) } }
+            BasicSwitchRow(
+                title = "自动生成日记",
+                summary = "按打开应用的日期整理当天对话，未打开的日子跳过",
+                checked = settings.memoryAutoDiary,
+                enabled = settings.memoryEnabled,
+            ) { on -> viewModel.update { it.copy(memoryAutoDiary = on) } }
+            BasicSwitchRow(
+                title = "自动沉淀记忆",
+                summary = "每轮回复后与归档时增量整理稳定事实、偏好与事件；模型不可用时回退规则提取",
+                checked = settings.memoryAutoSave,
+                enabled = settings.memoryEnabled,
+            ) { on -> viewModel.update { it.copy(memoryAutoSave = on) } }
+            BasicSwitchRow(
+                title = "云端模型自动沉淀",
+                summary = "允许把最近对话发送给云端语言模型做自动整理；关闭时仅本地模型自动沉淀，归档与手动整理不受限",
+                checked = settings.memoryAutoSaveCloud,
+                enabled = settings.memoryEnabled && settings.memoryAutoSave,
+            ) { on -> viewModel.update { it.copy(memoryAutoSaveCloud = on) } }
+            BasicSwitchRow(
+                title = "对话中检索知识库",
+                summary = "回答前检索本地文档",
+                checked = settings.knowledgeInChat,
+                enabled = settings.memoryEnabled,
+            ) { on -> viewModel.update { it.copy(knowledgeInChat = on) } }
+            Text(
+                text = "常驻对话只注入记忆摘要；需要详细回忆时由 memory 工具检索。日记不进入常规提示词。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolSettingRow(
+    tool: Tool,
+    sourceLabel: String,
+    enabled: Boolean,
+    permission: ToolPermission,
+    onToggle: (Boolean) -> Unit,
+    onPermission: (ToolPermission) -> Unit,
+) {
+    var menu by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(tool.name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = sourceLabel,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = tool.description,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Box {
+            TextButton(onClick = { menu = true }) { Text(permission.label) }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                ToolPermission.entries.forEach { item ->
+                    DropdownMenuItem(
+                        text = { Text(item.label) },
+                        onClick = {
+                            onPermission(item)
+                            menu = false
+                        },
+                    )
+                }
+            }
+        }
+        Switch(checked = enabled, onCheckedChange = onToggle)
+    }
+}
+
+@Composable
+private fun CompatToolSettingRow(
+    name: String,
+    summary: String,
+    permission: ToolPermission,
+    onPermission: (ToolPermission) -> Unit,
+) {
+    var menu by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Box {
+            TextButton(onClick = { menu = true }) { Text(permission.label) }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                ToolPermission.entries.forEach { item ->
+                    DropdownMenuItem(
+                        text = { Text(item.label) },
+                        onClick = {
+                            onPermission(item)
+                            menu = false
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val compatToolSettings = listOf(
+    "read_file" to "读取插件目录或配置目录内的文本文件（最大 4 MB）",
+    "write_file" to "写入插件目录或配置目录内的文本文件（最大 2 MB）",
+    "list_files" to "列出插件目录或配置目录内的文件",
+    "make_directory" to "在插件目录或配置目录内创建目录",
+    "delete_file" to "删除插件目录或配置目录内的文件/目录",
+    "http_request" to "请求公网 HTTP/HTTPS 地址（响应最大 1 MB）",
+    "download_file" to "下载公网文件到插件目录（最大 128 MB）",
+)
+
+@Composable
+private fun BasicSwitchRow(
+    title: String,
+    summary: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
+    }
+}
+
+@Composable
+private fun IntField(
+    label: String,
+    value: Int,
+    maxLength: Int,
+    onCommit: (Int) -> Unit,
+) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
+
+    OutlinedTextField(
+        value = text,
+        onValueChange = { input ->
+            if (input.length <= maxLength && input.all { it.isDigit() }) {
+                text = input
+                input.toIntOrNull()?.let(onCommit)
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text(label) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+    )
+}
+
+private fun backendSummary(backend: Backend): String = when (backend) {
+    Backend.CPU -> "兼容性最好，速度取决于线程数"
+    Backend.GPU -> "OpenCL / Vulkan 加速，需要驱动支持"
+    Backend.NPU -> "需要 Hexagon/NPU 运行库，当前预编译版未接入"
+}

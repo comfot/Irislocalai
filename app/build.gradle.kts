@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.iris.localai"
+    namespace = "com.iris.moew"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.iris.localai"
+        applicationId = "com.iris.moew"
         minSdk = 31
         targetSdk = 35
         versionCode = 1

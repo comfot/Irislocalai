@@ -1,0 +1,162 @@
+package com.iris.moew.ui.settings
+
+import android.app.Application
+import android.content.Context
+import android.net.Uri
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.iris.moew.IrisApp
+import com.iris.moew.plugin.InstalledPlugin
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class PluginViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val graph = (application as IrisApp).graph
+    private val store = graph.plugins
+
+    val plugins = store.plugins
+    val busy = store.busy
+    val settings = graph.settings.settings
+    val registrations = graph.pluginRuntime.registrations
+    val registrationErrors = graph.pluginRuntime.errors
+    val uiInvalidations = graph.pluginRuntime.uiInvalidations
+
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+
+    fun importUri(context: Context, uri: Uri) {
+        viewModelScope.launch {
+            val bytes = withContext(Dispatchers.IO) { readPluginZip(context, uri) }
+            bytes.onSuccess { import(it, uri.lastPathSegment.orEmpty()) }
+                .onFailure { _error.value = it.message ?: "无法读取插件包" }
+        }
+    }
+
+    fun import(bytes: ByteArray, source: String) {
+        _error.value = null
+        viewModelScope.launch {
+            runCatching { store.installZip(bytes, source) }
+                .onSuccess { _message.value = "已安装：${it.name}" }
+                .onFailure { _error.value = it.message ?: "插件安装失败" }
+        }
+    }
+
+    fun installUrl(url: String) {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return
+        _error.value = null
+        viewModelScope.launch {
+            _message.value = "正在下载插件包…"
+            runCatching { store.installUrl(trimmed) }
+                .onSuccess { _message.value = "已安装：${it.name}" }
+                .onFailure { _error.value = it.message ?: "插件下载失败" }
+        }
+    }
+
+    fun setEnabled(plugin: InstalledPlugin, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { store.setEnabled(plugin, enabled) }
+                .onFailure { _error.value = it.message ?: "插件状态更新失败" }
+        }
+    }
+
+    fun delete(plugin: InstalledPlugin) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val removed = runCatching { store.delete(plugin) }
+                .onFailure { _error.value = it.message ?: "删除失败" }
+                .getOrDefault(false)
+            _message.value = if (removed) "已删除：${plugin.name}" else null
+            if (!removed && _error.value == null) _error.value = "删除失败"
+        }
+    }
+
+    fun clearMessage() {
+        _message.value = null
+    }
+
+    fun clearError() {
+        _error.value = null
+    }
+
+    fun reportError(message: String) {
+        _error.value = message
+    }
+
+    fun exportPlugin(plugin: InstalledPlugin) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { graph.pluginDev.packageInstalled(plugin.id) }
+                .onSuccess { result ->
+                    _message.value = "已推送到：" + (result["path"]?.toString()?.trim('"') ?: "")
+                }
+                .onFailure { _error.value = it.message ?: "导出失败" }
+        }
+    }
+
+    fun copyInstalledToProject(plugin: InstalledPlugin) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                graph.pluginDev.copyInstalled(plugin.id, "copy-" + plugin.id.replace('.', '_'))
+            }.onSuccess {
+                _message.value = "已复制为工程：$it"
+            }.onFailure {
+                _error.value = it.message ?: "复制失败"
+            }
+        }
+    }
+
+    fun loadRegistrations() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { graph.pluginRuntime.ensureAllRegistrations() }
+        }
+    }
+
+    suspend fun renderPluginUi(plugin: InstalledPlugin, moduleId: String): Result<String> =
+        graph.pluginRuntime.renderUi(plugin, moduleId)
+
+    suspend fun dispatchPluginUiEvent(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        eventId: String,
+        valueJson: String?,
+    ): Result<String> = graph.pluginRuntime.dispatchUiEvent(plugin, moduleId, eventId, valueJson)
+
+    suspend fun callPluginUiController(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        controllerId: String,
+        interfaceName: String,
+        methodName: String,
+        argsJson: String,
+    ): String = graph.pluginRuntime.callUiController(
+        plugin,
+        moduleId,
+        controllerId,
+        interfaceName,
+        methodName,
+        argsJson,
+    )
+
+    suspend fun callPluginUiHandler(
+        plugin: InstalledPlugin,
+        moduleId: String,
+        eventId: String,
+        payloadJson: String,
+    ): String = graph.pluginRuntime.callUiHandler(plugin, moduleId, eventId, payloadJson)
+
+    suspend fun loadPluginEnv(pluginId: String): Map<String, String> =
+        graph.pluginRuntime.readPluginEnv(pluginId)
+
+    suspend fun loadPluginEnvKeys(pluginId: String): List<String> =
+        graph.pluginRuntime.pluginEnvKeys(pluginId)
+
+    suspend fun savePluginEnv(pluginId: String, values: Map<String, String>) =
+        graph.pluginRuntime.savePluginEnv(pluginId, values)
+}
