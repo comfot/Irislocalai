@@ -51,6 +51,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.iris.moew.memory.DiaryEntry
+import com.iris.moew.memory.KbText
 import com.iris.moew.memory.KnowledgeDocument
 import com.iris.moew.memory.MemoryItem
 import com.iris.moew.memory.MemoryType
@@ -84,11 +85,12 @@ internal fun MemoryPage(viewModel: MemoryViewModel = viewModel()) {
             val text = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     val bytes = input.readBytes()
-                    if (bytes.size > 4 * 1024 * 1024) null else String(bytes, Charsets.UTF_8)
+                    // 编码探测：BOM/无 BOM UTF-16/严格 UTF-8/GB18030/Big5，修复 GBK 文件导入乱码。
+                    if (bytes.size > 32 * 1024 * 1024) null else String(bytes, KbText.detectEncoding(bytes))
                 }
             }.getOrNull()
             if (text == null) {
-                notice = "导入失败：仅支持 4 MB 以内的文本文件"
+                notice = "导入失败：仅支持 32 MB 以内的文本文件"
             } else {
                 viewModel.importKnowledge(text, uri.lastPathSegment.orEmpty())
                 notice = "已导入知识文档"

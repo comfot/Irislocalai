@@ -69,11 +69,16 @@ data class WorldBookSettings(
 /** 简化版世界书扫描：常驻 + 关键词 + 二级逻辑 + 概率 + Token 预算。 */
 object LorebookResolver {
 
+    /**
+     * 常驻优先，同序按 order；预算取书内 tokenBudget 与上下文 10% 的较小值，
+     * 超 token 预算的条目跳过继续尝试后续较小的，而不是从首个超限处全部截断。
+     */
     fun resolve(
         books: List<Lorebook>,
         text: String,
         history: List<String>,
         settings: WorldBookSettings,
+        contextTokens: Int = 0,
     ): List<LorebookEntry> {
         val historyWindow = history.takeLast(settings.scanDepth.coerceAtLeast(0))
         val active = mutableListOf<LorebookEntry>()
@@ -99,14 +104,32 @@ object LorebookResolver {
             }
         }
 
-        var budget = max(64, settings.tokenBudget) * 4
+        val budget = max(
+            64,
+            if (contextTokens > 0) minOf(settings.tokenBudget, contextTokens / 10)
+            else settings.tokenBudget,
+        )
+        var remaining = budget
         return active
-            .sortedBy { it.order }
-            .takeWhile { entry ->
-                if (budget <= 0) return@takeWhile false
-                budget -= entry.content.length + 16
-                true
+            .sortedWith(compareByDescending<LorebookEntry> { it.constant }.thenBy { it.order })
+            .mapNotNull { entry ->
+                val tokens = estimateEntryTokens(entry)
+                if (tokens > remaining) return@mapNotNull null
+                remaining -= tokens
+                entry
             }
+    }
+
+    /** CJK 约一字一 token，其余按 4 字符一 token，与 PromptBudget 同口径。 */
+    private fun estimateEntryTokens(entry: LorebookEntry): Int {
+        var cjk = 0
+        var other = 0
+        for (char in entry.content) {
+            if (char.code in 0x2E80..0x9FFF || char.code in 0x3400..0x4DBF ||
+                char.code in 0xF900..0xFAFF || char.code in 0x30000..0x3134F
+            ) cjk++ else other++
+        }
+        return cjk + (other + 3) / 4
     }
 
     private fun matches(haystack: String, entry: LorebookEntry): Boolean {

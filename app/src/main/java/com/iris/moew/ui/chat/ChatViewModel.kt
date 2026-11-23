@@ -30,6 +30,7 @@ import com.iris.moew.data.StreamingAsrProvider
 import com.iris.moew.agent.subagent.SubAgentDefinition
 import com.iris.moew.agent.subagent.SubAgentRunResult
 import com.iris.moew.agent.subagent.SubAgentToolMode
+import com.iris.moew.character.CardMacros
 import com.iris.moew.character.CharacterEntry
 import com.iris.moew.data.AppSettings
 import com.iris.moew.data.ContextStrategy
@@ -703,6 +704,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         graph.settings.update { it.copy(planMode = enabled) }
     }
 
+    /** 角色会话为空时，随机选一条开场白（含备选）过宏后作为首条助手消息。 */
+    private fun appendGreetingIfEmpty(conversation: Conversation) {
+        if (conversation.messages.isNotEmpty() || conversation.space != Space.LIFE) return
+        val settings = graph.settings.current
+        val card = graph.characters.get(settings.characterId)?.card ?: return
+        val options = buildList {
+            add(card.firstMes)
+            addAll(card.alternateGreetings)
+        }.filter { it.isNotBlank() }
+        if (options.isEmpty()) return
+        val greeting = CardMacros.apply(
+            text = options.random(),
+            charName = card.charName,
+            userName = settings.userName,
+            originalSystemPrompt = settings.systemPrompt,
+            seed = conversation.id.hashCode(),
+        )
+        if (greeting.isBlank()) return
+        store.appendMessage(
+            conversation.id,
+            ChatMessage(store.newMessageId(), ChatRole.ASSISTANT, greeting),
+        )
+    }
+
     private fun sendFromPlugin(text: String) {
         val value = text.trim()
         if (value.isEmpty() || _running.value) return
@@ -727,6 +752,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         workspaceId = graph.workspaces.active()?.id.orEmpty(),
                         characterId = if (space.value == Space.LIFE) lifeCharacterId() else "",
                     ).also { _currentId.value = it.id }
+                appendGreetingIfEmpty(conversation)
                 val promptDecision = graph.pluginRuntime.promptInput(conversation.id, text, "chat")
                 if (promptDecision?.action == "block" || promptDecision?.action == "consume") {
                     Toast.makeText(
@@ -881,23 +907,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 val characterBlock = if (settings.space == Space.LIFE && character != null) {
+                    val macroSeed = conversation.id.hashCode()
+                    fun mac(value: String) = CardMacros.apply(
+                        text = value,
+                        charName = character.charName,
+                        userName = settings.userName,
+                        originalSystemPrompt = settings.systemPrompt,
+                        seed = macroSeed,
+                    )
                     buildString {
                         appendLine("【当前角色】${character.charName}")
                         if (character.description.isNotBlank()) {
-                            appendLine("描述：${character.description}")
+                            appendLine("描述：${mac(character.description)}")
                         }
                         if (character.personality.isNotBlank()) {
-                            appendLine("性格：${character.personality}")
+                            appendLine("性格：${mac(character.personality)}")
                         }
                         if (character.scenario.isNotBlank()) {
-                            appendLine("场景：${character.scenario}")
+                            appendLine("场景：${mac(character.scenario)}")
                         }
                         if (character.systemPrompt.isNotBlank()) {
-                            appendLine("角色系统提示：${character.systemPrompt}")
+                            appendLine("角色系统提示：${mac(character.systemPrompt)}")
                         }
-                        if (character.postHistory.isNotBlank()) {
-                            appendLine("历史后指令：${character.postHistory}")
-                        }
+                        // postHistory 不进系统提示：拼到本轮用户消息尾，保 KV 前缀稳定。
                     }
                 } else {
                     ""
@@ -909,6 +941,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             text = text,
                             history = history.map { it.content },
                             settings = store.settings.value,
+                            contextTokens = settings.contextLength,
                         ),
                     )
                 }
@@ -928,7 +961,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             append(graph.memory.briefContext(
                                 includeMemory = true,
                                 includeKnowledge = settings.knowledgeInChat,
-                                maxChars = 420,
+                                maxChars = (settings.contextLength * 15 / 100).coerceIn(420, 4096),
                                 query = text,
                             ))
                         }
@@ -1010,10 +1043,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (roleplayBlock.isNotBlank()) {
                         appendLine(roleplayBlock)
                     }
-                    if (loreBlock.isNotBlank()) {
-                        appendLine("【世界书】")
-                        appendLine(loreBlock)
-                    }
                     if (skillBlock.isNotBlank()) {
                         appendLine("【技能】")
                         appendLine(skillBlock)
@@ -1057,13 +1086,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     promptSuffix,
                     conversation.space.name,
                 )
+                // 世界书命中与卡 postHistory 挂本轮用户消息尾部：不进系统提示，保 KV 前缀稳定。
+                val turnSuffix = buildString {
+                    if (loreBlock.isNotBlank()) {
+                        appendLine("【世界书】")
+                        appendLine(loreBlock)
+                    }
+                    if (settings.space == Space.LIFE && character?.postHistory?.isNotBlank() == true) {
+                        appendLine("【历史后指令】")
+                        appendLine(
+                            CardMacros.apply(
+                                text = character.postHistory,
+                                charName = character.charName,
+                                userName = settings.userName,
+                                originalSystemPrompt = settings.systemPrompt,
+                                seed = conversation.id.hashCode(),
+                            ),
+                        )
+                    }
+                }
+                val effectiveUserInput = if (turnSuffix.isNotBlank()) "$userInput\n\n$turnSuffix" else userInput
                 val startInThink = settings.deepThinking &&
                     (engineState.value as? EngineState.Ready)?.details?.thinkingPrefilled == true
                 val pendingReasoning = StringBuilder()
                 var reasoningStartedAt = 0L
                 var reasoningLastAt = 0L
                 graph.agent.run(
-                    userInput = userInput,
+                    userInput = effectiveUserInput,
                     userImages = userImages,
                     history = finalHistory,
                     params = SamplingConfig(

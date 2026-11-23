@@ -1,11 +1,13 @@
 package com.iris.moew.character
 
 import kotlinx.serialization.json.JsonObject
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Base64
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import java.util.zip.Inflater
+import java.util.zip.ZipInputStream
 
 /**
  * 角色卡导入导出：
@@ -39,8 +41,7 @@ object CardCodec {
         if (bytes.size > MAX_BYTES) throw CardFormatException(CardFormatException.Kind.TOO_BIG)
         return when {
             isPng(bytes) -> decodePng(bytes)
-            fileName.endsWith(".charx", ignoreCase = true) ->
-                throw CardFormatException(CardFormatException.Kind.NOT_A_CARD)
+            fileName.endsWith(".charx", ignoreCase = true) -> decodeCharx(bytes)
             else -> {
                 val card = runCatching {
                     CardSpec.parse(String(bytes, Charsets.UTF_8))
@@ -58,6 +59,36 @@ object CardCodec {
     }
 
     data class Chunk(val type: String, val data: ByteArray)
+
+    /**
+     * CHARX = ZIP 包：card.json + 资产（icon.png 等）。
+     * 资产仅用于头像回退，卡内 embeded:// 深链不展开（IrisMoew 不存卡内资产）。
+     */
+    private fun decodeCharx(bytes: ByteArray): Imported {
+        var cardJson: ByteArray? = null
+        var avatar: ByteArray? = null
+        runCatching {
+            ZipInputStream(ByteArrayInputStream(bytes)).use { stream ->
+                while (true) {
+                    val entry = stream.nextEntry ?: break
+                    val name = entry.name.substringAfterLast('/')
+                    when {
+                        name.equals("card.json", ignoreCase = true) && cardJson == null ->
+                            cardJson = stream.readBytes()
+                        !entry.isDirectory && name.substringAfterLast('.').lowercase() in
+                            setOf("png", "jpg", "jpeg", "webp") && avatar == null ->
+                            avatar = stream.readBytes()
+                    }
+                    stream.closeEntry()
+                }
+            }
+        }
+        val json = cardJson ?: throw CardFormatException(CardFormatException.Kind.NOT_A_CARD)
+        val card = runCatching {
+            CardSpec.parse(String(json, Charsets.UTF_8))
+        }.getOrElse { throw CardFormatException(CardFormatException.Kind.NOT_A_CARD) }
+        return Imported(card, avatar = avatar, format = "CHARX")
+    }
 
     fun chunks(png: ByteArray): List<Chunk> {
         val out = ArrayList<Chunk>()

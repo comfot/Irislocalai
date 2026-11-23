@@ -14,7 +14,10 @@ import kotlinx.serialization.json.intOrNull
  * 长期记忆的检索与写入。常规对话只注入摘要，模型在需要精确回忆时调用 recall，
  * 由 MemoryStore 做向量 + 关键词混合检索，覆盖记忆库、日记与知识库。
  */
-class MemoryTool(private val memory: MemoryStore) : Tool {
+class MemoryTool(
+    private val memory: MemoryStore,
+    private val enabled: () -> Boolean = { true },
+) : Tool {
 
     override val name: String = "memory"
 
@@ -25,13 +28,17 @@ class MemoryTool(private val memory: MemoryStore) : Tool {
             "示例：{\"op\":\"recall\",\"query\":\"上次说的猫\"} 或 " +
             "{\"op\":\"save\",\"title\":\"咖啡偏好\",\"content\":\"用户喜欢冰美式\",\"tags\":[\"生活\"],\"importance\":4}"
 
-    override suspend fun execute(arguments: JsonObject): String =
-        when (val op = arguments.string("op").lowercase()) {
+    override suspend fun execute(arguments: JsonObject): String {
+        if (!enabled()) {
+            return "长期记忆已关闭：不注入记忆、不提供检索与保存。需要开启请到 设置 › 上下文推理 › 记忆与知识库。"
+        }
+        return when (val op = arguments.string("op").lowercase()) {
             "recall", "search" -> recall(arguments)
             "save" -> save(arguments)
             "" -> "缺少 op 参数：recall 或 save"
             else -> "不支持的操作「$op」：可用 recall / save"
         }
+    }
 
     private suspend fun recall(arguments: JsonObject): String {
         val query = arguments.string("query").trim()

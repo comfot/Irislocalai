@@ -25,6 +25,7 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
@@ -76,6 +77,11 @@ data class MemoryItem(
     val lastAccessedAt: Long = 0L,
 )
 
+data class KnowledgeChunk(
+    val index: Int,
+    val text: String,
+)
+
 data class KnowledgeDocument(
     val id: String = UUID.randomUUID().toString(),
     val title: String = "",
@@ -84,6 +90,7 @@ data class KnowledgeDocument(
     val tags: List<String> = emptyList(),
     val enabled: Boolean = true,
     val updatedAt: Long = System.currentTimeMillis(),
+    val chunks: List<KnowledgeChunk> = emptyList(),
 )
 
 data class MemoryRecallHit(
@@ -149,6 +156,26 @@ class MemoryStore(
     private val vectorsFile = File(dir, VECTORS)
     private val vectorCache = ConcurrentHashMap<String, CachedVector>().apply {
         putAll(loadVectors())
+    }
+
+    /** vectors.json 头部：向量归属的嵌入模型 key 与维度；模型不符时作废重建。 */
+    private var stampKey: String? = null
+    private var stampDim: Int = 0
+    private var stampChecked = false
+    private var stampRebuilt = false
+
+    /** 云端 key/维度与已存 stamp 不符时作废旧向量；重建期 recall 只用词面检索。 */
+    private fun ensureVectorStamp(vector: MemoryVector) {
+        if (stampChecked || vector.key == HashEmbedding.KEY) return
+        stampChecked = true
+        val stale = stampKey != null && (stampKey != vector.key || stampDim != vector.values.size)
+        stampKey = vector.key
+        stampDim = vector.values.size
+        if (stale) {
+            vectorCache.clear()
+            stampRebuilt = true
+            persistVectors()
+        }
     }
     private val handledFile = File(dir, HANDLED_DIARY)
     private val linksFile = File(dir, LINKS)
@@ -430,6 +457,7 @@ class MemoryStore(
             title = title,
             content = text,
             source = fileName,
+            chunks = KbText.chunk(text).mapIndexed { index, piece -> KnowledgeChunk(index, piece) },
         )
         addKnowledge(document)
         return document
@@ -591,37 +619,55 @@ class MemoryStore(
                                 ?.takeIf { it.key == vector.key }
                                 ?.values
                             if (values != null) {
-                                vectorCache[candidate.id] = CachedVector(
-                                    vector.key,
-                                    candidate.text.hashCode(),
-                                    values,
-                                )
+                                cacheVector(candidate, vector.key, values)
                                 vectorsChanged = true
                             }
                         }
                     }
                 }
             }
+            ensureVectorStamp(vector)
             vector
         }
-        val tokens = queryTokens(cleanQuery)
-        val scored = candidates.map { candidate ->
-            val vector = if (queryVector.values.isEmpty()) {
-                null
-            } else {
-                vectorFor(candidate, queryVector.key)
-            }
-            val semantic = if (vector == null) 0f else {
-                HashEmbedding.cosine(queryVector.values, vector).coerceIn(0f, 1f)
-            }
-            val lexical = lexicalScore(candidate, tokens)
-            val score = if (vector != null) {
-                semantic * 0.6f + lexical * 0.3f + salience(candidate) * 0.1f
-            } else {
-                lexical * 0.8f + salience(candidate) * 0.2f
-            }
-            candidate to score
-        }.sortedByDescending { it.second }
+        val tokens = KbText.effectiveTokens(cleanQuery)
+        if (tokens.isEmpty() && KbText.isPureAck(cleanQuery)) {
+            return@withContext MemoryRecallResult(cleanQuery, "none", emptyList())
+        }
+        val bm25 = KbText.Bm25(candidates.map { candidate -> KbText.tokenize(candidate.text) })
+        val bm25Scores = bm25.score(tokens)
+        val coverages = bm25.coverage(tokens)
+        val semanticScores = candidates.map { candidate ->
+            val vector = if (queryVector.values.isEmpty()) null else vectorFor(candidate, queryVector.key)
+            if (vector == null) 0f
+            else HashEmbedding.cosine(queryVector.values, vector).coerceIn(0f, 1f)
+        }
+        // RRF 融合：余弦与 BM25 各取前 20；无向量时只用关键词。
+        val semanticRanking = candidates.indices
+            .filter { semanticScores[it] > 0f }
+            .sortedByDescending { semanticScores[it] }
+            .take(20)
+        val bm25Ranking = candidates.indices
+            .filter { bm25Scores[it] > 0f }
+            .sortedByDescending { bm25Scores[it] }
+            .take(20)
+        val fused = if (semanticRanking.isEmpty()) {
+            KbText.rrf(listOf(bm25Ranking))
+        } else {
+            KbText.rrf(listOf(semanticRanking, bm25Ranking))
+        }
+        // 关键词强命中保底：覆盖度达标或整词原样命中的片段不被向量分数挤掉。
+        val strongHits = candidates.indices.filter { index ->
+            coverages[index] >= 0.6f ||
+                KbText.containsWholeWord(candidates[index].content, cleanQuery)
+        }.toSet()
+        val scored = candidates.indices.mapNotNull { index ->
+            val base = fused[index] ?: return@mapNotNull null
+            val bonus = if (index in strongHits) 1f else 0f
+            candidates[index] to (base + salience(candidates[index]) * 0.05f + bonus)
+        }.sortedWith(
+            compareByDescending<Pair<RecallCandidate, Float>> { it.second }
+                .thenByDescending { salience(it.first) },
+        )
 
         val top = scored.take(wanted)
         val now = System.currentTimeMillis()
@@ -638,6 +684,7 @@ class MemoryStore(
         val vectorMode = when {
             queryVector.key != HashEmbedding.KEY -> queryVector.key
             embeddingClient == null -> "${HashEmbedding.KEY}（回退：未配置向量模型）"
+            stampRebuilt -> "${HashEmbedding.KEY}（回退：嵌入模型已变，旧向量已作废重建，当前只用词面检索）"
             status == EmbeddingStatus.READY -> "${HashEmbedding.KEY}（回退：云端向量请求失败）"
             else -> "${HashEmbedding.KEY}（回退：${status?.label ?: "未知原因"}）"
         }
@@ -764,41 +811,84 @@ class MemoryStore(
             _knowledge.value
                 .filter { it.enabled && it.content.isNotBlank() }
                 .forEach { doc ->
-                    add(
-                        RecallCandidate(
-                            kind = RecallKind.KNOWLEDGE,
-                            id = doc.id,
-                            title = doc.title,
-                            content = doc.content,
-                            date = "",
-                            tags = doc.tags,
-                            importance = 0.5f,
-                            updatedAt = doc.updatedAt,
-                            text = "${doc.title} ${doc.content} ${doc.tags.joinToString(" ")}",
-                        ),
-                    )
+                    val chunks = doc.chunks
+                    if (chunks.isEmpty()) {
+                        add(
+                            RecallCandidate(
+                                kind = RecallKind.KNOWLEDGE,
+                                id = doc.id,
+                                title = knowledgeTitle(doc, 0),
+                                content = doc.content,
+                                date = "",
+                                tags = doc.tags,
+                                importance = 0.5f,
+                                updatedAt = doc.updatedAt,
+                                text = "${doc.title} ${doc.content} ${doc.tags.joinToString(" ")}",
+                            ),
+                        )
+                    } else {
+                        chunks.forEach { chunk ->
+                            add(
+                                RecallCandidate(
+                                    kind = RecallKind.KNOWLEDGE,
+                                    id = "${doc.id}:${chunk.index}",
+                                    title = knowledgeTitle(doc, chunk.index),
+                                    content = chunk.text,
+                                    date = "",
+                                    tags = doc.tags,
+                                    importance = 0.5f,
+                                    updatedAt = doc.updatedAt,
+                                    text = "${doc.title} ${chunk.text} ${doc.tags.joinToString(" ")}",
+                                ),
+                            )
+                        }
+                    }
                 }
         }
     }
 
+    /** 注入出处：《书名》（文件 · 第 n 段）。无分块的旧文档只给《书名》。 */
+    private fun knowledgeTitle(doc: KnowledgeDocument, chunkIndex: Int): String {
+        val base = "《${doc.title.ifBlank { "未命名" }}》"
+        val from = if (doc.source.isBlank() || doc.source.startsWith(doc.title)) "" else doc.source
+        val at = if (doc.chunks.isEmpty()) "" else " · 第 ${chunkIndex + 1} 段"
+        val tail = listOf(from, at).filter { it.isNotBlank() }.joinToString("")
+        return if (tail.isBlank()) base else "$base（$tail）"
+    }
+
+    /**
+     * 缓存键按「候选 id + 嵌入模型 key」分桶：云端失败回退哈希时不再互相覆盖，
+     * 网络抖动恢复后云端向量仍可复用。
+     */
+    private fun cacheKey(candidateId: String, key: String): String = "$candidateId:$key"
+
+    private fun cacheVector(candidate: RecallCandidate, key: String, values: FloatArray) {
+        vectorCache[cacheKey(candidate.id, key)] = CachedVector(
+            key,
+            candidate.text.hashCode(),
+            values,
+        )
+    }
+
     private suspend fun vectorFor(candidate: RecallCandidate, key: String): FloatArray? {
         val textHash = candidate.text.hashCode()
-        val cached = vectorCache[candidate.id]
+        val bucketKey = cacheKey(candidate.id, key)
+        val cached = vectorCache[bucketKey]
         if (cached != null && cached.key == key && cached.textHash == textHash) {
             val now = System.currentTimeMillis()
             if (now - cached.usedAt > VECTOR_TOUCH_INTERVAL_MS) {
-                vectorCache[candidate.id] = cached.copy(usedAt = now)
+                vectorCache[bucketKey] = cached.copy(usedAt = now)
             }
             return cached.values
         }
         if (key != HashEmbedding.KEY) return null
         val values = HashEmbedding.embed(candidate.text)
-        vectorCache[candidate.id] = CachedVector(key, textHash, values)
+        cacheVector(candidate, key, values)
         return values
     }
 
     private fun cachedVector(candidate: RecallCandidate, key: String): FloatArray? {
-        val cached = vectorCache[candidate.id] ?: return null
+        val cached = vectorCache[cacheKey(candidate.id, key)] ?: return null
         return cached.values.takeIf {
             cached.key == key && cached.textHash == candidate.text.hashCode()
         }
@@ -1034,15 +1124,18 @@ class MemoryStore(
                 _diary.value.forEach { add(it.id) }
                 _knowledge.value.forEach { add(it.id) }
             }
-            vectorCache.keys.retainAll(liveIds)
+            // 双桶键为「id:key」；live 过滤按候选 id 前缀匹配。
+            vectorCache.keys.retainAll { cacheKey ->
+                cacheKey.substringBeforeLast(':') in liveIds
+            }
             val kept = vectorCache.entries
                 .sortedByDescending { it.value.usedAt }
                 .take(MAX_VECTOR_CACHE)
             vectorCache.keys.retainAll(kept.map { it.key }.toSet())
             val vectors = buildJsonArray {
-                kept.forEach { (id, cached) ->
+                kept.forEach { (cacheKey, cached) ->
                     addJsonObject {
-                        put("id", id)
+                        put("id", cacheKey)
                         put("key", cached.key)
                         put("hash", cached.textHash)
                         put("usedAt", cached.usedAt)
@@ -1052,7 +1145,16 @@ class MemoryStore(
             }
             runCatching {
                 vectorsFile.parentFile?.mkdirs()
-                vectorsFile.writeText(JsonObject(mapOf("vectors" to vectors)).toString())
+                val root = buildJsonObject {
+                    if (stampKey != null) {
+                        put("stamp", buildJsonObject {
+                            put("key", stampKey)
+                            put("dim", stampDim)
+                        })
+                    }
+                    put("vectors", vectors)
+                }
+                vectorsFile.writeText(root.toString())
             }
         }
     }
@@ -1060,7 +1162,12 @@ class MemoryStore(
     private fun loadVectors(): Map<String, CachedVector> {
         if (!vectorsFile.isFile) return emptyMap()
         return runCatching {
-            Json.parseToJsonElement(vectorsFile.readText()).jsonObject["vectors"]
+            val root = Json.parseToJsonElement(vectorsFile.readText()).jsonObject
+            (root["stamp"] as? JsonObject)?.let { stamp ->
+                stampKey = stamp.string("key")
+                stampDim = stamp.int("dim") ?: 0
+            }
+            root["vectors"]
                 ?.jsonArray
                 ?.mapNotNull { element ->
                     val obj = element as? JsonObject ?: return@mapNotNull null

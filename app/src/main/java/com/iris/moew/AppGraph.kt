@@ -244,7 +244,7 @@ class AppGraph(
         register(ListFilesTool(context, code, workspaces))
         register(SearchFilesTool(context, code, workspaces))
         register(FetchUrlTool())
-        register(MemoryTool(memory))
+        register(MemoryTool(memory) { settings.settings.value.memoryEnabled })
         register(MotionControlTool(toolClips, motionAssets, motionBindings, characterModels, vrmaMotions, settings))
         register(ExpressionControlTool(expressionBindings, characterModels, settings))
         register(ShellTool(code, workspaces, context))
