@@ -578,7 +578,7 @@ internal fun VoiceInputDialog(
                 }
                 Text(
                     text = when {
-                        recording -> "正在录音，最多 6 秒"
+                        recording -> "正在录音，最多 15 秒"
                         result.isNotBlank() -> result
                         else -> "点击下方按钮开始录音，识别后可直接插入输入框。"
                     },

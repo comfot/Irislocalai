@@ -2,6 +2,7 @@ package com.iris.moew.data
 
 import android.content.Context
 import com.iris.moew.storage.AppStorage
+import com.iris.moew.task.TaskProgress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,24 +85,25 @@ class ModelDownloadManager(
 
         jobs[id] = scope.launch {
             update(id) { it.copy(status = DownloadStatus.RUNNING) }
+            TaskProgress.begin(id, TaskProgress.Kind.DOWNLOAD, fileName) { cancel(id) }
+            val report: (Long, Long) -> Unit = { done, total ->
+                update(id) {
+                    it.copy(
+                        downloadedBytes = done,
+                        totalBytes = if (total > 0) total else it.totalBytes,
+                    )
+                }
+                val fraction = if (total > 0) done.toFloat() / total else null
+                TaskProgress.progress(
+                    id,
+                    fraction?.takeIf { f -> f.isFinite() },
+                    if (total > 0) "${if (fraction != null) "${(fraction * 100).toInt()}% · " else ""}${formatBytes(done)} / ${formatBytes(total)}" else formatBytes(done),
+                )
+            }
             val result = if (origin == ModelSource.MODELSCOPE) {
-                modelScope.download(repoId, fileName, modelsDir) { done, total ->
-                    update(id) {
-                        it.copy(
-                            downloadedBytes = done,
-                            totalBytes = if (total > 0) total else it.totalBytes,
-                        )
-                    }
-                }
+                modelScope.download(repoId, fileName, modelsDir, onProgress = report)
             } else {
-                client.download(repoId, fileName, modelsDir, source) { done, total ->
-                    update(id) {
-                        it.copy(
-                            downloadedBytes = done,
-                            totalBytes = if (total > 0) total else it.totalBytes,
-                        )
-                    }
-                }
+                client.download(repoId, fileName, modelsDir, source, onProgress = report)
             }
             result.onSuccess { file ->
                 update(id) {
@@ -112,10 +114,12 @@ class ModelDownloadManager(
                         path = file.absolutePath,
                     )
                 }
+                TaskProgress.finish(id, TaskProgress.Phase.DONE, "已完成 ${formatBytes(file.length())}")
             }.onFailure { error ->
                 val cancelled = jobs[id]?.isCancelled == true
                 if (cancelled) {
                     update(id) { it.copy(status = DownloadStatus.CANCELLED) }
+                    TaskProgress.finish(id, TaskProgress.Phase.STOPPED, "已取消")
                 } else {
                     update(id) {
                         it.copy(
@@ -123,11 +127,19 @@ class ModelDownloadManager(
                             message = error.message ?: "下载失败",
                         )
                     }
+                    TaskProgress.finish(id, TaskProgress.Phase.FAILED, error.message ?: "下载失败")
                 }
             }
             jobs.remove(id)
         }
         return task
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024 * 1024 -> "%.2f GB".format(bytes / 1024f / 1024 / 1024)
+        bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / 1024f / 1024)
+        bytes >= 1024L -> "%.0f KB".format(bytes / 1024f)
+        else -> "$bytes B"
     }
 
     fun cancel(id: String) {

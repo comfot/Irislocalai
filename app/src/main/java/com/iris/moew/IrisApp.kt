@@ -2,6 +2,7 @@ package com.iris.moew
 
 import android.app.Application
 import android.os.Build
+import com.iris.moew.notify.IslandOverlay
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 class IrisApp : Application() {
@@ -21,6 +22,7 @@ class IrisApp : Application() {
         graph.integrations.startAll()
         graph.memory.onAppOpened(graph.settings.current.memoryAutoDiary)
         graph.pluginRuntime.notifyAppLifecycle("application_on_create")
+        IslandOverlay.start(this)
     }
 
     override fun onTrimMemory(level: Int) {

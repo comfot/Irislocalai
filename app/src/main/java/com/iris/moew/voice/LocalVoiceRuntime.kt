@@ -283,9 +283,18 @@ class LocalVoiceRuntime(
     }
 
     private fun requireFiles(vararg paths: String) {
-        val missing = paths.filter { !File(it).exists() }
+        val missing = paths.filter { path ->
+            val file = File(path)
+            // 模型放在公共目录且重装后属主变化时，exists 为真但读不到；
+            // onnxruntime 在原生构造里直接 SIGABRT，先试读 1 字节给出友好提示。
+            val unreadable = file.exists() && runCatching {
+                file.inputStream().use { it.read() }
+            }.isFailure
+            !file.exists() || unreadable
+        }
         check(missing.isEmpty()) {
-            "语音模型文件不完整（缺少 ${missing.joinToString { File(it).name }}），请删除后重新下载"
+            val names = missing.joinToString { File(it).name }
+            "语音模型文件不完整或无权限读取（$names），请在设置里重新导入或授予文件访问权限"
         }
     }
 

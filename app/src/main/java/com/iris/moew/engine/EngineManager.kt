@@ -3,6 +3,7 @@ package com.iris.moew.engine
 import com.iris.moew.data.ModelProfile
 import com.iris.moew.data.ModelRole
 import com.iris.moew.data.SettingsRepository
+import com.iris.moew.task.TaskProgress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +51,7 @@ class EngineManager(
             activeProfile.role(ModelRole.LANGUAGE).contextLength,
         ).coerceAtLeast(1024)
         _state.value = EngineState.Loading(0f)
+        TaskProgress.begin("engine-load", TaskProgress.Kind.LOAD, "加载模型")
         try {
             val created = engineFactory(config.backend, activeProfile)
             val details = created.load(
@@ -66,14 +68,17 @@ class EngineManager(
                 ),
             ) { progress ->
                 _state.value = EngineState.Loading(progress.coerceIn(0f, 1f))
+                TaskProgress.progress("engine-load", progress.coerceIn(0f, 1f))
             }
             engine = created
             _state.value = EngineState.Ready(details)
+            TaskProgress.finish("engine-load", TaskProgress.Phase.DONE, "模型已就绪")
             true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             _state.value = EngineState.Failed(e.message ?: "引擎加载失败")
+            TaskProgress.finish("engine-load", TaskProgress.Phase.FAILED, e.message ?: "引擎加载失败")
             false
         }
     }
