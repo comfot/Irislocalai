@@ -73,6 +73,21 @@ internal fun BackendPage(settings: AppSettings, engineState: EngineState, viewMo
                 summary = "GPU 加载失败时自动降级，避免模型无法使用",
                 checked = settings.backendFallback,
             ) { on -> viewModel.update { it.copy(backendFallback = on) } }
+            if (settings.backend == Backend.CPU) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = { viewModel.update { it.copy(backend = Backend.GPU) } }) {
+                        Text("重新检测 GPU")
+                    }
+                }
+                Text(
+                    text = "上次 GPU 失败后已回退 CPU。换模型或更新驱动后可重新切回 GPU 检测。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         SettingsCard("运行状态") {

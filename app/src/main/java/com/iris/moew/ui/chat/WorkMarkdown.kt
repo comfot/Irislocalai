@@ -426,7 +426,7 @@ private fun WorkMathBlock(text: String) {
         ) {
             SelectionContainer {
                 Text(
-                    text = text,
+                    text = LaTeXText.render(text),
                     fontFamily = FontFamily.Monospace,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
@@ -640,7 +640,7 @@ internal fun AnnotatedString.Builder.appendInline(
         if (text.startsWith("\\(", i)) {
             val end = text.indexOf("\\)", i + 2)
             if (end > i + 2) {
-                withStyle(base.merge(math)) { append(text.substring(i + 2, end)) }
+                withStyle(base.merge(math)) { append(LaTeXText.render(text.substring(i + 2, end))) }
                 i = end + 2
                 continue
             }
@@ -653,7 +653,13 @@ internal fun AnnotatedString.Builder.appendInline(
         if (allowCode && text[i] == '`') {
             val end = text.indexOf('`', i + 1)
             if (end > i + 1) {
-                withStyle(base.merge(code)) { append(text.substring(i + 1, end)) }
+                val codeContent = text.substring(i + 1, end)
+                // 模型常把公式写进反引号（如 `2^{2m}+3^{2m}`）；含强数学特征时按公式渲染。
+                if (LaTeXText.looksMathy(codeContent)) {
+                    withStyle(base.merge(math)) { append(LaTeXText.render(codeContent)) }
+                } else {
+                    withStyle(base.merge(code)) { append(codeContent) }
+                }
                 i = end + 1
                 continue
             }
@@ -662,7 +668,7 @@ internal fun AnnotatedString.Builder.appendInline(
         if (text.startsWith("$$", i)) {
             val end = findMathEndDouble(text, i + 2)
             if (end > i + 2) {
-                withStyle(base.merge(math)) { append(text.substring(i + 2, end)) }
+                withStyle(base.merge(math)) { append(LaTeXText.render(text.substring(i + 2, end))) }
                 i = end + 2
                 continue
             }
@@ -671,7 +677,7 @@ internal fun AnnotatedString.Builder.appendInline(
         if (text[i] == '$' && (i + 1 >= text.length || !text[i + 1].isWhitespace())) {
             val end = findMathEnd(text, i + 1, '$')
             if (end > i + 1 && !text[end - 1].isWhitespace()) {
-                withStyle(base.merge(math)) { append(text.substring(i + 1, end)) }
+                withStyle(base.merge(math)) { append(LaTeXText.render(text.substring(i + 1, end))) }
                 i = end + 1
                 continue
             }

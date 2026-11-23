@@ -1,9 +1,12 @@
 package com.iris.moew.ui.chat
 
 import android.app.Application
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.BatteryManager
 import android.provider.OpenableColumns
 import android.util.Base64
 import android.widget.Toast
@@ -60,6 +63,7 @@ import com.iris.moew.workspace.WorkspaceFs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -704,6 +708,38 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         graph.settings.update { it.copy(planMode = enabled) }
     }
 
+    /** 过热暂停：电池温度达到上限时新回复等待降温，降到上限-3°C 自动继续；最多等 10 分钟。 */
+    private suspend fun awaitOverheatCooldown() {
+        val limit = graph.settings.current.overheatLimitCelsius
+        if (limit <= 0) return
+        var notified = false
+        var waited = 0L
+        while (batteryTemperature() >= limit && waited < 10 * 60_000L) {
+            if (!notified) {
+                notified = true
+                Toast.makeText(
+                    getApplication(),
+                    "电池温度过热（%.1f°C），暂停新回复，降到 %.1f°C 自动继续".format(
+                        batteryTemperature(),
+                        (limit - 3).toFloat(),
+                    ),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            delay(5_000)
+            waited += 5_000
+        }
+    }
+
+    private fun batteryTemperature(): Float {
+        val intent = getApplication<Application>().registerReceiver(
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+        )
+        val value = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
+        return if (value == Int.MIN_VALUE) 0f else value / 10f
+    }
+
     /** 角色会话为空时，随机选一条开场白（含备选）过宏后作为首条助手消息。 */
     private fun appendGreetingIfEmpty(conversation: Conversation) {
         if (conversation.messages.isNotEmpty() || conversation.space != Space.LIFE) return
@@ -753,6 +789,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         characterId = if (space.value == Space.LIFE) lifeCharacterId() else "",
                     ).also { _currentId.value = it.id }
                 appendGreetingIfEmpty(conversation)
+                awaitOverheatCooldown()
                 val promptDecision = graph.pluginRuntime.promptInput(conversation.id, text, "chat")
                 if (promptDecision?.action == "block" || promptDecision?.action == "consume") {
                     Toast.makeText(

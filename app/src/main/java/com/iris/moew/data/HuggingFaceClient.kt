@@ -165,10 +165,16 @@ class HuggingFaceClient(
             val append = existing > 0 && code == 206
             if (!append) part.delete()
 
+            // HF 对 LFS 文件把 SHA256 放在 X-Linked-Etag / ETag（带引号）。
+            val expectedSha256 = connection.getHeaderField("X-Linked-Etag")
+                ?: connection.getHeaderField("ETag")?.removeSurrounding("\"")
+
             var downloaded = if (append) existing else 0L
             val reported = connection.contentLengthLong
             val total = if (reported > 0) reported + downloaded else 0L
 
+            // 进度回调节流：200ms 一次，避免快网速下每秒几十次状态刷新拖垮 UI。
+            var lastReport = 0L
             FileOutputStream(part, append).use { output ->
                 connection.inputStream.use { input ->
                     val buffer = ByteArray(64 * 1024)
@@ -178,8 +184,21 @@ class HuggingFaceClient(
                         if (read < 0) break
                         output.write(buffer, 0, read)
                         downloaded += read
-                        onProgress(downloaded, total)
+                        val now = System.currentTimeMillis()
+                        if (now - lastReport >= 200 || downloaded >= total) {
+                            lastReport = now
+                            onProgress(downloaded, total)
+                        }
                     }
+                }
+            }
+
+            if (!expectedSha256.isNullOrBlank() && expectedSha256.length == 64) {
+                val actual = sha256(part)
+                if (!actual.equals(expectedSha256, ignoreCase = true)) {
+                    part.delete()
+                    target.delete()
+                    throw IOException("SHA-256 校验不符（期望 $expectedSha256，实际 $actual）")
                 }
             }
 
@@ -193,6 +212,19 @@ class HuggingFaceClient(
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun validateGguf(file: File, fileName: String) {

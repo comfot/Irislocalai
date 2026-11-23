@@ -173,6 +173,7 @@ class SettingsRepository(
             .putFloat(KEY_VIDEO_CALL_AR_FOOT, next.videoCallArFootOffset)
             .putBoolean(KEY_VIDEO_CALL_AR_VISUAL, next.videoCallArVisualTracking)
             .putBoolean(KEY_VIDEO_CALL_AR_SLAM, next.videoCallArSlam)
+            .putInt(KEY_OVERHEAT_LIMIT, next.overheatLimitCelsius)
             .putBoolean(KEY_VIDEO_CALL_AR_DEBUG, next.videoCallArDebug)
             .putString(KEY_MOTION_SOURCE, next.motionSource.name)
             .putString(KEY_VRM_MOTION_ENGINE, next.vrmMotionEngine.name)
@@ -347,6 +348,7 @@ class SettingsRepository(
         videoCallArFootOffset = prefs.getFloat(KEY_VIDEO_CALL_AR_FOOT, 0f),
         videoCallArVisualTracking = prefs.getBoolean(KEY_VIDEO_CALL_AR_VISUAL, false),
         videoCallArSlam = prefs.getBoolean(KEY_VIDEO_CALL_AR_SLAM, false),
+        overheatLimitCelsius = prefs.getInt(KEY_OVERHEAT_LIMIT, 0),
         videoCallArDebug = prefs.getBoolean(KEY_VIDEO_CALL_AR_DEBUG, true),
         motionSource = enumOf(prefs.getString(KEY_MOTION_SOURCE, null), MotionSource.NONE),
         vrmMotionEngine = enumOf(
@@ -575,6 +577,7 @@ class SettingsRepository(
         const val KEY_VIDEO_CALL_AR_FOOT = "video_call_ar_foot_offset"
         const val KEY_VIDEO_CALL_AR_VISUAL = "video_call_ar_visual_tracking"
         const val KEY_VIDEO_CALL_AR_SLAM = "video_call_ar_slam"
+        const val KEY_OVERHEAT_LIMIT = "overheat_limit_celsius"
         const val KEY_VIDEO_CALL_AR_DEBUG = "video_call_ar_slam_debug"
         const val KEY_MOTION_SOURCE = "motion_source"
         const val KEY_VRM_MOTION_ENGINE = "vrm_motion_engine"

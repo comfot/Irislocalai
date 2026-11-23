@@ -76,6 +76,8 @@ data class AppSettings(
     val videoCallArVisualTracking: Boolean = false,
     /** 实验性：用 MenthaAR/ORB-SLAM2 提供 6DoF 位姿，失败时回退 IMU + 光流。 */
     val videoCallArSlam: Boolean = false,
+    /** 电池温度过热暂停：0 关，其余为摄氏度上限（38–55）；到限暂停新回复，降 3°C 自动继续。 */
+    val overheatLimitCelsius: Int = 0,
     /** AR 舞台是否显示 SLAM 调试信息行。 */
     val videoCallArDebug: Boolean = true,
     val motionSource: MotionSource = MotionSource.NONE,

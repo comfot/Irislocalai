@@ -123,7 +123,7 @@ class WorkMarkdownTest {
         assertEquals(listOf<WorkBlock>(WorkBlock.Math("x^2+y^2"), WorkBlock.Paragraph("后文")), multiline)
 
         val single = inline("前文 \$\$x^2\$\$ 后文")
-        assertEquals("前文 x^2 后文", single.text)
+        assertEquals("前文 x² 后文", single.text)
 
         val bracket = parseWorkMarkdown("\\[\n\\frac{a}{b}\n\\]")
         assertEquals(listOf<WorkBlock>(WorkBlock.Math("\\frac{a}{b}")), bracket)
@@ -131,9 +131,9 @@ class WorkMarkdownTest {
 
     @Test
     fun `inline math is protected from markdown markers`() {
-        assertEquals("a_1+b", inline("\$a_1+b\$").text)
+        assertEquals("a₁+b", inline("\$a_1+b\$").text)
         assertEquals("a+b", inline("\\(a+b\\)").text)
-        assertEquals("\\frac{a}{b}", inline("$\\frac{a}{b}$").text)
+        assertEquals("a⁄b", inline("$\\frac{a}{b}$").text)
     }
 
     @Test

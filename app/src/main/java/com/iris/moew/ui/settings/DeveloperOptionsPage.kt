@@ -65,6 +65,23 @@ internal fun DeveloperOptionsPage(
         SettingsCard("实验功能") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
+                    Text("过热暂停", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "电池温度达到上限后暂停新回复（进行中的回答照常完成），降温 3°C 自动继续；" +
+                            "当前 ${if (settings.overheatLimitCelsius > 0) "${settings.overheatLimitCelsius}°C" else "关闭"}。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.overheatLimitCelsius > 0,
+                    onCheckedChange = { enabled ->
+                        viewModel.update { it.copy(overheatLimitCelsius = if (enabled) 45 else 0) }
+                    },
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text("AR 6DoF SLAM", style = MaterialTheme.typography.bodyMedium)
                     Text(
                         "视频通话 AR 模式使用 MenthaAR/ORB-SLAM2 视觉定位，提供位移跟踪和重定位；" +
