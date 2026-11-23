@@ -84,7 +84,7 @@ class AgentLoop(
         var malformedRetries = 0
         var malformedSeen = false
         // 工具调用被输出长度截断时，原上限重试很容易二次截断；只在重试时临时放大。
-        var currentParams = params
+        var currentParams = withWindowScaledOutput(params, contextLength)
         // 同名工具连续失败计数：达到阈值后在回填消息中提醒模型换方法，避免无限步空转。
         val failureStreaks = mutableMapOf<String, Int>()
         // 上一段正文的起点：工具调用把整轮回复切成多段，Finished 只返回最后一段。
@@ -422,6 +422,17 @@ class AgentLoop(
             MAX_RETRY_OUTPUT_TOKENS
         }
         val target = (params.maxNewTokens * 2).coerceAtMost(ceiling)
+        return if (target > params.maxNewTokens) params.copy(maxNewTokens = target) else params
+    }
+
+    /**
+     * 输出上限随上下文窗口放大（窗口 3/8，限 1536–8192）：默认 512 的全局上限写
+     * 大文件经常被截断成半截 JSON；用户配置的更大值保持不变。
+     */
+    private fun withWindowScaledOutput(params: SamplingConfig, contextLength: Int): SamplingConfig {
+        if (contextLength <= 0) return params
+        val windowCap = ((contextLength * 3) / 8).coerceIn(1536, 8192)
+        val target = maxOf(params.maxNewTokens, windowCap)
         return if (target > params.maxNewTokens) params.copy(maxNewTokens = target) else params
     }
 

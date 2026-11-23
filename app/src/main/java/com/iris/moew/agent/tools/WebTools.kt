@@ -2,15 +2,18 @@ package com.iris.moew.agent.tools
 
 import com.iris.moew.agent.Tool
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.InterruptedIOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
+import java.nio.channels.ClosedByInterruptException
 import java.nio.charset.Charset
 
 /** 抓取网页正文：限制内网地址、响应体积与返回长度，避免把整页噪声塞进上下文。 */
@@ -21,9 +24,11 @@ class FetchUrlTool : Tool {
     override val description: String =
         "抓取 http(s) 网页或文本接口并返回正文，参数：{\"url\":\"https://example.com\"}；最多返回 6000 字符。"
 
-    override suspend fun execute(arguments: JsonObject): String = withContext(Dispatchers.IO) {
-        fetch(arguments.string("url").trim())
-    }
+    override suspend fun execute(arguments: JsonObject): String =
+        // runInterruptible：停止生成时线程中断立即打断阻塞的 socket 读，不再等 30s 超时。
+        runInterruptible(Dispatchers.IO) {
+            fetch(arguments.string("url").trim())
+        }
 
     private fun fetch(raw: String): String {
         if (raw.isEmpty()) return "缺少 url 参数"
@@ -67,6 +72,7 @@ class FetchUrlTool : Tool {
                     else -> trimmed
                 }
             } catch (e: Exception) {
+                if (e is InterruptedIOException || e is ClosedByInterruptException) throw e
                 return "抓取失败：${e.message ?: e.javaClass.simpleName}"
             } finally {
                 connection.disconnect()

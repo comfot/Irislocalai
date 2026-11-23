@@ -35,10 +35,10 @@ private class WorkspaceAccess(
         return appFiles.readNumbered(path, offset, limit)
     }
 
-    fun write(path: String, content: String): String {
-        if (!isApp(path)) return fs(requireWrite = true).write(path, content)
+    fun write(path: String, content: String, append: Boolean = false): String {
+        if (!isApp(path)) return fs(requireWrite = true).write(path, content, append)
         fs(requireWrite = true)
-        return appFiles.write(path, content)
+        return appFiles.write(path, content, append)
     }
 
     fun edit(path: String, oldText: String, newText: String, replaceAll: Boolean): String {
@@ -114,7 +114,8 @@ class WriteFileTool(
     override val name: String = "write_file"
 
     override val description: String =
-        "在工作区创建或覆盖文本文件；参数：{\"path\":\"src/main.kt\",\"content\":\"...\"}。" +
+        "在工作区创建或覆盖文本文件；参数：{\"path\":\"src/main.kt\",\"content\":\"...\",\"append\":false}。" +
+            "append=true 时把 content 接到文件末尾，适合大文件分段续写（每段不超过 200 KB）。" +
             "上级目录需已存在，写入需在「编程管理」开启并允许文件授权；应用目录用 app://private/... 或 app://external/...。"
 
     override suspend fun execute(arguments: JsonObject): String {
@@ -122,8 +123,9 @@ class WriteFileTool(
         if (path.isEmpty()) return "缺少 path 参数"
         if (!arguments.containsKey("content")) return "缺少 content 参数"
         val content = arguments.string("content")
+        val append = (arguments["append"] as? JsonPrimitive)?.booleanOrNull ?: false
         return withContext(Dispatchers.IO) {
-            access.write(path, content)
+            access.write(path, content, append)
         }
     }
 }

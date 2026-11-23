@@ -53,12 +53,15 @@ class AppFiles(context: Context) {
         }.trimEnd()
     }
 
-    fun write(path: String, content: String): String {
+    fun write(path: String, content: String, append: Boolean = false): String {
         val file = resolveForWrite(normalize(path)) ?: return "路径不在应用目录或不可写：$path"
-        if (content.toByteArray().size > MAX_WRITE_BYTES) return "写入内容超过 2 MB"
+        val existing = if (append) runCatching { file.readText() }.getOrDefault("") else ""
+        val total = existing.toByteArray().size + content.toByteArray().size
+        if (total > MAX_WRITE_BYTES) return "写入内容超过 2 MB"
         file.parentFile?.mkdirs()
-        file.writeText(content)
-        return "已写入 app://${normalize(path)}"
+        if (append) file.appendText(content, Charsets.UTF_8) else file.writeText(content, Charsets.UTF_8)
+        return if (append) "已追加 app://${normalize(path)}（追加 ${content.toByteArray().size} 字节）"
+        else "已写入 app://${normalize(path)}"
     }
 
     fun edit(path: String, oldText: String, newText: String, replaceAll: Boolean): String {

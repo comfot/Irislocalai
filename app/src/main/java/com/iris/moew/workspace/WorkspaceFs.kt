@@ -64,8 +64,8 @@ class WorkspaceFs(
         }.trimEnd()
     }
 
-    fun write(path: String, content: String): String = operate {
-        writeRaw(parsePath(path), content)
+    fun write(path: String, content: String, append: Boolean = false): String = operate {
+        writeRaw(parsePath(path), content, append)
     }
 
     /** 精确字符串替换；匹配到多处时必须显式允许全部替换，避免误改。 */
@@ -92,11 +92,17 @@ class WorkspaceFs(
         return if (workspace.appFolder) appRead(parts) else safRead(parts)
     }
 
-    private fun writeRaw(parts: List<String>, content: String): String {
+    private fun writeRaw(parts: List<String>, content: String, append: Boolean = false): String {
         if (parts.isEmpty()) fail("请指定要写入的文件路径")
         val bytes = content.toByteArray(Charsets.UTF_8)
         if (bytes.size > MAX_TEXT_BYTES) fail("写入内容超过 200 KB 上限")
-        return if (workspace.appFolder) appWrite(parts, bytes) else safWrite(parts, bytes)
+        val final = if (!append) bytes else {
+            val existing = runCatching { readRaw(parts) }.getOrDefault("")
+            (existing + content).toByteArray(Charsets.UTF_8).also {
+                if (it.size > MAX_TEXT_BYTES) fail("追加后超过 200 KB 上限，请改用更小的分段")
+            }
+        }
+        return if (workspace.appFolder) appWrite(parts, final) else safWrite(parts, final)
     }
 
     private fun countOccurrences(text: String, needle: String): Int {
