@@ -34,6 +34,8 @@ object LlamaNative {
 
     @JvmStatic external fun nativeGpuTicks(): Int
     @JvmStatic external fun nativeGpuLastLog(): String
+    @JvmStatic external fun nativeOpenclStatus(): String
+    @JvmStatic external fun nativeSetOpenclDir(dir: String)
 
     @JvmStatic external fun nativeCreate(): Long
     @JvmStatic external fun nativeDestroy(handle: Long)

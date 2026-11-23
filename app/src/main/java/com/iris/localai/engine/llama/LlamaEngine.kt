@@ -1,5 +1,6 @@
 package com.iris.localai.engine.llama
 
+import android.content.Context
 import com.iris.localai.engine.Backend
 import com.iris.localai.engine.GenEvent
 import com.iris.localai.engine.InferenceEngine
@@ -30,7 +31,7 @@ import java.util.concurrent.Executors
  * GGUF inference through the prebuilt libiris_llama.so (llama.cpp + JNI).
  * All native calls are serialized on one dedicated thread.
  */
-class LlamaEngine : InferenceEngine {
+class LlamaEngine(private val context: Context? = null) : InferenceEngine {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val handleLock = Any()
@@ -63,9 +64,45 @@ class LlamaEngine : InferenceEngine {
             throw IllegalStateException("当前预编译运行库未包含 Hexagon/NPU 后端，请选择 CPU 或 GPU")
         }
 
+        // 开发者选项：把 /vendor 的 Adreno OpenCL 驱动链复制到私有目录，供 cl_shim 用
+        // android_dlopen_ext + 独立命名空间加载（部分 ROM 的 vendor libOpenCL 是 stub，
+        // 三方进程直接 dlopen 会因依赖不在公共库白名单被 linker 拒绝）。
+        if (config.backend == Backend.GPU && context != null) {
+            val adrenoDir = File(context.filesDir, "adreno").apply { mkdirs() }
+            val vendorDrivers = listOf(
+                "/vendor/lib64/libOpenCL.so",
+                "/vendor/lib64/libOpenCL_adreno.so",
+                "/vendor/lib64/libopencl_loader.so",
+                "/vendor/lib64/libCB.so",
+                "/vendor/lib64/libgsl.so",
+                "/vendor/lib64/libar-gsl.so",
+                "/vendor/lib64/libadreno_utils.so",
+                "/vendor/lib64/libkernelmanager.so",
+                "/vendor/lib64/libkcl.so",
+                "/vendor/lib64/libllvm-glnext.so",
+                "/vendor/lib64/libllvm-qcom.so",
+                // llama.cpp #29786：libllvm-qgl.so（高通 shader 编译器）是 OpenCL 成败的关键单文件，
+                // 缺它时 clGetPlatformIDs 返回 0 平台。
+                "/vendor/lib64/libllvm-qgl.so",
+                "/vendor/lib64/egl/libq3dtools_adreno.so",
+                "/vendor/lib64/egl/libEGL_adreno.so",
+                "/vendor/lib64/egl/libGLESv2_adreno.so",
+            )
+            vendorDrivers.forEach { src ->
+                runCatching { File(src).copyTo(File(adrenoDir, File(src).name), overwrite = true) }
+            }
+            LlamaNative.nativeSetOpenclDir(adrenoDir.absolutePath)
+        }
+
         val attempts = when {
             config.backend == Backend.GPU && config.fallbackToCpu -> listOf(Backend.GPU, Backend.CPU)
             else -> listOf(config.backend)
+        }
+        // 性能页的 0 表示“自动”：按大小核数折算（超线程/大小核各占一半），而非单线程。
+        val threads = if (config.threads <= 0) {
+            (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 16)
+        } else {
+            config.threads.coerceIn(1, 16)
         }
         var lastError: String? = null
         for ((index, backend) in attempts.withIndex()) {
@@ -84,7 +121,7 @@ class LlamaEngine : InferenceEngine {
                 newHandle,
                 modelPath.toByteArray(Charsets.UTF_8),
                 config.contextLength.coerceIn(256, 131072),
-                config.threads.coerceIn(1, 16),
+                threads,
                 config.batchSize.coerceIn(32, 2048),
                 config.flashAttention,
                 if (backend == Backend.GPU) GPU_ALL_LAYERS else 0,
@@ -93,7 +130,8 @@ class LlamaEngine : InferenceEngine {
                 listener,
             )
             if (error != null) {
-                lastError = error
+                val gpuLog = LlamaNative.gpuLastLog().takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                lastError = error + gpuLog
                 destroyInternal()
                 continue
             }
@@ -115,20 +153,26 @@ class LlamaEngine : InferenceEngine {
                 )
             }.getOrDefault(NativeMeta())
             if (backend == Backend.GPU && meta.gpu.isBlank()) {
-                lastError = "未检测到可用的 OpenCL GPU，已尝试回退 CPU"
+                val gpuLog = LlamaNative.gpuLastLog().takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                val clStatus = LlamaNative.nativeOpenclStatus().takeIf { it.isNotBlank() }?.let { " · shim: $it" }.orEmpty()
+                lastError = "未检测到可用的 OpenCL GPU$gpuLog$clStatus，已尝试回退 CPU"
                 destroyInternal()
                 continue
             }
             loaded = true
             activeBackend = if (backend == Backend.GPU && meta.gpu.isNotBlank()) Backend.GPU else Backend.CPU
-            val suffix = if (index > 0) "（已回退 CPU）" else ""
+            val suffix = if (index > 0) {
+                val reason = lastError?.let { "：$it" }.orEmpty()
+                "（GPU 未生效$reason）"
+            } else ""
             return@withContext ModelDetails(
-                name = meta.description.ifBlank { file.nameWithoutExtension } + suffix,
+                name = file.nameWithoutExtension.ifBlank { meta.description.ifBlank { file.name } } + suffix,
                 contextLength = meta.nCtx.takeIf { it > 0 } ?: config.contextLength,
                 backend = activeBackend,
                 parameterCount = meta.nParams,
                 supportsThinking = meta.supportsThinking,
                 thinkingPrefilled = meta.thinkingPrefilled,
+                gpuNote = if (index > 0) lastError?.takeIf { it.isNotBlank() } ?: "GPU 加载失败" else "",
             )
         }
         throw IllegalStateException(lastError ?: "llama.cpp 模型加载失败")

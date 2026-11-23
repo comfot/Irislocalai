@@ -197,7 +197,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
 
                 VoiceEngineType.LOCAL -> {
                     Text(
-                        text = "本地 TTS 模型（参考 IRIDIS / IndexTTS-2）",
+                        text = "本地 TTS 模型（sherpa-onnx）",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     VoiceModelCatalog.packs.filter { it.kind == VoiceKind.TTS }.forEach { pack ->
@@ -443,7 +443,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                         text = "本地 STT 模型（sherpa-onnx）",
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    VoiceModelCatalog.packs.filter { it.kind == VoiceKind.STT }.forEach { pack ->
+                    VoiceModelCatalog.packs.filter { it.kind == VoiceKind.STT && !it.streaming }.forEach { pack ->
                         VoicePackRow(
                             pack = pack,
                             installed = pack.id in installed,
@@ -586,6 +586,40 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+
+            if (settings.streamingAsrEnabled) {
+                Text(
+                    text = "流式识别模型（实验）",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                VoiceModelCatalog.packs
+                    .filter { it.kind == VoiceKind.STT && it.streaming }
+                    .forEach { pack ->
+                        VoicePackRow(
+                            pack = pack,
+                            installed = pack.id in installed,
+                            selected = settings.streamingAsrLocalModelId == pack.id,
+                            task = tasks.firstOrNull { it.packId == pack.id },
+                            onDownload = { viewModel.download(pack) },
+                            onCancel = { viewModel.cancel(pack) },
+                            onUse = {
+                                viewModel.update { it.copy(streamingAsrLocalModelId = pack.id) }
+                            },
+                            onDelete = {
+                                viewModel.delete(pack)
+                                if (settings.streamingAsrLocalModelId == pack.id) {
+                                    viewModel.update { it.copy(streamingAsrLocalModelId = "") }
+                                }
+                            },
+                        )
+                    }
+                Text(
+                    text = "需要先在 设置 › 开发者选项 打开「流式语音识别（实验）」；" +
+                        "开启后视频通话会边录边出字幕。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 

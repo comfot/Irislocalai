@@ -39,6 +39,10 @@ class ConversationStore(context: Context) {
     private val writeLock = Any()
     private var persistJob: Job? = null
 
+    /** 自上次成功写盘后有变更；避免流式期间的重复落盘把相同内容反复全量序列化。 */
+    @Volatile
+    private var dirty = true
+
     private val _conversations = MutableStateFlow(load())
     val conversations: StateFlow<List<Conversation>> = _conversations.asStateFlow()
 
@@ -177,17 +181,26 @@ class ConversationStore(context: Context) {
      */
     private fun schedulePersist(immediate: Boolean = false) {
         synchronized(scheduleLock) {
+            dirty = true
             if (!immediate && persistJob?.isActive == true) return
             persistJob?.cancel()
             persistJob = scope.launch {
                 if (!immediate) delay(PERSIST_DELAY_MS)
                 persist()
+                // 写盘期间落进来的更新由本任务补写，更新停止后自然退出；
+                // 否则这些更新只会置 dirty 而没有后续任务，直到进程退出都不会落盘。
+                while (dirty) {
+                    delay(PERSIST_DELAY_MS)
+                    persist()
+                }
             }
         }
     }
 
     private fun persist() {
         synchronized(writeLock) {
+            if (!dirty) return
+            dirty = false
             val json = buildJsonArray {
                 _conversations.value.forEach { conversation ->
                     addJsonObject {
@@ -273,7 +286,13 @@ class ConversationStore(context: Context) {
                     summaryThroughMessageId = obj.long("summaryThroughMessageId") ?: 0L,
                 )
             }
-        }.getOrElse { emptyList() }
+        }.getOrElse {
+            // 解析失败时先备份损坏文件：不备份的话下次落盘会用新数据覆盖，历史无法找回。
+            runCatching {
+                file.copyTo(File(file.parentFile, "$FILE_NAME.corrupt-${System.currentTimeMillis()}"), overwrite = true)
+            }
+            emptyList()
+        }
     }
 
     private fun JsonObject.messages(): List<ChatMessage> {

@@ -162,7 +162,7 @@ class PluginStore(private val context: Context) {
         source: String,
         expectedSha256: String? = null,
     ): InstalledPlugin = withContext(Dispatchers.IO) {
-        if (bytes.size > MAX_PACKAGE_BYTES) error("插件包超过 64 MB")
+        if (bytes.size > MAX_PACKAGE_BYTES) error("插件包超过 ${MAX_PACKAGE_BYTES / (1024 * 1024)} MB")
         if (expectedSha256 != null && !sha256(bytes).equals(expectedSha256, ignoreCase = true)) {
             error("SHA-256 校验失败，已拒绝安装")
         }
@@ -174,7 +174,9 @@ class PluginStore(private val context: Context) {
             extractZip(tempZip, tempDir)
             val manifestFile = findManifest(tempDir)
                 ?: error("压缩包中没有 manifest.json / manifest.hjson")
-            if (manifestFile.length() > MAX_MANIFEST_BYTES) error("插件清单超过 2 MB")
+            if (manifestFile.length() > MAX_MANIFEST_BYTES) {
+                error("插件清单超过 ${MAX_MANIFEST_BYTES / (1024 * 1024)} MB")
+            }
             val manifest = PluginManifestParser.parse(manifestFile.readText())
             val baseDir = manifestFile.parentFile ?: tempDir
             val id = sanitizePluginId(manifest.id)

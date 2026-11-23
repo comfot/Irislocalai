@@ -78,12 +78,13 @@ class FetchUrlTool : Tool {
     private fun isPrivateHost(host: String?): Boolean {
         val name = host?.lowercase() ?: return true
         if (name.isEmpty()) return true
-        if (name == "127.0.0.1" || name == "localhost" || name == "::1" || name == "[::1]") return false
         if (name == "localhost" || name.endsWith(".localhost")) return true
         if (name.contains(':')) return true
-        val numbers = name.split('.').mapNotNull { it.toIntOrNull() }
-        if (numbers.size == 4 && numbers.all { it in 0..255 }) {
-            val (a, b) = numbers
+        val segments = name.split('.')
+        // 只接受规范十进制 IP 文字；带前导零（八进制）或其它非规范写法一律走 DNS 解析校验，
+        // 避免 "0177.0.0.1" 这类形式被 Java 解析回回环地址而绕过网段检查。
+        if (segments.size == 4 && segments.all { it.toIntOrNull()?.toString() == it }) {
+            val (a, b) = segments.map { it.toInt() }
             return a == 0 || a == 10 || a == 127 ||
                 (a == 169 && b == 254) ||
                 (a == 172 && b in 16..31) ||

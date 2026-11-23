@@ -102,7 +102,8 @@ internal fun ApiServicePage(viewModel: SettingsViewModel = androidx.lifecycle.vi
                 )
             }
             Text(
-                text = "OpenAI 兼容：/v1/models、/v1/chat/completions（含 SSE）、/health",
+                text = "OpenAI 兼容：/v1/models、/v1/chat/completions 与 /v1/completions（含 SSE）、" +
+                    "/v1/embeddings、/v1/images/generations、/v1/audio/speech、/v1/audio/transcriptions、/health",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

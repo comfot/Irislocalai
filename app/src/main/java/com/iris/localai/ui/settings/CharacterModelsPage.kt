@@ -155,7 +155,7 @@ internal fun CharacterModelsPage(viewModel: CharacterModelsViewModel = viewModel
                 Text("导入 Live2D / VRM / GLB / MMD")
             }
             Text(
-                text = "Live2D 请把完整模型文件夹压缩为 ZIP（参考 AIRI）；VRM/GLB/MMD 可直接选择单个文件。",
+                text = "Live2D 请把完整模型文件夹压缩为 ZIP；VRM/GLB/MMD 可直接选择单个文件。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

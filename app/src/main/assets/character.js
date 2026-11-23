@@ -138,12 +138,15 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   scene.add(group)
 
   function resize() {
-    const width = stage.clientWidth || window.innerWidth || 1
-    const height = stage.clientHeight || window.innerHeight || 1
-    if (width < 2 || height < 2) return
-    stage.style.width = width + 'px'
-    stage.style.height = height + 'px'
-    renderer.setSize(width, height)
+    // 不要给 #stage 写死像素尺寸：写死后就是固定布局，ResizeObserver 再也看不到视口变化。
+    // 布局尚未完成时 innerWidth/innerHeight 可能是 0，不能拿它去 setSize，否则画布就只有 1 像素。
+    const width = window.innerWidth || document.documentElement.clientWidth || stage.clientWidth || 0
+    const height = window.innerHeight || document.documentElement.clientHeight || stage.clientHeight || 0
+    if (width < 2 || height < 2) {
+      setTimeout(resize, 150)
+      return
+    }
+    renderer.setSize(width, height, true)
     camera.aspect = width / height
     camera.updateProjectionMatrix()
     const fit = (modelHeight / 2) / Math.tan((camera.fov * Math.PI / 180) / 2)
@@ -158,7 +161,140 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-v
   }
 
   const portraitTarget = new THREE.Vector3()
+  let arLook = null
+  let arWorld = null
+  window.irisAR = {
+    look(yaw, pitch) {
+      arLook = { yaw: Number(yaw) || 0, pitch: Number(pitch) || 0 }
+      applyCamera()
+    },
+    clear() {
+      arLook = null
+      applyCamera()
+    },
+    world(modelArray, viewArray, projectionArray, heightMeters, upArray) {
+      // 画布尺寸可能因为弹窗进场动画停在中间值，定期对齐到当前视口。
+      if (!window.__irisArSizeAt || performance.now() - window.__irisArSizeAt > 1000) {
+        window.__irisArSizeAt = performance.now()
+        const viewW = window.innerWidth || 0
+        const viewH = window.innerHeight || 0
+        if (
+          viewH >= 2 &&
+          (renderer.domElement.clientWidth !== viewW || renderer.domElement.clientHeight !== viewH)
+        ) {
+          resize()
+        }
+      }
+      const baseView = new THREE.Matrix4().fromArray(viewArray)
+      const modelMatrix = new THREE.Matrix4().fromArray(modelArray)
+      const anchorNative = new THREE.Vector3().setFromMatrixPosition(modelMatrix)
+      const camNative = new THREE.Vector3().setFromMatrixPosition(baseView.clone().invert())
+
+      // 竖直轴用定锚点时的重力方向（相机在锚点上方）。
+      // 平面法向可能是竖面（屏幕/墙），拿它当上方向会让人贴墙躺倒。
+      const up = upArray && upArray.length >= 3
+        ? new THREE.Vector3(Number(upArray[0]) || 0, Number(upArray[1]) || 0, Number(upArray[2]) || 0)
+        : new THREE.Vector3(0, 1, 0)
+      if (up.lengthSq() < 1e-6) up.set(0, 1, 0)
+      up.normalize()
+
+      const toCamera = camNative.clone().sub(anchorNative)
+      const flat = toCamera.clone().sub(up.clone().multiplyScalar(toCamera.dot(up)))
+      const forward = flat.lengthSq() > 1e-8 ? flat.normalize() : new THREE.Vector3(0, 0, 1)
+      // VRM/GLB 在 three.js 里正面朝 +Z：Z = forward，X = up × Z。
+      const xAxis = new THREE.Vector3().crossVectors(up, forward).normalize()
+
+      // VRM 弹簧骨骼（发丝/裙摆）在缩放父节点时会被拉爆，所以模型保持原尺寸，
+      // 改成把相机与锚点同时缩小 worldScale 倍，几何关系等价。
+      const worldScale = Math.max(1e-4, (Number(heightMeters) || 1.7) / 1.7)
+      const inverseScale = 1 / worldScale
+      const view = baseView.clone()
+      view.elements[12] *= inverseScale
+      view.elements[13] *= inverseScale
+      view.elements[14] *= inverseScale
+      arWorld = { view: view.toArray(), projection: projectionArray }
+
+      const anchor = anchorNative.clone().multiplyScalar(inverseScale)
+      group.matrixAutoUpdate = false
+      group.matrix.makeBasis(xAxis, up, forward)
+      group.matrix.setPosition(anchor)
+      group.matrixWorldNeedsUpdate = true
+      applyCamera()
+
+      if (!window.__irisArWorldLogged || performance.now() - window.__irisArWorldLogged > 2000) {
+        window.__irisArWorldLogged = performance.now()
+        const cam = camNative.clone().multiplyScalar(inverseScale)
+        const modelScene = model
+        let feet = '-'
+        let px = '-'
+        let diag = ''
+        try {
+          modelScene.updateMatrixWorld(true)
+          const box = new THREE.Box3().setFromObject(modelScene)
+          feet = box.min.y.toFixed(2) + '..' + box.max.y.toFixed(2)
+          const ndc = anchor.clone().project(camera)
+          const cw = Math.max(1, renderer.domElement.clientWidth || 1)
+          const ch = Math.max(1, renderer.domElement.clientHeight || 1)
+          px = ((ndc.x * 0.5 + 0.5) * cw).toFixed(0) + ',' + ((1 - (ndc.y * 0.5 + 0.5)) * ch).toFixed(0)
+          // 上方向在屏幕上的角度：0=正上，±90=滚转，180=倒立。
+          const upTip = anchor.clone().add(up.clone().multiplyScalar(0.5)).project(camera)
+          const sdx = (upTip.x - ndc.x) * cw * 0.5
+          const sdy = -(upTip.y - ndc.y) * ch * 0.5
+          diag = ' upAngle=' + (Math.atan2(sdx, -sdy) * 180 / Math.PI).toFixed(0) +
+            ' p0=' + camera.projectionMatrix.elements[0].toFixed(2) +
+            ' p5=' + camera.projectionMatrix.elements[5].toFixed(2) +
+            ' canvas=' + cw + 'x' + ch
+        } catch (error) {
+          diag = ' err=' + (error && error.message ? error.message : String(error))
+        }
+        console.log(
+          'irisAR world cam=' + cam.x.toFixed(2) + ',' + cam.y.toFixed(2) +
+          ',' + cam.z.toFixed(2) +
+          ' anchor=' + anchor.x.toFixed(2) + ',' + anchor.y.toFixed(2) +
+          ',' + anchor.z.toFixed(2) +
+          ' height=' + (Number(heightMeters) || 0).toFixed(3) +
+          ' scale=' + worldScale.toFixed(4) +
+          ' feet=' + feet +
+          ' px=' + px +
+          ' up=' + up.x.toFixed(2) + ',' + up.y.toFixed(2) + ',' + up.z.toFixed(2) +
+          diag,
+        )
+      }
+    },
+    billboard() {
+      arWorld = null
+      group.matrixAutoUpdate = true
+      group.matrix.identity()
+      group.position.set(0, 0, 0)
+      group.rotation.set(0, 0, 0)
+      group.scale.setScalar(1)
+      applyCamera()
+    },
+  }
   function applyCamera() {
+    if (arWorld) {
+      const view = new THREE.Matrix4().fromArray(arWorld.view)
+      const projection = new THREE.Matrix4().fromArray(arWorld.projection)
+      camera.matrixAutoUpdate = false
+      camera.matrixWorld.copy(view).invert()
+      camera.matrix.copy(camera.matrixWorld)
+      camera.matrixWorldInverse.copy(view)
+      camera.projectionMatrix.copy(projection)
+      camera.projectionMatrixInverse.copy(projection).invert()
+      return
+    }
+    camera.matrixAutoUpdate = true
+    if (arLook) {
+      const pitch = Math.max(-1.2, Math.min(1.2, arLook.pitch))
+      const cy = Math.cos(pitch)
+      camera.position.set(
+        target.x + Math.sin(arLook.yaw) * cy * radius,
+        target.y + Math.sin(pitch) * radius,
+        target.z + Math.cos(arLook.yaw) * cy * radius,
+      )
+      camera.lookAt(target)
+      return
+    }
     if (portrait) {
       portraitTarget.set(0, modelHeight * 0.8, 0)
       camera.position.set(Math.sin(yaw) * radius * 0.72, modelHeight * 0.8, radius)

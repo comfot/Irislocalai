@@ -16,6 +16,11 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
+import com.k2fsa.sherpa.onnx.OnlineModelConfig
+import com.k2fsa.sherpa.onnx.OnlineParaformerModelConfig
+import com.k2fsa.sherpa.onnx.OnlineRecognizer
+import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OnlineStream
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -49,6 +54,8 @@ class LocalVoiceRuntime(
 
     private var recognizer: OfflineRecognizer? = null
     private var asrPack: VoiceModelPack? = null
+    private var onlineRecognizer: OnlineRecognizer? = null
+    private var onlinePack: VoiceModelPack? = null
     private var tts: OfflineTts? = null
     private var ttsPack: VoiceModelPack? = null
 
@@ -56,8 +63,27 @@ class LocalVoiceRuntime(
         val preferred = VoiceModelCatalog.of(settings.current.sttLocalModelId)
             ?.takeIf { it.kind == VoiceKind.STT && store.isInstalled(it.id) }
         return preferred ?: VoiceModelCatalog.packs.firstOrNull {
-            it.kind == VoiceKind.STT && store.isInstalled(it.id)
+            it.kind == VoiceKind.STT && !it.streaming && store.isInstalled(it.id)
         }
+    }
+
+    /** 流式识别包：只在开发者选项开启流式 ASR 后使用。 */
+    fun selectedStreamingAsrPack(): VoiceModelPack? {
+        val preferred = VoiceModelCatalog.of(settings.current.streamingAsrLocalModelId)
+            ?.takeIf { it.kind == VoiceKind.STT && it.streaming && store.isInstalled(it.id) }
+        return preferred ?: VoiceModelCatalog.packs.firstOrNull {
+            it.kind == VoiceKind.STT && it.streaming && store.isInstalled(it.id)
+        }
+    }
+
+    val isStreamingAsrAvailable: Boolean get() = selectedStreamingAsrPack() != null
+
+    /** 开一个流式识别会话；调用方负责 accept / text / close。 */
+    suspend fun startStreamingSession(): StreamingAsrSession? = withContext(asrWorker) {
+        val pack = selectedStreamingAsrPack() ?: return@withContext null
+        ensureOnlineRecognizer(pack)
+        val engine = onlineRecognizer ?: return@withContext null
+        StreamingAsrSession(engine, engine.createStream(), ASR_SAMPLE_RATE)
     }
 
     fun selectedTtsPack(): VoiceModelPack? {
@@ -114,12 +140,43 @@ class LocalVoiceRuntime(
             recognizer?.release()
             recognizer = null
             asrPack = null
+            onlineRecognizer?.release()
+            onlineRecognizer = null
+            onlinePack = null
         }
         withContext(ttsWorker) {
             tts?.release()
             tts = null
             ttsPack = null
         }
+    }
+
+    private fun ensureOnlineRecognizer(pack: VoiceModelPack) {
+        if (onlineRecognizer != null && onlinePack?.id == pack.id) return
+        onlineRecognizer?.release()
+        onlineRecognizer = null
+        val dir = store.dirFor(pack)
+        fun path(name: String) = File(dir, name).absolutePath
+        requireFiles(path("encoder.int8.onnx"), path("decoder.int8.onnx"), path("tokens.txt"))
+        onlineRecognizer = OnlineRecognizer(
+            assetManager = null,
+            config = OnlineRecognizerConfig(
+                featConfig = FeatureConfig(sampleRate = ASR_SAMPLE_RATE, featureDim = 80),
+                modelConfig = OnlineModelConfig(
+                    paraformer = OnlineParaformerModelConfig(
+                        encoder = path("encoder.int8.onnx"),
+                        decoder = path("decoder.int8.onnx"),
+                    ),
+                    tokens = path("tokens.txt"),
+                    numThreads = 4,
+                    provider = "cpu",
+                ),
+                // 端点交给录音侧的 Silero VAD，避免服务端规则提前截断。
+                enableEndpoint = false,
+                decodingMethod = "greedy_search",
+            ),
+        )
+        onlinePack = pack
     }
 
     private fun ensureRecognizer(pack: VoiceModelPack) {
@@ -241,6 +298,58 @@ class LocalVoiceRuntime(
 }
 
 /**
+ * 一次流式识别会话：持续喂 16 kHz Float PCM，随时取当前整段文本。
+ * sherpa 的 OnlineRecognizer 非线程安全，这里统一用锁串行化。
+ */
+class StreamingAsrSession internal constructor(
+    private val recognizer: OnlineRecognizer,
+    private val stream: OnlineStream,
+    private val sampleRate: Int,
+) : StreamingAsrHandle {
+
+    private val lock = Any()
+    private var closed = false
+
+    override fun accept(samples: ShortArray, size: Int) {
+        val floats = FloatArray(size) { samples[it] / 32768.0f }
+        synchronized(lock) {
+            if (closed) return
+            stream.acceptWaveform(floats, sampleRate)
+        }
+    }
+
+    override fun text(): String {
+        synchronized(lock) {
+            if (closed) return ""
+            recognizer.decode(stream)
+            return recognizer.getResult(stream).text
+        }
+    }
+
+    fun isEndpoint(): Boolean {
+        synchronized(lock) {
+            if (closed) return false
+            return recognizer.isEndpoint(stream)
+        }
+    }
+
+    fun reset() {
+        synchronized(lock) {
+            if (closed) return
+            recognizer.reset(stream)
+        }
+    }
+
+    override fun close() {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            runCatching { stream.release() }
+        }
+    }
+}
+
+/**
  * sherpa-onnx JNI 通过对象自身类查找 `invoke([F)Ljava/lang/Integer;`。
  * Kotlin 2 的 lambda 可能只生成桥接 invoke(Object)，因此必须用真实类声明签名。
  */
@@ -262,6 +371,7 @@ object WavCodec {
         while (offset + 8 <= bytes.size) {
             val id = String(bytes, offset, 4, Charsets.US_ASCII)
             val size = littleInt(bytes, offset + 4)
+            if (size < 0) return FloatArray(0)
             val body = offset + 8
             if (id == "data") {
                 val end = minOf(bytes.size, body + size)

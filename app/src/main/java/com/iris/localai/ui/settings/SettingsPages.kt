@@ -772,21 +772,21 @@ internal fun PlaceholderPage(entry: SettingsEntry) {
 }
 
 private fun planFor(id: String): String = when (id) {
-    "character-card" -> "SillyTavern V2/V3 角色卡导入、开场白切换与绑定模型。"
+    "character-card" -> "SillyTavern V1/V2/V3 角色卡导入、开场白切换与头像管理。"
     "lorebook" -> "关键词与正则触发、扫描深度、预算与递归控制。"
     "memory" -> "长期记忆分层、向量检索与滚动压缩。"
-    "character-model" -> "按角色覆盖模型、采样参数与专属系统提示词。"
-    "voice" -> "sherpa-onnx 离线识别与合成、音色切换与免提对话。"
-    "scene" -> "场景预设、开场白与多角色编排。"
-    "mcp" -> "MCP 客户端（HTTP / WebSocket）与工具注入。"
+    "character-model" -> "Live2D / VRM / GLB / MMD 模型导入与角色绑定。"
+    "voice" -> "本地 sherpa-onnx 与云端（MiMo）识别合成、音色切换与免提对话。"
+    "scene" -> "场景背景/视频、底座与舞台素材下载。"
+    "mcp" -> "MCP 客户端（Streamable HTTP / SSE / stdio）与工具注入。"
     "plugin" -> "插件清单、权限声明与启用状态。"
     "market" -> "模型与扩展的下载源、校验与更新。"
     "skill" -> "SKILL.md 安装、触发词与按需加载。"
     "code" -> "代码执行沙盒与工作区文件管理。"
-    "notification" -> "生成完成、后台任务与定时提醒。"
-    "interaction" -> "回车发送、长按菜单与手势操作。"
-    "network" -> "代理、超时、镜像源与下载策略。"
-    "integration" -> "外部 Intent、自动化触发与深链。"
+    "notification" -> "生成完成与后台提醒。"
+    "interaction" -> "发送方式、桌宠、模型控制与视频通话参数。"
+    "network" -> "备用下载源与全部下载地址。"
+    "integration" -> "Telegram / QQ / 微信 Bot 与 AI 浏览器。"
     else -> "此页面已接入导航，具体能力待后续实现。"
 }
 

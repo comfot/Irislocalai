@@ -1,7 +1,6 @@
 package com.iris.localai.ui.settings
 
-import android.content.Intent
-import android.net.Uri
+import android.annotation.SuppressLint
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -59,6 +58,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
+@SuppressLint("StateFlowValueCalledInComposition")
 internal fun Model3DControlPage(settings: AppSettings, viewModel: SettingsViewModel) {
     val context = LocalContext.current
     val graph = remember(context) { (context.applicationContext as IrisApp).graph }
@@ -288,30 +288,6 @@ private fun ControlFoundation(
     }
 
     ModelPositionCard(active, graph)
-    SettingsCard(title = "使用说明") {
-        Text(
-            text = "HAST-SEC 与 MMD 动作下载已移动到「市场 › 模型市场 › 动作模型」。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = "Kimodo（PyTorch/GPU）：pip 安装后可用 kimodo_gen 生成动作，再导出 BVH。移动端无法直接推理，本页保留 HTTP 动作服务接口。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = {
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/nv-tlabs/kimodo")),
-                )
-            }) { Text("Kimodo") }
-            TextButton(onClick = {
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/sola1039/HAST-SEC")),
-                )
-            }) { Text("HAST-SEC") }
-        }
-    }
 }
 
 @Composable
@@ -372,7 +348,7 @@ private fun MmdControlCard(localMotions: List<MotionAsset>, onToast: (String) ->
         }
         if (localMotions.isEmpty()) {
             Text(
-                text = "还没有 VMD 动作，请到「市场 › 模型市场 › 动作模型 › MMD 动作」下载或导入。",
+                text = "还没有 VMD 动作，导入 VMD 后即可绑定使用。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -429,9 +405,9 @@ private fun VrmControlCard(
         if (engine == VrmMotionEngine.HAST_SEC) {
             Text(
                 text = if (ready) {
-                    "HAST-SEC 已就绪：${hastSkills.size} 个动作。下载与更新在「市场 › 模型市场 › 动作模型 › VRM动作」。"
+                    "HAST-SEC 已就绪：${hastSkills.size} 个动作。"
                 } else {
-                    "HAST-SEC 未下载。请到「市场 › 模型市场 › 动作模型 › VRM动作」下载动作库。"
+                    "HAST-SEC 未下载动作库。"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

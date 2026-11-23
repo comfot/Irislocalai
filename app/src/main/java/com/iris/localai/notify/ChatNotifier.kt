@@ -1,5 +1,6 @@
 package com.iris.localai.notify
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -47,6 +48,7 @@ class ChatNotifier(
         )
     }
 
+    @SuppressLint("MissingPermission")
     fun notifyReply(title: String, body: String) {
         if (AppForeground.visible) return
         val current = settings.current

@@ -63,7 +63,8 @@ class TelegramBotService(
                                     text = message.text,
                                 )
                             }.getOrElse { "处理失败：${it.message ?: it.javaClass.simpleName}" }
-                            client.sendMessage(message.chatId, reply)
+                            // 单条发送失败不能中断整批：offset 已推进，再抛出去剩余消息就丢了。
+                            runCatching { client.sendMessage(message.chatId, reply) }
                         }
                     } catch (error: CancellationException) {
                         throw error

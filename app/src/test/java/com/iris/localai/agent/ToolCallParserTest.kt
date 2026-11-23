@@ -172,6 +172,62 @@ class ToolCallParserTest {
     }
 
     @Test
+    fun `parses fenced json tool call`() {
+        val text = "先检查一下。\n```json\n{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.txt\"}}\n```"
+        val call = ToolCallParser.parse(text)
+        assertEquals("read_file", call?.name)
+        assertTrue(call?.loose == true)
+        assertEquals("先检查一下。", ToolCallParser.stripToolCalls(text, setOf("read_file")))
+    }
+
+    @Test
+    fun `parses trailing json after explanation`() {
+        val text = "我来读取工作区。\n{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.txt\"}}"
+        val call = ToolCallParser.parse(text)
+        assertEquals("read_file", call?.name)
+        assertTrue(call?.loose == true)
+        assertEquals("我来读取工作区。", ToolCallParser.stripToolCalls(text, setOf("read_file")))
+    }
+
+    @Test
+    fun `does not strip example json for unknown tool`() {
+        val text = "示例：\n{\"name\":\"demo\",\"arguments\":{}}"
+        assertEquals(text, ToolCallParser.stripToolCalls(text, setOf("read_file")))
+        assertEquals("示例：", ToolCallParser.stripToolCalls(text, setOf("demo")))
+    }
+
+    @Test
+    fun `parses single quoted tool call`() {
+        val call = ToolCallParser.parse("<tool_call>{'name':'shell','arguments':{'command':'pwd'}}</tool_call>")
+        assertEquals("shell", call?.name)
+        assertEquals("pwd", call?.arguments?.get("command")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `parses tool call with raw newline in string`() {
+        val call = ToolCallParser.parse("""<tool_call>{"name":"shell","arguments":{"command":"cd /tmp
+ls"}}</tool_call>""")
+        assertEquals("shell", call?.name)
+        assertEquals("cd /tmp\nls", call?.arguments?.get("command")?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `detects malformed tool call`() {
+        assertTrue(
+            ToolCallParser.looksLikeMalformedToolCall("""{"name": "shell", "arguments": {"command": } }"""),
+        )
+        assertFalse(ToolCallParser.looksLikeMalformedToolCall("这是普通回答，没有工具调用。"))
+    }
+
+    @Test
+    fun `keeps plain json examples out of tool calls`() {
+        assertNull(ToolCallParser.parse("""{"total":3,"items":[]}"""))
+        assertNull(ToolCallParser.parse("""{"name":"张三","age":3}"""))
+        val fenced = "示例：\n```json\n{\"total\":3}\n```"
+        assertEquals(fenced, ToolCallParser.stripToolCalls(fenced))
+    }
+
+    @Test
     fun `detects bare command answer`() {
         val command = "cd '/sdcard/foo'; echo '== x =='; grep -o 'const-string[^,]*, \"[^\"]*\"' a.smali | head -60"
         assertTrue(ToolCallParser.looksLikeBareCommand(command))

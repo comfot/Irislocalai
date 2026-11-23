@@ -342,7 +342,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                         modifier = Modifier.weight(1f),
                         icon = Icons.Outlined.Layers,
                         title = "后台执行",
-                        description = "使用 Shizuku 系统命令；虚拟屏隔离尚未接入。",
+                        description = "使用 Shizuku 系统命令；可用虚拟屏或本机小窗，虚拟屏暂不支持文本输入与最近任务/通知栏。",
                         selected = backgroundMode,
                         enabled = permissions.shizukuInstalled,
                         onClick = {
@@ -517,6 +517,7 @@ fun OperateSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) 
                 showVoice = false
             },
             onTranscribe = viewModel::transcribeVoice,
+            startStreaming = viewModel::startStreamingAsr,
         )
     }
 

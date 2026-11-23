@@ -276,6 +276,31 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
         _message.value = "已将 ${file.name} 设为当前本地模型"
     }
 
+    fun isLocalModelInUse(file: File): Boolean =
+        graph.settings.current.modelPath == file.absolutePath
+
+    /** 删除已下载的本地模型；正在使用时先卸载引擎并清空 modelPath。 */
+    fun deleteModel(file: File) {
+        viewModelScope.launch {
+            val inUse = graph.settings.current.modelPath == file.absolutePath
+            if (inUse) {
+                withContext(Dispatchers.IO) {
+                    runCatching { graph.engines.unload() }
+                }
+                graph.settings.update { it.copy(modelPath = "") }
+            }
+            val deleted = withContext(Dispatchers.IO) {
+                runCatching { file.delete() }.getOrDefault(false)
+            }
+            _message.value = when {
+                deleted && inUse -> "已删除 ${file.name}，当前本地模型已卸载"
+                deleted -> "已删除 ${file.name}"
+                else -> "删除失败：${file.name}"
+            }
+            refreshDownloaded()
+        }
+    }
+
     fun onPluginQueryChange(value: String) {
         _pluginQuery.value = value
     }

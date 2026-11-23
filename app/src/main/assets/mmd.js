@@ -261,6 +261,153 @@
       mouthTarget = Math.max(0, Math.min(1, Number(value) || 0))
       if (!model) return
     },
+    setArLook(yaw, pitch) {
+      if (!camera) return
+      if (yaw === null || pitch === null) {
+        camera.alpha = -Math.PI / 2
+        camera.beta = Math.PI / 2
+        return
+      }
+      camera.alpha = -Math.PI / 2 + (Number(yaw) || 0)
+      camera.beta = Math.max(0.2, Math.min(1.5, Math.PI / 2 - (Number(pitch) || 0)))
+    },
+    setWorld(viewArray, modelArray, projectionArray, heightMeters, upArray) {
+      if (!modelRoot || !scene) return false
+      if (!worldCamera) {
+        worldCamera = new BABYLON.FreeCamera('irisWorldCamera', new BABYLON.Vector3(0, 0, 0), scene)
+        worldCamera.minZ = 0.02
+        worldCamera.maxZ = 1000
+      }
+      if (!arRoot) {
+        arRoot = new BABYLON.TransformNode('irisArRoot', scene)
+        modelRoot.parent = arRoot
+      }
+      const view = glToBabylon(viewArray)
+      const model = glToBabylon(modelArray)
+      const projection = glToBabylon(projectionArray)
+
+      const modelPosition = model.getTranslation()
+
+      const nativeHeight = Math.max(0.001, modelHeight)
+      const targetHeight = Math.max(0.05, Math.min(1000, Number(heightMeters) || 1.7))
+      // MMD 骨骼世界矩阵由 babylon-mmd 运行时自己算，缩放父节点会把蒙皮拉成条纹。
+      // 所以模型保持原尺寸，改成把相机与锚点同时缩小 worldScale 倍，几何关系完全等价。
+      const worldScale = targetHeight / nativeHeight
+      const inverseScale = 1 / Math.max(1e-6, worldScale)
+      view.m[12] *= inverseScale
+      view.m[13] *= inverseScale
+      view.m[14] *= inverseScale
+
+      // 直接反解 view 得到相机世界矩阵，不手工推导四元数，避免方向/手性出错。
+      const cameraWorld = view.clone()
+      cameraWorld.invert()
+      const camScale = new BABYLON.Vector3()
+      const camRotation = new BABYLON.Quaternion()
+      const camPosition = new BABYLON.Vector3()
+      cameraWorld.decompose(camScale, camRotation, camPosition)
+      camRotation.normalize()
+      worldCamera.position.copyFrom(camPosition)
+      worldCamera.rotationQuaternion = camRotation
+      // 用 SLAM 的原始矩阵渲染，模型与地面网格/锚点标记才能逐像素一致。
+      worldCamera.getViewMatrix = () => view.clone()
+      worldCamera.getProjectionMatrix = () => projection.clone()
+
+      const anchorPosition = new BABYLON.Vector3(
+        modelPosition.x * inverseScale,
+        modelPosition.y * inverseScale,
+        modelPosition.z * inverseScale,
+      )
+
+      // 竖直轴用定锚点时的重力方向（相机在锚点上方）。
+      // 平面法向可能是竖面（屏幕/墙），拿它当上方向会让人贴墙躺倒。
+      const up = upArray && upArray.length >= 3
+        ? new BABYLON.Vector3(Number(upArray[0]) || 0, Number(upArray[1]) || 0, Number(upArray[2]) || 0)
+        : new BABYLON.Vector3(0, 1, 0)
+      if (up.lengthSquared() < 1e-6) up.set(0, 1, 0)
+      up.normalize()
+
+      const toCamera = camPosition.subtract(anchorPosition)
+      const flatForward = toCamera.subtract(up.scale(BABYLON.Vector3.Dot(toCamera, up)))
+      const forward = flatForward.lengthSquared() > 1e-8
+        ? flatForward.normalize()
+        : new BABYLON.Vector3(0, 0, 1)
+      // MMD 模型正面朝 -Z：Z 轴取 -forward，X = up × Z 保证右手系。
+      const zAxis = forward.scale(-1)
+      const xAxis = BABYLON.Vector3.Cross(up, zAxis).normalize()
+      const basis = BABYLON.Matrix.Identity()
+      BABYLON.Matrix.FromXYZAxesToRef(xAxis, up, zAxis, basis)
+      const targetRotation = BABYLON.Quaternion.FromRotationMatrix(basis)
+      targetRotation.normalize()
+      // 朝向平滑跟随，避免 SLAM 位姿抖动让模型左右摆头。
+      if (!window.__irisMmdRotation) {
+        window.__irisMmdRotation = targetRotation.clone()
+      } else {
+        BABYLON.Quaternion.SlerpToRef(
+          window.__irisMmdRotation,
+          targetRotation,
+          0.25,
+          window.__irisMmdRotation,
+        )
+      }
+      arRoot.position.copyFrom(anchorPosition)
+      arRoot.rotationQuaternion = window.__irisMmdRotation.clone()
+      arRoot.scaling.copyFromFloats(1, 1, 1)
+      scene.activeCamera = worldCamera
+
+      if (!window.__irisMmdWorldLogged || performance.now() - window.__irisMmdWorldLogged > 2000) {
+        window.__irisMmdWorldLogged = performance.now()
+        let anchorPx = '-'
+        let feetY = '-'
+        try {
+          const rw = engine.getRenderWidth()
+          const rh = engine.getRenderHeight()
+          const vp = worldCamera.viewport.toGlobal(rw, rh)
+          const projected = BABYLON.Vector3.Project(
+            anchorPosition,
+            BABYLON.Matrix.Identity(),
+            scene.getTransformMatrix(),
+            vp,
+          )
+          const cssW = Math.max(1, canvas.clientWidth || rw)
+          const cssH = Math.max(1, canvas.clientHeight || rh)
+          anchorPx = (projected.x * cssW / rw).toFixed(0) + ',' + (projected.y * cssH / rh).toFixed(0)
+          modelRoot.computeWorldMatrix(true)
+          const bounds = modelRoot.getHierarchyBoundingVectors(true)
+          feetY = bounds.min.y.toFixed(2) + '..' + bounds.max.y.toFixed(2)
+        } catch (_) { }
+        console.log(
+          'irisMmd world cam=' + camPosition.x.toFixed(2) + ',' + camPosition.y.toFixed(2) +
+          ',' + camPosition.z.toFixed(2) +
+          ' anchor=' + anchorPosition.x.toFixed(2) + ',' + anchorPosition.y.toFixed(2) +
+          ',' + anchorPosition.z.toFixed(2) +
+          ' height=' + targetHeight.toFixed(3) +
+          ' scale=' + worldScale.toFixed(4) +
+          ' up=' + up.x.toFixed(2) + ',' + up.y.toFixed(2) + ',' + up.z.toFixed(2) +
+          ' feetY=' + feetY +
+          ' anchorPx=' + anchorPx +
+          ' css=' + Math.round(canvas.clientWidth || 0) + 'x' + Math.round(canvas.clientHeight || 0),
+        )
+      }
+      return true
+    },
+    clearWorld() {
+      if (!scene || !camera) return
+      if (arRoot) {
+        arRoot.position.setAll(0)
+        arRoot.rotationQuaternion = BABYLON.Quaternion.Identity()
+        arRoot.scaling.setAll(1)
+      }
+      if (worldCamera) {
+        delete worldCamera.getViewMatrix
+        delete worldCamera.getProjectionMatrix
+      }
+      arWorldView = null
+      arWorldProjection = null
+      window.__irisMmdFacingYaw = undefined
+      window.__irisMmdFlipUp = undefined
+      window.__irisMmdRotation = undefined
+      scene.activeCamera = camera
+    },
     resetCamera() {
       if (!camera) return
       camera.alpha = -Math.PI / 2
@@ -342,12 +489,28 @@
   }
 
   scene = new BABYLON.Scene(engine)
+  scene.useRightHandedSystem = true
   scene.clearColor = new BABYLON.Color4(0, 0, 0, 0)
   scene.autoClear = true
   scene.skipPointerMovePicking = true
   scene.imageProcessingConfiguration.toneMappingEnabled = false
   scene.imageProcessingConfiguration.exposure = 1
 
+  let worldCamera = null
+  let arRoot = null
+  let arWorldView = null
+  let arWorldProjection = null
+
+  // SLAM/OpenGL 列主序数组与 Babylon 矩阵的乘法公式一致（x' = m0·x + m4·y + m8·z + m12），
+  // 直接按原顺序填入即可；转置会把平移挤到 m[3]/m[7]/m[11]，相机和锚点都变成原点。
+  function glToBabylon(a) {
+    return BABYLON.Matrix.FromValues(
+      a[0], a[1], a[2], a[3],
+      a[4], a[5], a[6], a[7],
+      a[8], a[9], a[10], a[11],
+      a[12], a[13], a[14], a[15],
+    )
+  }
   camera = new BABYLON.ArcRotateCamera(
     'mmdCamera',
     -Math.PI / 2,
@@ -956,6 +1119,8 @@
         materialProxyConstructor: BABYLONMMD.MmdStandardMaterialProxy,
       })
       if (!model) throw new Error('MMD 运行时初始化失败')
+      // 运行时会在建模型时重置根节点变换，重新校正一次才能让原点回到脚底。
+      applyModelBounds()
       tuneTextureSampling(container)
 
       let loaded = false
@@ -989,11 +1154,11 @@
   }
 
   function resize() {
+    // 不要给 #stage 写死像素尺寸：写死后就是固定布局，
+    // ResizeObserver 再也看不到视口变化，画布会永远停在首次测量的大小。
     const width = vw()
     const height = vh()
     if (width < 2 || height < 2) return
-    stage.style.width = width + 'px'
-    stage.style.height = height + 'px'
     engine.resize()
     applyScaling()
     fitCamera()

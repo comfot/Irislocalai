@@ -87,6 +87,7 @@ class BotMessageRouter(
                 toolPermissions = current.toolPermissions,
                 maxStepsOverride = current.agentMaxSteps,
                 planFirst = false,
+                contextLength = current.contextLength,
             ).collect { event ->
                 when (event) {
                     is AgentEvent.Delta -> output.append(event.text)

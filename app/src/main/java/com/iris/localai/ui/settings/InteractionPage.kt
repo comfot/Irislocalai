@@ -222,8 +222,8 @@ internal fun InteractionPage(
                 SliderRow(
                     title = "相机高度（米）",
                     value = settings.videoCallArCameraHeight,
-                    range = 0.8f..2.2f,
-                    steps = 13,
+                    range = 0.1f..2.2f,
+                    steps = 20,
                     format = { "%.1f m".format(it) },
                     onCommit = { value -> viewModel.update { it.copy(videoCallArCameraHeight = value) } },
                 )

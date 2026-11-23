@@ -25,6 +25,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.iris.localai.IrisApp
 import com.iris.localai.motion.MotionBridge
 import com.iris.localai.motion.MotionCategory
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 import java.io.File
 
@@ -43,6 +44,8 @@ internal fun MMDView(
     mouthAmplitude: Float = 0f,
     fullscreen: Boolean = false,
     portrait: Boolean = false,
+    arLook: Pair<Float, Float>? = null,
+    arWorld: ArWorldPose? = null,
     interactive: Boolean = true,
     modelRoot: String = "character_models",
     modifier: Modifier = Modifier,
@@ -130,6 +133,38 @@ internal fun MMDView(
             "window.irisMmd&&window.irisMmd.setMood(${JSONObject.quote(name)}, 1.0)",
             null,
         )
+    }
+    LaunchedEffect(arWorld, webView) {
+        val view = webView ?: return@LaunchedEffect
+        val pose = arWorld
+        while (true) {
+            if (pose == null) {
+                view.evaluateJavascript("window.irisMmd&&window.irisMmd.clearWorld()", null)
+            } else {
+                val model = pose.model.joinToString(",", "[", "]")
+                val viewMatrix = pose.view.joinToString(",", "[", "]")
+                val projection = pose.projection.joinToString(",", "[", "]")
+                val up = pose.worldUp.joinToString(",", "[", "]")
+                view.evaluateJavascript(
+                    "window.irisMmd&&window.irisMmd.setWorld($viewMatrix,$model,$projection," +
+                        "${pose.modelHeightMeters.toDouble()},$up)",
+                    null,
+                )
+            }
+            delay(33)
+        }
+    }
+    LaunchedEffect(arLook, webView) {
+        val view = webView ?: return@LaunchedEffect
+        val look = arLook ?: return@LaunchedEffect
+        // 模型页面加载完成后 window.irisMmd 才存在；周期性重发 AR 视角。
+        while (true) {
+            view.evaluateJavascript(
+                "window.irisMmd&&window.irisMmd.setArLook(${look.first.toDouble()}, ${look.second.toDouble()})",
+                null,
+            )
+            delay(500)
+        }
     }
     LaunchedEffect(cameraCommand?.seq) {
         val command = cameraCommand ?: return@LaunchedEffect

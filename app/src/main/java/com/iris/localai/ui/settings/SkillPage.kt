@@ -94,7 +94,7 @@ internal fun SkillPage(viewModel: SkillViewModel = viewModel()) {
                 ) { Text("创建技能") }
             }
             Text(
-                text = "SKILL.md 支持 YAML frontmatter（name、description、triggers、alwaysOn）；也支持 ZIP 内的 .md。",
+                text = "SKILL.md 支持 YAML frontmatter（name、description、triggers、alwaysOn、version）；可直接导入单个 .md 文件，或包含 SKILL.md 的 ZIP（可带参考资源）。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

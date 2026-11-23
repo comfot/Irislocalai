@@ -391,7 +391,7 @@ internal fun CodeManagementPage(viewModel: CodeViewModel = viewModel()) {
                 maxLines = 4,
             )
             Text(
-                text = "授权与命令前缀参考 AiCode 的逐工具授权；Shell 当前在应用沙盒中运行。",
+                text = "逐工具授权支持允许、询问与拒绝；Shell 当前在应用沙盒中运行。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

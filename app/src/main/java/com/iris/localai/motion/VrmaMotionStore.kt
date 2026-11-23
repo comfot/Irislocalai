@@ -123,6 +123,10 @@ class VrmaMotionStore(
 
     fun delete(asset: VrmaAsset): Boolean {
         val relative = asset.id.removePrefix("vrma/")
+        // VrmaAsset 是可自由构造的 data class，删除前先拒绝路径穿越段。
+        if (relative.isBlank() || relative.split('/').any { it.isEmpty() || it == "." || it == ".." }) {
+            return false
+        }
         val removed = storage.readDirs("motion_assets/vrma").fold(false) { acc, dirRoot ->
             val file = File(dirRoot, relative)
             val deleted = file.isFile && file.delete()

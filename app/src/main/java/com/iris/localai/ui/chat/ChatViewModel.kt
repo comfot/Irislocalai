@@ -21,6 +21,15 @@ import com.iris.localai.agent.Conversation
 import com.iris.localai.agent.PerformanceTag
 import com.iris.localai.agent.RoleplayOverlay
 import com.iris.localai.agent.StepStatus
+import com.iris.localai.agent.trimPromptHistory
+import com.iris.localai.voice.CloudStreamingAsr
+import com.iris.localai.voice.OpenAiRealtimeAsr
+import com.iris.localai.voice.StreamingAsrHandle
+import com.iris.localai.voice.XfyunRealtimeAsr
+import com.iris.localai.data.StreamingAsrProvider
+import com.iris.localai.agent.subagent.SubAgentDefinition
+import com.iris.localai.agent.subagent.SubAgentRunResult
+import com.iris.localai.agent.subagent.SubAgentToolMode
 import com.iris.localai.character.CharacterEntry
 import com.iris.localai.data.AppSettings
 import com.iris.localai.data.ContextStrategy
@@ -225,7 +234,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _performanceIntensity = MutableStateFlow(0.85f)
     val performanceIntensity: StateFlow<Float> = _performanceIntensity.asStateFlow()
 
+    val subAgents: StateFlow<List<SubAgentDefinition>> = graph.subAgentStore.definitions
+    private val _subAgentState = MutableStateFlow(SubAgentUiState())
+    val subAgentState: StateFlow<SubAgentUiState> = _subAgentState.asStateFlow()
+    private var subAgentJob: Job? = null
+
     private val _submitting = MutableStateFlow(false)
+    val toolConfirmation: com.iris.localai.agent.ToolConfirmation get() = graph.toolConfirmation
+
     val currentPlan: StateFlow<com.iris.localai.agent.Plan?> = combine(_currentId, graph.plans.plans) { id, plans ->
         id?.let { plans[it] }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -363,6 +379,49 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun endVideoCall() {
         callMode = false
         graph.tts.stop()
+    }
+
+    /** 视频通话：监听到用户人声时打断当前 TTS，允许随时插话。 */
+    fun interruptSpeaking() {
+        if (!graph.tts.speaking.value) return
+        viewModelScope.launch { graph.tts.stop() }
+    }
+
+    /** 开发者选项开启流式 ASR，且本地模型可用或云端 Key 已填时才走流式内核。 */
+    fun canUseStreamingAsr(): Boolean {
+        val settings = graph.settings.current
+        if (!settings.streamingAsrEnabled) return false
+        return when (settings.streamingAsrProvider) {
+            VoiceEngineType.LOCAL -> graph.localVoice.isStreamingAsrAvailable
+            VoiceEngineType.CLOUD -> when (settings.streamingAsrCloudProvider) {
+                StreamingAsrProvider.VOLCENGINE,
+                StreamingAsrProvider.OPENAI -> settings.sttCloudKey.isNotBlank()
+                StreamingAsrProvider.XFYUN -> settings.xfyunAppId.isNotBlank() &&
+                    settings.xfyunApiKey.isNotBlank() && settings.xfyunApiSecret.isNotBlank()
+            }
+            VoiceEngineType.SYSTEM -> false
+        }
+    }
+
+    suspend fun startStreamingAsr(): StreamingAsrHandle? {
+        val settings = graph.settings.current
+        if (!settings.streamingAsrEnabled) return null
+        return when (settings.streamingAsrProvider) {
+            VoiceEngineType.LOCAL ->
+                if (graph.localVoice.isStreamingAsrAvailable) {
+                    runCatching { graph.localVoice.startStreamingSession() }.getOrNull()
+                } else {
+                    null
+                }
+            VoiceEngineType.CLOUD -> withContext(Dispatchers.IO) {
+                when (settings.streamingAsrCloudProvider) {
+                    StreamingAsrProvider.VOLCENGINE -> CloudStreamingAsr.connect(settings)
+                    StreamingAsrProvider.OPENAI -> OpenAiRealtimeAsr.connect(settings)
+                    StreamingAsrProvider.XFYUN -> XfyunRealtimeAsr.connect(settings)
+                }
+            }
+            VoiceEngineType.SYSTEM -> null
+        }
     }
 
     fun sendCallTurn(text: String, jpegBase64: String? = null) {
@@ -544,6 +603,83 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 
+    fun runSubAgent(agentId: String, task: String) {
+        if (task.isBlank()) return
+        if (_running.value) {
+            Toast.makeText(getApplication(), "主对话运行中，请稍后再派发子代理", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (subAgentJob?.isActive == true) {
+            Toast.makeText(getApplication(), "已有子代理在运行", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val definition = graph.subAgentStore.find(agentId) ?: return
+        _subAgentState.value = SubAgentUiState(
+            running = true,
+            agentId = definition.id,
+            agentName = definition.name,
+        )
+        subAgentJob = viewModelScope.launch {
+            val result = try {
+                graph.subAgentManager.run(definition, task) { progress ->
+                    _subAgentState.update { state ->
+                        state.copy(progress = progress.takeLast(4_000))
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                SubAgentRunResult(
+                    agentId = definition.id,
+                    agentName = definition.name,
+                    text = "",
+                    steps = 0,
+                    durationMs = 0,
+                    error = e.message ?: e.javaClass.simpleName,
+                )
+            }
+            _subAgentState.value = SubAgentUiState(
+                running = false,
+                agentId = definition.id,
+                agentName = definition.name,
+                result = result.text,
+                error = result.error,
+                durationMs = result.durationMs,
+            )
+        }
+    }
+
+    fun stopSubAgent() {
+        subAgentJob?.cancel()
+        subAgentJob = null
+        _subAgentState.update {
+            if (it.running) it.copy(running = false, error = "已停止") else it
+        }
+    }
+
+    fun saveSubAgent(name: String, description: String, prompt: String, mode: SubAgentToolMode): Boolean {
+        if (name.isBlank() || prompt.isBlank()) return false
+        graph.subAgentStore.save(
+            SubAgentDefinition(
+                id = "",
+                name = name.trim(),
+                description = description.trim(),
+                systemPrompt = prompt.trim(),
+                toolMode = mode,
+                allowedTools = mode.allowedTools(),
+            ),
+        )
+        return true
+    }
+
+    fun deleteSubAgent(id: String) {
+        graph.subAgentStore.delete(id)
+    }
+
+    fun clearSubAgentResult() {
+        _subAgentState.value = SubAgentUiState()
+    }
+
     fun cancelPlan() {
         graph.plans.current()?.let { graph.plans.cancel(it) }
     }
@@ -577,6 +713,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun send() {
         val text = _input.value.trim()
         val pendingAttachments = _attachments.value.toList()
+        if (subAgentJob?.isActive == true) {
+            Toast.makeText(getApplication(), "子代理运行中，请先停止或等待完成", Toast.LENGTH_SHORT).show()
+            return
+        }
         if ((text.isEmpty() && pendingAttachments.isEmpty()) || _running.value || _submitting.value) return
         _submitting.value = true
         viewModelScope.launch {
@@ -700,7 +840,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (!graph.engines.ensureLoaded(profile)) {
                     val reason = (engineState.value as? EngineState.Failed)?.message ?: "引擎加载失败"
-                    appendError(conversation.id, assistantId, reason)
+                    appendErrorStep(conversation.id, assistantId, reason)
                     return@launch
                 }
                 val language = profile.role(ModelRole.LANGUAGE)
@@ -955,6 +1095,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         (settings.space == Space.WORK || settings.space == Space.COMPOSITE),
                     startInThink = startInThink,
                     chatId = conversation.id,
+                    contextLength = settings.contextLength,
                 ).collect { event ->
                     when (event) {
                         is AgentEvent.Delta -> store.updateMessage(conversation.id, assistantId) {
@@ -1055,7 +1196,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 _callReply.value = spokenText
                                 speakCallReply(spokenText)
                             } else {
-                                speakIfEnabled(spokenText)
+                                speakIfEnabled(spokenText, conversation.space)
                             }
                             graph.memoryAutoCapture.captureAsync(conversation.id)
                         }
@@ -1070,7 +1211,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     ),
                                 )
                             }
-                            appendError(conversation.id, assistantId, event.message)
                             if (callMode) _callReply.value = "[通话出错] ${event.message}"
                             notifyPluginChatRuntime(conversation.id, "error", event.message)
                         }
@@ -1079,7 +1219,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                appendError(conversation.id, assistantId, e.message ?: "发送失败")
+                appendErrorStep(conversation.id, assistantId, e.message ?: "发送失败")
                 notifyPluginChatRuntime(conversation.id, "error", e.message)
             } finally {
                 _running.value = false
@@ -1251,7 +1391,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _attachmentError.value = if (isVisionEnabled(graph.models.active())) {
             null
         } else {
-            "图片已附加，但当前模型未开启「支持识图」，发送时不会带上图片；请在模型设置开启"
+            "图片已附加，但当前模型未开启「支持识图」，发送时不会带上图片；请在「设置 › 模型」长按该模型开启"
         }
         _attachments.update { it + attachment }
     }
@@ -1345,7 +1485,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (!inCodeSpace) {
             ids = ids - codeToolIds
         } else if (graph.code.current.enabled) {
-            ids = ids + setOf("shell", "terminal", "workspace")
+            ids = ids + setOf("shell", "terminal", "workspace", "task")
         }
         val inOperateSpace = settings.space == Space.OPERATE || settings.space == Space.COMPOSITE
         if (inOperateSpace) {
@@ -1406,10 +1546,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         settings: AppSettings,
     ): List<PromptMessage> {
         if (history.isEmpty() || !settings.autoCompact) return history
-        return when (settings.contextStrategy) {
+        val selected = when (settings.contextStrategy) {
             ContextStrategy.SLIDING_WINDOW,
-            ContextStrategy.SUMMARY,
-            ContextStrategy.KV_SHIFT -> {
+            ContextStrategy.SUMMARY -> {
                 val keep = (settings.contextKeepTurns * 2).coerceAtLeast(2)
                 val tail = history.takeLast(keep)
                 // 滑动窗口会丢掉会话最初的任务描述，导致模型忘记目标后反复探索。
@@ -1417,20 +1556,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (firstUser != null) listOf(firstUser) + tail else tail
             }
 
-            ContextStrategy.TOKEN_BUDGET -> {
-                val budget = (settings.contextLength * settings.summaryTriggerPercent / 100)
-                    .coerceAtLeast(512)
-                val kept = ArrayDeque<PromptMessage>()
-                var tokens = 0
-                for (message in history.asReversed()) {
-                    val cost = message.content.length / 4 + 8
-                    if (kept.isNotEmpty() && tokens + cost > budget) break
-                    kept.addFirst(message)
-                    tokens += cost
-                }
-                kept.toList()
-            }
+            ContextStrategy.TOKEN_BUDGET -> history
         }
+        // 按条数保留也可能超出上下文；统一再按 token 预算裁一次，避免 native 侧静默丢消息。
+        val budget = (settings.contextLength * settings.summaryTriggerPercent / 100)
+            .coerceAtLeast(512)
+        return trimPromptHistory(selected, budget)
     }
 
     private fun autoTitle(text: String): String =
@@ -1853,8 +1984,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         else -> null
     }
 
-    private fun speakIfEnabled(text: String) {
+    private fun speakIfEnabled(text: String, space: Space) {
         val settings = graph.settings.current
+        if (space == Space.WORK) return
         if (!settings.autoSpeak || text.isBlank()) return
         when (settings.ttsEngine) {
             VoiceEngineType.SYSTEM -> graph.tts.speak(text, settings.ttsSpeed)
@@ -1874,9 +2006,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun appendError(conversationId: Long, messageId: Long, message: String) {
+    /** 错误统一落为 ERROR 步骤卡片；不再拼进正文，避免错误文本进入下一轮模型上下文。 */
+    private fun appendErrorStep(conversationId: Long, messageId: Long, message: String) {
         store.updateMessage(conversationId, messageId) {
-            it.copy(text = (it.text + "\n\n[错误] " + message).trim())
+            it.copy(
+                steps = it.steps + AgentStep(
+                    tool = "对话",
+                    arguments = "",
+                    result = message,
+                    status = StepStatus.ERROR,
+                ),
+            )
         }
     }
 
@@ -2178,6 +2318,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
+data class SubAgentUiState(
+    val running: Boolean = false,
+    val agentId: String = "",
+    val agentName: String = "",
+    val progress: String = "",
+    val result: String = "",
+    val error: String? = null,
+    val steps: Int = 0,
+    val durationMs: Long = 0L,
+)
+
 data class PluginUiTarget(
     val plugin: InstalledPlugin,
     val moduleId: String,
@@ -2187,6 +2338,7 @@ data class PluginUiTarget(
 private val codeToolIds = setOf(
     "shell",
     "terminal",
+    "task",
     "workspace",
     "read_file",
     "write_file",

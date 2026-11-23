@@ -2,6 +2,7 @@ package com.iris.localai
 
 import android.content.Context
 import com.iris.localai.agent.AgentLoop
+import com.iris.localai.agent.ToolConfirmation
 import com.iris.localai.agent.ConversationStore
 import com.iris.localai.agent.PlanStore
 import com.iris.localai.agent.ToolRegistry
@@ -50,6 +51,9 @@ import com.iris.localai.agent.tools.WriteFileTool
 import com.iris.localai.browser.BrowserController
 import com.iris.localai.character.CharacterCardStore
 import com.iris.localai.code.CodeSettingsStore
+import com.iris.localai.agent.subagent.SubAgentManager
+import com.iris.localai.agent.subagent.SubAgentStore
+import com.iris.localai.agent.tools.TaskTool
 import com.iris.localai.agent.tools.TerminalTool
 import com.iris.localai.code.ShellTool
 import com.iris.localai.code.TerminalSessions
@@ -181,7 +185,7 @@ class AppGraph(
         engineFactory ?: { _, profile ->
             val provider = models.providerFor(profile, ModelRole.LANGUAGE)
             when {
-                provider.kind == ProviderKind.LOCAL -> LlamaEngine()
+                provider.kind == ProviderKind.LOCAL -> LlamaEngine(context)
                 provider.kind == ProviderKind.PLUGIN -> {
                     val runtime = pluginRuntimeRef
                     if (runtime == null || provider.pluginProviderId.isBlank()) {
@@ -223,7 +227,11 @@ class AppGraph(
     val terminalSessions = TerminalSessions(context, code, workspaces)
     val integrationStore = IntegrationStore(context)
     val browser = BrowserController(context) { integrationStore.settings.value.browser }
-    val tools = ToolRegistry().apply {
+    val subAgentStore = SubAgentStore(context)
+    val tools = ToolRegistry()
+    val subAgentManager = SubAgentManager(engines, tools, models, settings, workspaces)
+    init {
+    tools.apply {
         register(CurrentTimeTool())
         register(DeviceInfoTool())
         register(RandomPickTool())
@@ -241,6 +249,7 @@ class AppGraph(
         register(ExpressionControlTool(expressionBindings, characterModels, settings))
         register(ShellTool(code, workspaces, context))
         register(TerminalTool(terminalSessions))
+        register(TaskTool(subAgentManager, subAgentStore))
         register(DeviceOpenAppTool(deviceActions))
         register(DeviceTapTool(deviceActions))
         register(DeviceSwipeTool(deviceActions))
@@ -267,6 +276,7 @@ class AppGraph(
         register(BrowserBackTool(browser))
         register(BrowserScreenshotTool(browser))
     }
+    }
     val mcpConnections = McpConnectionManager(
         registry = tools,
         transportFactory = { server ->
@@ -284,7 +294,6 @@ class AppGraph(
         settings.syncToolCatalog(tools.all().map { it.name }.toSet())
     }.also {
         tools.register(McpConfigTool(mcp, it, tools))
-        settings.syncToolCatalog(tools.all().map { it.name }.toSet())
     }
     val mcpServer = McpServerService(mcp, tools)
     val plugins = PluginStore(context)
@@ -294,7 +303,6 @@ class AppGraph(
                 plugins.plugins.value.any { it.id == "iris.vrma_generator" && it.enabled }
             },
         )
-        settings.syncToolCatalog(tools.all().map { it.name }.toSet())
     }
     val pluginTerminal = PluginTerminalHost(context, code)
     val hostActions = HostActionRegistry(context, tts, memory, characterModels, settings)
@@ -312,20 +320,6 @@ class AppGraph(
         },
         hostActions = hostActions,
     )
-    init {
-        pluginRuntimeRef = pluginRuntime
-        ioScope.launch {
-            pluginRuntime.registrations.collect { registrations ->
-                models.syncPluginProviders(
-                    registrations.values.flatMap { entry ->
-                        entry.aiProviders.map { providerId ->
-                            PluginAiProviderRef(entry.pluginId, entry.pluginName, providerId)
-                        }
-                    },
-                )
-            }
-        }
-    }
     val pluginTools = PluginToolInstaller(
         store = plugins,
         registry = tools,
@@ -345,9 +339,23 @@ class AppGraph(
     }
     init {
         tools.register(PluginDevTool(pluginDev))
+        pluginRuntimeRef = pluginRuntime
+        ioScope.launch {
+            pluginRuntime.registrations.collect { registrations ->
+                models.syncPluginProviders(
+                    registrations.values.flatMap { entry ->
+                        entry.aiProviders.map { providerId ->
+                            PluginAiProviderRef(entry.pluginId, entry.pluginName, providerId)
+                        }
+                    },
+                )
+            }
+        }
+        // 工具目录在全部注册完成后统一同步一次。
         settings.syncToolCatalog(tools.all().map { it.name }.toSet())
     }
-    val agent = AgentLoop(engines, tools, pluginRuntime = pluginRuntime)
+    val toolConfirmation = ToolConfirmation()
+    val agent = AgentLoop(engines, tools, pluginRuntime = pluginRuntime, confirmation = toolConfirmation)
     val integrations = IntegrationManager(
         store = integrationStore,
         router = BotMessageRouter(agent, conversations, settings, skills),

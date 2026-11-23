@@ -172,6 +172,8 @@ class SettingsRepository(
             .putFloat(KEY_VIDEO_CALL_AR_CAMERA_HEIGHT, next.videoCallArCameraHeight)
             .putFloat(KEY_VIDEO_CALL_AR_FOOT, next.videoCallArFootOffset)
             .putBoolean(KEY_VIDEO_CALL_AR_VISUAL, next.videoCallArVisualTracking)
+            .putBoolean(KEY_VIDEO_CALL_AR_SLAM, next.videoCallArSlam)
+            .putBoolean(KEY_VIDEO_CALL_AR_DEBUG, next.videoCallArDebug)
             .putString(KEY_MOTION_SOURCE, next.motionSource.name)
             .putString(KEY_VRM_MOTION_ENGINE, next.vrmMotionEngine.name)
             .putString(KEY_MOTION_ENDPOINT, next.motionEndpoint)
@@ -259,6 +261,15 @@ class SettingsRepository(
             .putString(KEY_STT_CLOUD_ENDPOINT, next.sttCloudEndpoint)
             .putString(KEY_STT_CLOUD_KEY, next.sttCloudKey)
             .putString(KEY_STT_CLOUD_MODEL, next.sttCloudModel)
+            .putBoolean(KEY_STREAMING_ASR_ENABLED, next.streamingAsrEnabled)
+            .putString(KEY_STREAMING_ASR_PROVIDER, next.streamingAsrProvider.name)
+            .putString(KEY_STREAMING_ASR_LOCAL_MODEL, next.streamingAsrLocalModelId)
+            .putString(KEY_STT_STREAMING_RESOURCE_ID, next.sttStreamingResourceId)
+            .putString(KEY_STREAMING_ASR_CLOUD_PROVIDER, next.streamingAsrCloudProvider.name)
+            .putString(KEY_OPENAI_REALTIME_MODEL, next.openaiRealtimeModel)
+            .putString(KEY_XFYUN_APP_ID, next.xfyunAppId)
+            .putString(KEY_XFYUN_API_KEY, next.xfyunApiKey)
+            .putString(KEY_XFYUN_API_SECRET, next.xfyunApiSecret)
             .apply()
     }
 
@@ -335,6 +346,8 @@ class SettingsRepository(
         videoCallArCameraHeight = prefs.getFloat(KEY_VIDEO_CALL_AR_CAMERA_HEIGHT, 1.35f),
         videoCallArFootOffset = prefs.getFloat(KEY_VIDEO_CALL_AR_FOOT, 0f),
         videoCallArVisualTracking = prefs.getBoolean(KEY_VIDEO_CALL_AR_VISUAL, false),
+        videoCallArSlam = prefs.getBoolean(KEY_VIDEO_CALL_AR_SLAM, false),
+        videoCallArDebug = prefs.getBoolean(KEY_VIDEO_CALL_AR_DEBUG, true),
         motionSource = enumOf(prefs.getString(KEY_MOTION_SOURCE, null), MotionSource.NONE),
         vrmMotionEngine = enumOf(
             prefs.getString(KEY_VRM_MOTION_ENGINE, null),
@@ -431,6 +444,23 @@ class SettingsRepository(
         sttCloudEndpoint = prefs.getString(KEY_STT_CLOUD_ENDPOINT, "") ?: "",
         sttCloudKey = prefs.getString(KEY_STT_CLOUD_KEY, "") ?: "",
         sttCloudModel = prefs.getString(KEY_STT_CLOUD_MODEL, "") ?: "",
+        streamingAsrEnabled = prefs.getBoolean(KEY_STREAMING_ASR_ENABLED, false),
+        streamingAsrProvider = enumOf(
+            prefs.getString(KEY_STREAMING_ASR_PROVIDER, null),
+            VoiceEngineType.LOCAL,
+        ),
+        streamingAsrLocalModelId = prefs.getString(KEY_STREAMING_ASR_LOCAL_MODEL, "") ?: "",
+        sttStreamingResourceId = prefs.getString(KEY_STT_STREAMING_RESOURCE_ID, null)
+            ?: "volc.seedasr.sauc.duration",
+        streamingAsrCloudProvider = enumOf(
+            prefs.getString(KEY_STREAMING_ASR_CLOUD_PROVIDER, null),
+            StreamingAsrProvider.VOLCENGINE,
+        ),
+        openaiRealtimeModel = prefs.getString(KEY_OPENAI_REALTIME_MODEL, null)
+            ?: "gpt-live-transcribe",
+        xfyunAppId = prefs.getString(KEY_XFYUN_APP_ID, "") ?: "",
+        xfyunApiKey = prefs.getString(KEY_XFYUN_API_KEY, "") ?: "",
+        xfyunApiSecret = prefs.getString(KEY_XFYUN_API_SECRET, "") ?: "",
     )
 
     private fun readEnabledTools(): Set<String> {
@@ -544,6 +574,8 @@ class SettingsRepository(
         const val KEY_VIDEO_CALL_AR_CAMERA_HEIGHT = "video_call_ar_camera_height"
         const val KEY_VIDEO_CALL_AR_FOOT = "video_call_ar_foot_offset"
         const val KEY_VIDEO_CALL_AR_VISUAL = "video_call_ar_visual_tracking"
+        const val KEY_VIDEO_CALL_AR_SLAM = "video_call_ar_slam"
+        const val KEY_VIDEO_CALL_AR_DEBUG = "video_call_ar_slam_debug"
         const val KEY_MOTION_SOURCE = "motion_source"
         const val KEY_VRM_MOTION_ENGINE = "vrm_motion_engine"
         const val KEY_MOTION_ENDPOINT = "motion_endpoint"
@@ -632,6 +664,15 @@ class SettingsRepository(
         const val KEY_TTS_CLOUD_VOICE_SAMPLE = "tts_cloud_voice_sample"
         const val KEY_STT_CLOUD_PROVIDER = "stt_cloud_provider"
         const val KEY_STT_CLOUD_ENDPOINT = "stt_cloud_endpoint"
+        const val KEY_STREAMING_ASR_ENABLED = "streaming_asr_enabled"
+        const val KEY_STREAMING_ASR_PROVIDER = "streaming_asr_provider"
+        const val KEY_STREAMING_ASR_LOCAL_MODEL = "streaming_asr_local_model"
+        const val KEY_STT_STREAMING_RESOURCE_ID = "stt_streaming_resource_id"
+        const val KEY_STREAMING_ASR_CLOUD_PROVIDER = "streaming_asr_cloud_provider"
+        const val KEY_OPENAI_REALTIME_MODEL = "openai_realtime_model"
+        const val KEY_XFYUN_APP_ID = "xfyun_app_id"
+        const val KEY_XFYUN_API_KEY = "xfyun_api_key"
+        const val KEY_XFYUN_API_SECRET = "xfyun_api_secret"
         const val KEY_STT_CLOUD_KEY = "stt_cloud_key"
         const val KEY_STT_CLOUD_MODEL = "stt_cloud_model"
     }

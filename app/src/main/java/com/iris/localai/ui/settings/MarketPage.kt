@@ -72,7 +72,6 @@ internal fun MarketPage(
     }
     val section by viewModel.section.collectAsStateWithLifecycle()
     val modelTab by viewModel.modelTab.collectAsStateWithLifecycle()
-    var characterTab by rememberSaveable { mutableIntStateOf(0) }
 
     val query by viewModel.query.collectAsStateWithLifecycle()
     val results by viewModel.results.collectAsStateWithLifecycle()
@@ -102,6 +101,7 @@ internal fun MarketPage(
     val context = LocalContext.current
     var showPluginUrl by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<InstalledPlugin?>(null) }
+    var characterTab by rememberSaveable { mutableIntStateOf(0) }
 
     val zipImporter = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.importPluginUri(context, uri)
@@ -301,7 +301,6 @@ private fun LazyListScope.llmMarket(
         }
     }
 
-    item { ActionModelCard() }
 
     if (searching) {
         item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
@@ -367,7 +366,38 @@ private fun LazyListScope.llmMarket(
                 )
             }
             downloaded.forEach { file ->
-                DownloadedRow(file = file, onUse = { viewModel.setAsLocalModel(file) })
+                var pendingDeleteModel by remember { mutableStateOf(false) }
+                DownloadedRow(
+                    file = file,
+                    inUse = viewModel.isLocalModelInUse(file),
+                    onUse = { viewModel.setAsLocalModel(file) },
+                    onDelete = { pendingDeleteModel = true },
+                )
+                if (pendingDeleteModel) {
+                    AlertDialog(
+                        onDismissRequest = { pendingDeleteModel = false },
+                        title = { Text("删除模型") },
+                        text = {
+                            Text(
+                                "确定删除「${file.name}」？此操作不可撤销。" +
+                                    if (viewModel.isLocalModelInUse(file)) {
+                                        "\n该模型正在使用，删除后会卸载当前引擎。"
+                                    } else {
+                                        ""
+                                    },
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                viewModel.deleteModel(file)
+                                pendingDeleteModel = false
+                            }) { Text("删除") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingDeleteModel = false }) { Text("取消") }
+                        },
+                    )
+                }
             }
         }
     }
@@ -395,19 +425,19 @@ private fun LazyListScope.pluginMarket(
         SettingsCard("插件市场") {
             PluginSlot("market.plugins")
             Text(
-                text = "安装 Operit ToolPkg 或 IRIS 插件包。仓库 ZIP 需在根目录或一级子目录包含 manifest.json / manifest.hjson。",
+                text = "安装 Operit ToolPkg 或 IRIS 插件包。仓库 ZIP 需在根目录或前两级子目录包含 manifest.json / manifest.hjson。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onImport, enabled = !busy, modifier = Modifier.weight(1f)) {
-                    Text("导入 ZIP")
+                    Text("导入 ZIP", maxLines = 1)
                 }
                 Button(onClick = onUrlInstall, enabled = !busy, modifier = Modifier.weight(1f)) {
-                    Text("从 URL 安装")
+                    Text("URL 安装", maxLines = 1)
                 }
                 Button(onClick = viewModel::refreshPlugins, modifier = Modifier.weight(1f)) {
-                    Text("刷新")
+                    Text("刷新", maxLines = 1)
                 }
             }
             if (busy) {
@@ -622,30 +652,6 @@ private fun SortChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ActionModelCard() {
-    val context = LocalContext.current
-    fun open(url: String) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-    }
-    SettingsCard("动作模型（3D 控制）") {
-        Text(
-            text = "Kimodo：NVIDIA 文本/约束驱动的动作扩散模型，PyTorch + GPU，可导出 BVH；HAST-SEC：本地中文动作服务，Node.js，非商用研究许可。两者都需在电脑端运行。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        TextButton(onClick = { open("https://github.com/nv-tlabs/kimodo") }) { Text("Kimodo GitHub") }
-        TextButton(onClick = { open("https://huggingface.co/collections/nvidia/kimodo-v1") }) { Text("Kimodo 权重") }
-        TextButton(onClick = { open("https://github.com/sola1039/HAST-SEC") }) { Text("HAST-SEC GitHub") }
-        TextButton(onClick = { open("https://huggingface.co/sola1039/HAST-SEC") }) { Text("HAST-SEC 权重") }
-        Text(
-            text = "配置入口：设置 › 系统管理 › 交互 › 3D 控制。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-    }
-}
-
-@Composable
 private fun RecommendedModelRow(
     model: RecommendedModel,
     busy: Boolean,
@@ -790,7 +796,12 @@ private fun DownloadTaskRow(task: DownloadTask, onCancel: () -> Unit) {
 }
 
 @Composable
-private fun DownloadedRow(file: File, onUse: () -> Unit) {
+private fun DownloadedRow(
+    file: File,
+    inUse: Boolean,
+    onUse: () -> Unit,
+    onDelete: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -805,12 +816,18 @@ private fun DownloadedRow(file: File, onUse: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = formatBytes(file.length()),
+                text = buildString {
+                    append(formatBytes(file.length()))
+                    if (inUse) append(" · 使用中")
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         TextButton(onClick = onUse) { Text("设为本地模型") }
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Outlined.Delete, contentDescription = "删除模型")
+        }
     }
 }
 

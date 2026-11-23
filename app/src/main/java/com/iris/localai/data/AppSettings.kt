@@ -74,6 +74,10 @@ data class AppSettings(
     val videoCallArFootOffset: Float = 0f,
     /** 实验性：用 OpenCV 稀疏光流估计相机在地面上的位移。 */
     val videoCallArVisualTracking: Boolean = false,
+    /** 实验性：用 MenthaAR/ORB-SLAM2 提供 6DoF 位姿，失败时回退 IMU + 光流。 */
+    val videoCallArSlam: Boolean = false,
+    /** AR 舞台是否显示 SLAM 调试信息行。 */
+    val videoCallArDebug: Boolean = true,
     val motionSource: MotionSource = MotionSource.NONE,
     val vrmMotionEngine: VrmMotionEngine = VrmMotionEngine.HAST_SEC,
     val motionEndpoint: String = "",
@@ -183,6 +187,18 @@ data class AppSettings(
     val sttCloudEndpoint: String = "",
     val sttCloudKey: String = "",
     val sttCloudModel: String = "",
+
+    // 流式语音识别（开发者选项）
+    val streamingAsrEnabled: Boolean = false,
+    val streamingAsrProvider: VoiceEngineType = VoiceEngineType.LOCAL,
+    val streamingAsrLocalModelId: String = "",
+    /** 云端流式厂商与各自凭证；火山/OpenAI 复用 sttCloudKey，讯飞用独立三件套。 */
+    val streamingAsrCloudProvider: StreamingAsrProvider = StreamingAsrProvider.VOLCENGINE,
+    val sttStreamingResourceId: String = "volc.seedasr.sauc.duration",
+    val openaiRealtimeModel: String = "gpt-live-transcribe",
+    val xfyunAppId: String = "",
+    val xfyunApiKey: String = "",
+    val xfyunApiSecret: String = "",
 ) {
     companion object {
         /** 默认开启的工具；Shell 仍需在「编程管理」单独开启。 */

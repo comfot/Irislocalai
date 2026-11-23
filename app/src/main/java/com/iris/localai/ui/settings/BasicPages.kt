@@ -79,6 +79,13 @@ internal fun BackendPage(settings: AppSettings, engineState: EngineState, viewMo
             InfoRow("GGUF / llama.cpp", runtimeStatus)
             InfoRow("OpenCL GPU", if (gpuAvailable) "已检测到驱动" else "未检测到，仅 CPU")
             InfoRow("当前本地模型", settings.modelPath.ifBlank { "未选择" })
+            Text(
+                text = "部分设备（如小米 HyperOS + 高通 Adreno）的厂商 Vulkan/OpenCL 驱动对" +
+                    " llama.cpp 的 GPU 后端存在兼容性问题（pipeline 创建失败或驱动崩溃），" +
+                    "此类设备建议使用 CPU 后端。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         SettingsCard("本地推理引擎") {
@@ -88,6 +95,13 @@ internal fun BackendPage(settings: AppSettings, engineState: EngineState, viewMo
                 InfoRow("已加载", details.name)
                 InfoRow("上下文", details.contextLength.toString())
                 InfoRow("后端", details.backend.name)
+                if (details.gpuNote.isNotBlank()) {
+                    Text(
+                        text = details.gpuNote,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Button(
                 onClick = viewModel::reloadEngine,
@@ -153,7 +167,7 @@ internal fun GenerationPage(settings: AppSettings, viewModel: SettingsViewModel)
         SettingsCard("输出") {
             BasicSwitchRow(
                 title = "使用模型档案参数",
-                summary = "云端对话优先使用语言模型的温度与输出上限",
+                summary = "温度、Top-P 与最大输出改用语言模型档案的值；高级采样始终全局生效",
                 checked = settings.useProfileGenerationParams,
             ) { on -> viewModel.update { it.copy(useProfileGenerationParams = on) } }
             SliderRow(
@@ -180,7 +194,7 @@ internal fun GenerationPage(settings: AppSettings, viewModel: SettingsViewModel)
 
         ExpandableSettingsCard(
             title = "高级采样",
-            summary = "Top-P、Top-K、重复惩罚与随机种子",
+            summary = "Top-P、Top-K、重复惩罚与随机种子（始终使用全局设置，不随模型档案变化）",
         ) {
             SliderRow(
                 title = "Top-P",
@@ -361,6 +375,12 @@ internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
             title = "工具（${viewModel.toolEntries.size}）",
             summary = "开关、来源与每个工具的权限",
         ) {
+            Text(
+                text = "shell / workspace / terminal 还需在「编程管理」开启命令执行并允许授权；" +
+                    "device_* 工具需要无障碍或 Shizuku 可用。权限提供允许、询问与拒绝。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             viewModel.toolEntries.forEach { entry ->
                 ToolSettingRow(
                     tool = entry.tool,
@@ -433,11 +453,6 @@ internal fun AgentPage(settings: AppSettings, viewModel: SettingsViewModel) {
 
 @Composable
 internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
-    val displayedStrategy = if (settings.contextStrategy == ContextStrategy.TOKEN_BUDGET) {
-        ContextStrategy.TOKEN_BUDGET
-    } else {
-        ContextStrategy.SLIDING_WINDOW
-    }
     SettingsPage {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -465,17 +480,15 @@ internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
         }
 
         SettingsCard("上下文策略") {
-            ContextStrategy.entries
-                .filter { it == ContextStrategy.SLIDING_WINDOW || it == ContextStrategy.TOKEN_BUDGET }
-                .forEach { strategy ->
-                    OptionRow(
-                        selected = displayedStrategy == strategy,
-                        title = strategy.label,
-                        summary = strategy.hint,
-                        onClick = { viewModel.update { it.copy(contextStrategy = strategy) } },
-                    )
-                }
-            if (displayedStrategy == ContextStrategy.TOKEN_BUDGET) {
+            ContextStrategy.entries.forEach { strategy ->
+                OptionRow(
+                    selected = settings.contextStrategy == strategy,
+                    title = strategy.label,
+                    summary = strategy.hint,
+                    onClick = { viewModel.update { it.copy(contextStrategy = strategy) } },
+                )
+            }
+            if (settings.contextStrategy == ContextStrategy.TOKEN_BUDGET) {
                 SliderRow(
                     title = "预算占比",
                     value = settings.summaryTriggerPercent.toFloat(),
@@ -543,6 +556,7 @@ internal fun ContextPage(settings: AppSettings, viewModel: SettingsViewModel) {
                 title = "对话中检索知识库",
                 summary = "回答前检索本地文档",
                 checked = settings.knowledgeInChat,
+                enabled = settings.memoryEnabled,
             ) { on -> viewModel.update { it.copy(knowledgeInChat = on) } }
             Text(
                 text = "常驻对话只注入记忆摘要；需要详细回忆时由 memory 工具检索。日记不进入常规提示词。",

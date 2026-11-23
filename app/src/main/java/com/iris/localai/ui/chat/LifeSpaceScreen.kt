@@ -835,6 +835,7 @@ private fun FullscreenGlassComposer(
                 showVoice = false
             },
             onTranscribe = viewModel::transcribeVoice,
+            startStreaming = viewModel::startStreamingAsr,
         )
     }
 }
@@ -1028,6 +1029,7 @@ private fun LifeComposer(
                 showVoice = false
             },
             onTranscribe = viewModel::transcribeVoice,
+            startStreaming = viewModel::startStreamingAsr,
         )
     }
 

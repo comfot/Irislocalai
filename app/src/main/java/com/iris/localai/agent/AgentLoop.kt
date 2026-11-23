@@ -25,6 +25,7 @@ class AgentLoop(
     private val tools: ToolRegistry,
     private val maxSteps: Int = 4,
     private val pluginRuntime: PluginRuntime? = null,
+    private val confirmation: ToolConfirmation? = null,
 ) {
 
     fun run(
@@ -40,18 +41,36 @@ class AgentLoop(
         planMode: Boolean = false,
         startInThink: Boolean = false,
         chatId: Long? = null,
+        contextLength: Int = 0,
     ): Flow<AgentEvent> = flow flow@ {
         val availableTools = tools.all().filter { enabledTools == null || it.name in enabledTools }
+        val toolNames = availableTools.map { it.name }.toSet()
         val toolPromptOverride = pluginRuntime?.composeToolPrompt(chatId, availableTools, planFirst)
         val baseSystemPrompt = systemPrompt(userSystemPrompt, availableTools, planFirst, planMode, toolPromptOverride)
         val finalSystemPrompt = pluginRuntime?.finalizePrompt(chatId, baseSystemPrompt) ?: baseSystemPrompt
         val estimatedSystemPrompt = pluginRuntime?.estimateFinalPrompt(chatId, finalSystemPrompt) ?: finalSystemPrompt
         val configuredLimit = maxStepsOverride ?: maxSteps
         val stepLimit = if (configuredLimit <= 0) null else configuredLimit.coerceIn(1, 100)
+        val userMessage = PromptMessage(PromptMessage.USER, userInput, userImages)
+        val trimmedHistory = trimHistoryForContext(
+            history = history,
+            systemPrompt = estimatedSystemPrompt,
+            userMessage = userMessage,
+            maxNewTokens = params.maxNewTokens,
+            contextLength = contextLength,
+        )
         val conversation = buildList {
             add(PromptMessage(PromptMessage.SYSTEM, estimatedSystemPrompt))
-            addAll(history)
-            add(PromptMessage(PromptMessage.USER, userInput, userImages))
+            if (trimmedHistory.size < history.size) {
+                add(
+                    PromptMessage(
+                        PromptMessage.SYSTEM,
+                        "【提示】较早的 ${history.size - trimmedHistory.size} 条历史消息因上下文长度限制已省略。",
+                    ),
+                )
+            }
+            addAll(trimmedHistory)
+            add(userMessage)
         }.toMutableList()
 
         val visible = StringBuilder()
@@ -59,9 +78,15 @@ class AgentLoop(
         val thinkFilter = ThinkTagFilter(startInThink)
         var step = 0
         var finished = false
-        var unclosedRetried = false
-        var bareCommandRetried = false
+        var unclosedRetries = 0
+        var bareCommandRetries = 0
         var bareCommandExecuted = false
+        var malformedRetries = 0
+        var malformedSeen = false
+        // 工具调用被输出长度截断时，原上限重试很容易二次截断；只在重试时临时放大。
+        var currentParams = params
+        // 同名工具连续失败计数：达到阈值后在回填消息中提醒模型换方法，避免无限步空转。
+        val failureStreaks = mutableMapOf<String, Int>()
         // 上一段正文的起点：工具调用把整轮回复切成多段，Finished 只返回最后一段。
         var segmentStart = 0
 
@@ -77,28 +102,28 @@ class AgentLoop(
             }
         }
 
-        suspend fun emitBody(text: String) {
-            if (text.isEmpty()) return
-            emitTagged(text)
-        }
-
         while (stepLimit == null || step < stepLimit) {
             thinkFilter.beginTurn(startInThink)
             val output = StringBuilder()
+            var scanFrom = 0
             var emitted = 0
             var showDelta = true
             var failure: String? = null
 
-            engines.generate(conversation, params).collect { event ->
+            engines.generate(conversation, currentParams).collect { event ->
                 when (event) {
                     is GenEvent.Delta -> {
                         output.append(event.text)
                         if (showDelta) {
-                            val marker = ToolCallParser.earliestStart(output.toString())
+                            val marker = ToolCallParser.earliestStartFrom(
+                                output,
+                                (scanFrom - ToolCallParser.SCAN_LOOKBACK).coerceAtLeast(0),
+                            )
                             val end = if (marker >= 0) {
                                 marker
                             } else {
-                                output.length - ToolCallParser.holdSuffixLength(output.toString())
+                                scanFrom = output.length
+                                output.length - ToolCallParser.holdSuffixLength(output)
                             }
                             if (end > emitted) {
                                 val piece = output.substring(emitted, end)
@@ -107,7 +132,7 @@ class AgentLoop(
                                     this@flow.emit(AgentEvent.Reasoning(thought.reasoning))
                                 }
                                 if (thought.text.isNotEmpty()) {
-                                    emitBody(thought.text)
+                                    emitTagged(thought.text)
                                 }
                                 emitted = end
                             }
@@ -127,10 +152,16 @@ class AgentLoop(
             }
 
             var call = ToolCallParser.parse(output.toString())
+            if (call != null && call.loose && call.name !in toolNames) {
+                // 宽松解析出的只是一段普通 JSON（例如回答里的示例），不当作工具调用。
+                malformedSeen = true
+                call = null
+            }
             if (call == null) {
                 val text = output.toString()
-                if (!unclosedRetried && ToolCallParser.hasUnclosedToolCall(text)) {
-                    unclosedRetried = true
+                if (unclosedRetries < MAX_RETRIES && ToolCallParser.hasUnclosedToolCall(text)) {
+                    unclosedRetries++
+                    currentParams = expandedOutputParams(currentParams, contextLength)
                     conversation += PromptMessage(PromptMessage.ASSISTANT, text)
                     conversation += PromptMessage(
                         PromptMessage.USER,
@@ -139,9 +170,22 @@ class AgentLoop(
                     )
                     continue
                 }
+                if (malformedRetries < MALFORMED_RETRIES && ToolCallParser.looksLikeMalformedToolCall(text)) {
+                    malformedRetries++
+                    malformedSeen = true
+                    currentParams = expandedOutputParams(currentParams, contextLength)
+                    conversation += PromptMessage(PromptMessage.ASSISTANT, text)
+                    conversation += PromptMessage(
+                        PromptMessage.USER,
+                        "上一条回复的工具调用格式不正确，无法执行。请只输出一个标准工具调用块：" +
+                            "<tool_call>{\"name\":\"工具名\",\"arguments\":{...}}</tool_call>；" +
+                            "不要用 ``` 代码块、裸 JSON、XML 参数或其他标签，也不要附加解释。",
+                    )
+                    continue
+                }
                 val bareCommand = ToolCallParser.bareShellCommand(text)
-                if (!bareCommandRetried && bareCommand != null) {
-                    bareCommandRetried = true
+                if (bareCommandRetries < MAX_RETRIES && bareCommand != null) {
+                    bareCommandRetries++
                     conversation += PromptMessage(PromptMessage.ASSISTANT, text)
                     conversation += PromptMessage(
                         PromptMessage.USER,
@@ -150,14 +194,16 @@ class AgentLoop(
                     )
                     continue
                 }
-                if (emitted < output.length) {
+                // 正文已展示到 marker 处，尾巴只可能是残缺的工具调用；
+                // 重试次数用尽时不把半截标签和 JSON 冲进正文，直接丢弃。
+                if (emitted < output.length && !ToolCallParser.hasUnclosedToolCall(text)) {
                     val tail = output.substring(emitted)
                     val thought = thinkFilter.feed(tail)
                     if (thought.reasoning.isNotEmpty()) {
                         this@flow.emit(AgentEvent.Reasoning(thought.reasoning))
                     }
                     if (thought.text.isNotEmpty()) {
-                        emitBody(thought.text)
+                        emitTagged(thought.text)
                     }
                 }
                 if (!bareCommandExecuted && bareCommand != null &&
@@ -181,6 +227,10 @@ class AgentLoop(
                         val note = "\n\n（检测到命令写在正文里，没有作为工具调用执行。需要执行时请重试。）"
                         visible.append(note)
                         this@flow.emit(AgentEvent.Delta(note))
+                    } else if (malformedSeen) {
+                        val note = "\n\n（工具调用格式有误，未执行。请让模型按 <tool_call>{\"name\":...}</tool_call> 重新输出。）"
+                        visible.append(note)
+                        this@flow.emit(AgentEvent.Delta(note))
                     }
                     finished = true
                     break
@@ -195,8 +245,14 @@ class AgentLoop(
                 null
             }
             val blocked = intercept?.blocked == true
-            val executed = tool != null && permission == ToolPermission.ALLOW && !blocked
-            if (executed && tool != null) {
+            val confirmed = if (tool != null && permission == ToolPermission.ASK && !blocked) {
+                confirmation?.await(call.name, call.arguments.toString()) == true
+            } else {
+                true
+            }
+            val executed = tool != null && !blocked &&
+                (permission == ToolPermission.ALLOW || (permission == ToolPermission.ASK && confirmed))
+            if (executed) {
                 this@flow.emit(AgentEvent.ToolProgress(tool.name, "正在执行…"))
                 pluginRuntime?.notifyToolLifecycle(
                     event = "tool_execution_started",
@@ -208,21 +264,46 @@ class AgentLoop(
             val startedAt = System.nanoTime()
             var toolFailed = false
             val result = when {
-                tool == null -> "工具 ${call.name} 未启用或不存在"
-                permission == ToolPermission.DENY -> "工具 ${call.name} 的权限为拒绝"
-                permission == ToolPermission.ASK -> "工具 ${call.name} 需要用户确认后才能执行（当前没有确认界面，已阻止）"
-                blocked -> "工具 ${call.name} 被插件阻止：${intercept?.reason.orEmpty()}"
+                tool == null -> "[ERROR] 工具 ${call.name} 未启用或不存在"
+                permission == ToolPermission.DENY -> "[ERROR] 工具 ${call.name} 的权限为拒绝"
+                permission == ToolPermission.ASK && !confirmed ->
+                    if (confirmation == null) {
+                        "[ERROR] 工具 ${call.name} 需要用户确认后才能执行（当前没有确认界面，已阻止）"
+                    } else {
+                        "[ERROR] 用户拒绝了工具 ${call.name} 的执行"
+                    }
+                blocked -> "[ERROR] 工具 ${call.name} 被插件阻止：${intercept.reason.orEmpty()}"
                 else -> try {
-                    tool.execute(call.arguments)
+                    tool.executeStreaming(call.arguments) { progress ->
+                        if (progress.isNotBlank()) {
+                            this@flow.emit(AgentEvent.ToolProgress(tool.name, progress.takeLast(300)))
+                        }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     toolFailed = true
-                    "工具执行失败：${e.message ?: e.javaClass.simpleName}"
+                    val detail = e.message?.takeIf { it.isNotBlank() }
+                    "[ERROR] 工具执行失败：${e.javaClass.simpleName}${detail?.let { ": $it" }.orEmpty()}"
                 }
             }
+            // 未执行成功（含异常）都算失败结果，计入连续失败；成功则清零。
+            val outcomeFailed = !executed || toolFailed
+            val streak = if (outcomeFailed) {
+                val current = (failureStreaks[call.name] ?: 0) + 1
+                failureStreaks[call.name] = current
+                current
+            } else {
+                failureStreaks.remove(call.name)
+                0
+            }
+            val streakHint = if (streak >= FAILURE_STREAK_HINT) {
+                "\n[提示] 工具 ${call.name} 已连续失败 $streak 次：请修正参数、换一种方法或向用户说明，不要以相同参数重试。"
+            } else {
+                ""
+            }
             val durationMs = (System.nanoTime() - startedAt) / 1_000_000L
-            if (executed && tool != null) {
+            if (executed) {
                 pluginRuntime?.notifyToolLifecycle(
                     event = if (toolFailed) "tool_execution_error" else "tool_execution_result",
                     toolName = tool.name,
@@ -245,13 +326,15 @@ class AgentLoop(
                 tool = call.name,
                 arguments = call.arguments.toString(),
                 result = displayResult(result),
-                status = if (tool == null || permission == ToolPermission.DENY || blocked || toolFailed) {
+                status = if (tool == null || permission == ToolPermission.DENY || blocked || toolFailed ||
+                    (permission == ToolPermission.ASK && !confirmed)
+                ) {
                     StepStatus.ERROR
                 } else {
                     StepStatus.OK
                 },
                 durationMs = durationMs,
-                reply = cleanAnswer(visible.substring(segmentStart.coerceIn(0, visible.length))).trim(),
+                reply = cleanAnswer(visible.substring(segmentStart.coerceIn(0, visible.length)), toolNames).trim(),
             )
             this@flow.emit(AgentEvent.StepFinished(agentStep))
 
@@ -260,12 +343,15 @@ class AgentLoop(
                 this@flow.emit(AgentEvent.Reasoning(stepThought.reasoning))
             }
             if (stepThought.text.isNotEmpty()) {
-                emitBody(stepThought.text)
+                emitTagged(stepThought.text)
             }
             segmentStart = visible.length
 
             conversation += PromptMessage(PromptMessage.ASSISTANT, output.toString())
-            conversation += PromptMessage(PromptMessage.TOOL, "工具 ${call.name} 返回：\n${promptResult(result)}")
+            conversation += PromptMessage(
+                PromptMessage.TOOL,
+                "工具 ${call.name} 返回：\n${promptResult(result)}$streakHint",
+            )
             step++
 
             val separator = answerSeparator(visible)
@@ -297,7 +383,7 @@ class AgentLoop(
         val finalText = if (answer.isBlank() && thinkFilter.hasThought()) {
             "（模型只返回了思考过程，没有生成回答。请关闭「深度思考」或增大最大输出后重试。）"
         } else {
-            cleanAnswer(answer)
+            cleanAnswer(answer, toolNames)
         }
         this@flow.emit(AgentEvent.Finished(finalText))    }
 
@@ -310,8 +396,34 @@ class AgentLoop(
     }
 
     /** 兜底：模型偶尔会把未闭合的工具标签写进正文。 */
-    private fun cleanAnswer(text: String): String =
-        ToolCallParser.stripToolCalls(text)
+    private fun cleanAnswer(text: String, knownTools: Set<String>): String =
+        ToolCallParser.stripToolCalls(text, knownTools)
+
+    private fun trimHistoryForContext(
+        history: List<PromptMessage>,
+        systemPrompt: String,
+        userMessage: PromptMessage,
+        maxNewTokens: Int,
+        contextLength: Int,
+    ): List<PromptMessage> {
+        if (contextLength <= 0 || history.isEmpty()) return history
+        val reserved = estimatePromptTokens(systemPrompt) + userMessage.tokenCost() +
+            maxNewTokens.coerceAtMost(contextLength / 2) + CONTEXT_SAFETY_TOKENS
+        val budget = contextLength - reserved
+        if (budget <= 0) return trimPromptHistory(history, (contextLength / 4).coerceAtLeast(256))
+        return trimPromptHistory(history, budget)
+    }
+
+    /** 重试时放大输出上限；上限受上下文长度约束，避免挤压 prompt。 */
+    private fun expandedOutputParams(params: SamplingConfig, contextLength: Int): SamplingConfig {
+        val ceiling = if (contextLength > 0) {
+            (contextLength / 2).coerceAtMost(MAX_RETRY_OUTPUT_TOKENS).coerceAtLeast(256)
+        } else {
+            MAX_RETRY_OUTPUT_TOKENS
+        }
+        val target = (params.maxNewTokens * 2).coerceAtMost(ceiling)
+        return if (target > params.maxNewTokens) params.copy(maxNewTokens = target) else params
+    }
 
     private fun systemPrompt(
         userSystemPrompt: String,
@@ -344,6 +456,12 @@ class AgentLoop(
                         "再用 action=read 查看输出、action=stop 结束；不要在 shell 命令里用 nohup 或结尾 &。",
                 )
             }
+            if (availableTools.any { it.name == "task" }) {
+                appendLine(
+                    "需要独立上下文的调研、边界清晰的修改或复核时，用 task 工具派发子代理；" +
+                        "子代理看不到主会话历史，prompt 要写全目标、已知信息与预期产出。子代理串行执行，不能嵌套。",
+                )
+            }
             if (availableTools.any { it.name == "plan" }) {
             appendLine(
                 "多步骤任务先用 plan op=create 列出计划（title + steps）；开始/完成步骤用 plan op=update，" +
@@ -356,8 +474,6 @@ class AgentLoop(
             if (availableTools.any { it.name == "read_file" }) {
                 appendLine("读取应用自身目录（插件、技能、工作区等）时，read_file/write_file/list_files 的 path 用 app://private/... 或 app://external/...。")
                 appendLine("PRoot 中可直接访问：/mnt/iris-private（应用私有）、/mnt/skills、/mnt/plugins、/mnt/attachments、/mnt/iris（外置 IRIS）、/workspace。")
-            }
-            if (availableTools.any { it.name == "read_file" }) {
                 appendLine("文件操作建议：先用 list_files / search_files 定位，再用 read_file 确认原文；" +
                     "局部修改用 edit_file，整文件重写用 write_file。")
             }
@@ -387,16 +503,20 @@ class AgentLoop(
     private companion object {
         const val MAX_RESULT_CHARS = 20_000
         const val MAX_PROMPT_RESULT_CHARS = 6_000
+        /** 未闭合工具调用与裸命令的重发请求上限；与 maxSteps 相互独立，防止无限重试。 */
+        const val MAX_RETRIES = 2
+        /** 工具调用格式错误（代码块/裸 JSON/参数标签写错）时的纠正次数。 */
+        const val MALFORMED_RETRIES = 1
+        /** 重试时输出上限最多放大到该值；最终仍受 contextLength/2 约束。 */
+        const val MAX_RETRY_OUTPUT_TOKENS = 2048
+        /** 给 chat 模板、BOS/EOS 与工具回填预留的余量。 */
+        const val CONTEXT_SAFETY_TOKENS = 256
+        /** 同名工具连续失败达到该次数后，在回填消息中提醒模型换方法。 */
+        const val FAILURE_STREAK_HINT = 3
     }
 
     /** 回填给模型的工具结果需要限长：本地 4k 上下文中一条 2 万字符输出会挤掉系统提示与历史。 */
-    private fun promptResult(result: String): String =
-        if (result.length > MAX_PROMPT_RESULT_CHARS) {
-            result.take(MAX_PROMPT_RESULT_CHARS) +
-                "\n…（结果过长已截断，需要更多内容请缩小读取范围或分段读取）"
-        } else {
-            result
-        }
+    private fun promptResult(result: String): String = truncateToolResult(result, MAX_PROMPT_RESULT_CHARS)
 
     private fun displayResult(result: String): String =
         if (result.length > MAX_RESULT_CHARS) {
@@ -409,4 +529,15 @@ class AgentLoop(
     private fun JsonObject.stringParameters(): Map<String, String> = entries.associate { (key, value) ->
         key to ((value as? JsonPrimitive)?.contentOrNull ?: value.toString())
     }
+}
+
+/** 工具结果回填限长：保留头尾，尾部常有错误信息与汇总。 */
+internal fun truncateToolResult(result: String, limit: Int): String {
+    if (result.length <= limit) return result
+    val head = limit * 3 / 4
+    val tail = limit - head
+    val omitted = result.length - head - tail
+    return result.take(head) +
+        "\n…（中间省略 $omitted 字符，需要更多请缩小读取范围或分段读取）…" +
+        result.takeLast(tail)
 }

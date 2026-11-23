@@ -50,6 +50,8 @@ data class ModelDetails(
     val supportsThinking: Boolean = false,
     /** 对话模板已在提示词末尾预填 `<think>`，模型回复会从思考块内部开始。 */
     val thinkingPrefilled: Boolean = false,
+    /** GPU 尝试失败回退 CPU 时的具体原因；非空表示发生过回退。 */
+    val gpuNote: String = "",
 )
 
 sealed interface GenEvent {

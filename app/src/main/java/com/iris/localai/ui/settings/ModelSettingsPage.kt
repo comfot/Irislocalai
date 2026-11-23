@@ -244,7 +244,7 @@ internal fun ModelSettingsPage(
 
         ExpandableSettingsCard(
             title = "模型配置",
-            summary = "为语言、视觉、创作、Embedding 与动作模型选择提供商和模型",
+            summary = "为语言、视觉、创作与 Embedding 模型选择提供商和模型（动作模型暂未开放）",
         ) {
             if (active != null) {
                 ModelRole.entries.forEach { role ->

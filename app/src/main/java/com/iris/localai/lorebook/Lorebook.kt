@@ -86,7 +86,8 @@ object LorebookResolver {
                 }
                 if (entry.keys.isEmpty()) return@forEach
                 val window = if (entry.scanDepth != null) {
-                    (history.takeLast(entry.scanDepth) + text).joinToString("\n")
+                    // scanDepth 来自导入的外部 JSON，takeLast 对负数直接抛异常。
+                    (history.takeLast(entry.scanDepth.coerceAtLeast(0)) + text).joinToString("\n")
                 } else {
                     (historyWindow + text).joinToString("\n")
                 }
@@ -110,9 +111,11 @@ object LorebookResolver {
 
     private fun matches(haystack: String, entry: LorebookEntry): Boolean {
         val primary = entry.keys.any { hit(haystack, it, entry) }
-        if (!primary) return false
-        if (!entry.selective || entry.secondaryKeys.isEmpty()) return true
+        if (!entry.selective || entry.secondaryKeys.isEmpty()) return primary
         val secondary = entry.secondaryKeys.map { hit(haystack, it, entry) }
+        // OR_ANY 与 SillyTavern 语义一致：主键或二级键任一命中即可。
+        if (entry.logic == SelectiveLogic.OR_ANY) return primary || secondary.any { it }
+        if (!primary) return false
         return when (entry.logic) {
             SelectiveLogic.AND_ANY -> secondary.any { it }
             SelectiveLogic.AND_ALL -> secondary.all { it }

@@ -1,0 +1,23 @@
+MenthaAR / ORB-SLAM2s
+=====================
+
+This project bundles the MenthaAR visual SLAM engine and SDK from:
+
+  https://github.com/Olsc/Android_ORB-SLAM2s
+  release v0.0.13, engine module MenthaAR (GPLv3), SDK module MenthaAR-SDK
+  (dual-licensed Apache-2.0 or GPLv3).
+
+The native library `lib/arm64-v8a/libMenthaAR_Engine.so` is taken from the
+official v0.0.13 release APK. The Java sources under `com.menthaar.sdk` and
+`com.orb.slam2s` are copied from the same project and remain under their
+original licenses. The engine runs in the separate `:slam_process` process and
+is only enabled by the experimental developer option "AR 6DoF SLAM".
+
+License texts are bundled at:
+
+  assets/licenses/MenthaAR-GPL-3.0.txt
+  assets/licenses/MenthaAR-SDK-LICENSE.txt
+
+The engine is based on ORB-SLAM2 (GPLv3), DBoW2 (BSD-3-Clause), g2o
+(BSD-3-Clause), Eigen (MPL2) and OpenCV (Apache-2.0). See the upstream
+`Dependencies.md` for the complete dependency list.

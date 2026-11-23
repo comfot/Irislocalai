@@ -22,7 +22,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     private val graph = (application as IrisApp).graph
     private val cloud = CloudVoiceClient()
-    private val recorder = VoiceRecorder()
+    private val recorder = VoiceRecorder(getApplication())
 
     val settings = graph.settings.settings
     val installedIds = graph.voiceModels.installedIds

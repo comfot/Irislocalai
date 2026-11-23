@@ -68,8 +68,8 @@ object SettingsCatalog {
                 SettingsEntry("character-card", "角色卡", "导入、编辑与切换角色卡", Icons.Outlined.Badge),
                 SettingsEntry("lorebook", "世界书", "关键词触发的设定集", Icons.AutoMirrored.Outlined.MenuBook),
                 SettingsEntry("memory", "记忆", "长期记忆与检索策略", Icons.Outlined.History),
-                SettingsEntry("character-model", "角色模型", "为角色绑定模型与参数", Icons.Outlined.SmartToy),
-                SettingsEntry("voice", "语音", "离线识别、合成与音色", Icons.Outlined.RecordVoiceOver),
+                SettingsEntry("character-model", "角色模型", "Live2D / VRM / GLB / MMD 导入与绑定", Icons.Outlined.SmartToy),
+                SettingsEntry("voice", "语音", "本地与云端识别、合成与音色", Icons.Outlined.RecordVoiceOver),
                 SettingsEntry("scene", "场景", "场景预设、开场白与背景/舞台下载", Icons.Outlined.TheaterComedy),
             ),
         ),
@@ -136,7 +136,7 @@ object SettingsCatalog {
         SettingsSection(
             title = "数据管理",
             entries = listOf(
-                SettingsEntry("backup", "备份", "导出设置与对话", Icons.Outlined.Backup),
+                SettingsEntry("backup", "备份", "分类导出设置、角色卡、世界书与记忆", Icons.Outlined.Backup),
                 SettingsEntry("restore", "恢复", "从备份或默认值恢复", Icons.Outlined.Restore),
             ),
         ),

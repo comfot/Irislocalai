@@ -15,14 +15,14 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 
 ### 对话与四空间
 
-- **工作空间**：面向编码、文件与命令任务，支持工作区文件夹、文本/图片/二进制文件附件（如 ZIP）、工具调用卡片、流式输出、停止生成与会话自动命名。
+- **工作空间**：面向编码、文件与命令任务，支持工作区文件夹、文本/图片/二进制文件附件（如 ZIP）、工具调用卡片、流式输出、停止生成与会话自动命名；输入栏可打开子代理面板（选择内置/自定义代理、输入任务、查看进度与结果），「询问」权限的工具执行前弹出确认卡片，用户放行或拒绝后继续。
 - **生活空间**：角色舞台与陪伴对话，支持场景背景、舞台底座、Live2D / VRM / GLB / MMD 实际渲染、表情/动作/口型与视频通话界面。
 - **操作空间**：权限中心、执行方式、执行日志与常用指令，面向点击、滑动、输入、截图等手机操作。设备工具支持先读取控件树（文字/描述/坐标/可点击/可滚动），再按文字点击、滚动查找、等待文字校验、长按/回车与最近任务/通知；点击与滑动也支持 0..1 归一化坐标。内置「手机操作」技能会把“观察 → 定位 → 操作 → 校验”的流程注入 Agent，操作空间顶部会显示最近回复与错误。
 - **综合空间**：离线 3D 园区与六个可进入场所（工作室、家、图书馆、工地、值班室、前台），支持拖动旋转、双指缩放、楼栋点击与状态标签；场所内的小人会随机选点走动、转向并摆动四肢，工作室角色名与居民名标签跟随人物。
 - **家与居民**：「家」按角色卡数量生成小人（每张卡一个居民），房屋包含客厅、餐厅、厨房、卧室、书架/鱼缸/猫窝与带栅栏的院子；小人的名字、造型（标准/长发/工装/礼服）与颜色在 设置 › 高级功能 › 空间管理 › 综合空间 中配置，保存在本地偏好。综合空间底部的「设置」按钮直达该页。场所内的人物会对家具/墙体做碰撞检测与分轴避障，并在彼此之间保持最小间距，不再直接穿过家具。
 - **YSM 小人模型**：同一设置页可为角色卡绑定未加密的 YSM 模型（含 `ysm.json` 的文件夹或 ZIP），也可直接导入加密 `.ysm`：内置 MIT 许可的 YSMParser WASM，在 WebView 内存中解密 V1/V2/V3 并反推为基岩版 geometry，再按 YSM 的镜像坐标/UV 规则渲染；`.ysm` 不会落盘为明文。解析失败或未绑定模型时回退程序化小人。仅应用于你拥有授权、允许本地预览的模型。
 - 会话按空间隔离，统一持久化到 `conversations.json`；切换空间会切换对应会话与输入栏。
-- 视频通话会持续采集前置摄像头画面和麦克风，本地或云端 ASR 转写后连同画面帧进入多模态对话，回复再由本地、云端或系统 TTS 朗读，形成实时语音视频对话。通话支持两种舞台：房间背景（场景图/视频 + 上半身取景）与 AR 网格（后置相机 + IMU 姿态驱动的地平面锚定 + 全身模型），入口在 设置 › 交互 › 视频通话；AR 网格对 Live2D、VRM/GLB 与 MMD 都可用，网格对齐反编译版的琥珀色 #FFCC40、±1 范围 0.5 步长 5×5 线与 1.2 半径地面环；手机转动时网格与人物固定在真实地面上，拖动可重新锚定，大小/位置/相机高度会持久化。
+- 视频通话会持续采集前置摄像头画面和麦克风，本地或云端 ASR 转写后连同画面帧进入多模态对话，回复再由本地、云端或系统 TTS 朗读，形成实时语音视频对话。通话支持两种舞台：房间背景（场景图/视频 + 上半身取景）与 AR 网格（后置相机 + IMU 姿态驱动的地平面锚定 + 全身模型），入口在 设置 › 交互 › 视频通话；AR 网格对 Live2D、VRM/GLB 与 MMD 都可用，网格对齐反编译版的琥珀色 #FFCC40、±1 范围 0.5 步长 5×5 线与 1.2 半径地面环；手机转动时网格与人物固定在真实地面上，拖动可重新锚定，大小/位置/相机高度会持久化；开发者选项可开启实验性 MenthaAR（ORB-SLAM2）6DoF SLAM 位姿，失败或未开启时回退 IMU + OpenCV 光流。
 - 会话归档：侧栏会话菜单可归档/恢复；归档会话从活跃列表移入「已归档」区，每轮回复后与归档时都会增量沉淀记忆；删除归档会话只删除会话记录，不删除已沉淀记忆。
 - 侧栏包含会话列表、可折叠工作区与角色卡横排；顶栏可切换空间，设置入口位于侧栏底部。
 
@@ -40,14 +40,15 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 ### Agent 与工具链
 
 - `AgentLoop` 采用 ReAct 风格循环，解析 `<tool_call>{...}</tool_call>`，兼容模型原生 DSML 工具标签；默认最多 4 步，可在设置中调整。
-- `ToolRegistry` 注册 41 个内置工具：
-  - 基础：`current_time`、`device_info`、`random_pick`、`use_skill`、`memory`、`fetch_url`、`motion_control`、`expression_control`。
-  - 文件与命令：`workspace`、`read_file`、`write_file`、`edit_file`、`list_files`、`search_files`、`shell`。
+- `ToolRegistry` 注册 45 个内置工具：
+  - 基础：`current_time`、`device_info`、`random_pick`、`use_skill`、`memory`、`fetch_url`、`motion_control`、`expression_control`、`plan`。
+  - 文件与命令：`workspace`、`read_file`、`write_file`、`edit_file`、`list_files`、`search_files`、`shell`、`terminal`。
   - 设备操作：`device_open_app`、`device_tap`、`device_tap_text`、`device_swipe`、`device_scroll`、`device_wait_text`、`device_back`、`device_home`、`device_input_text`、`device_screenshot`、`device_ui`、`device_recents`、`device_notifications`、`device_long_press`、`device_enter`。
   - AI 浏览器：`browser_open`、`browser_read`、`browser_snapshot`、`browser_click`、`browser_input`、`browser_scroll`、`browser_wait`、`browser_navigate`、`browser_back`、`browser_screenshot`。
-  - 扩展：`mcp_config`（由连接管理器在启动后注册）。
+  - 扩展：`mcp_config`（由连接管理器在启动后注册）、`plugin_dev`、`task`（派发子代理）。
 - 工具可按空间过滤：文件工具与命令工具只在工作/综合空间生效，且 `shell`/`workspace` 还需在「编程管理」开启；设备操作工具只在操作/综合空间生效，进入这两类空间时始终补齐完整设备工具；浏览器工具在所有空间可用。开关由设置 › 智能体 › 工具勾选决定。
-- 工具权限支持允许 / 询问 / 拒绝，Shell 另支持允许与禁止的命令前缀。
+- 工具权限支持允许 / 询问 / 拒绝，Shell 另支持允许与禁止的命令前缀；「询问」权限由确认通道实现：Agent 在执行前挂起，界面显示确认卡片，用户放行或拒绝后恢复，未接入界面的调用方（如子代理）维持阻止行为。
+- **子代理**：内置探索者（只读文件与检索工具）、执行者（读写 + Shell/终端）与审阅者三个角色，面板可新建自定义代理（名称、说明、系统提示与工具范围）。`task` 工具按工具白名单构造独立 `ToolRegistry`，用独立 `AgentLoop`（最多 15 步、空历史）串行执行——本地 llama 同一时间只跑一路，20 分钟超时；子代理输出以流式进度透传到父工具卡，结果在面板内查看，永不允许嵌套派发 `task`。
 - 插件工具、MCP 客户端工具与技能工具会动态注册进同一工具表。
 
 ### 角色与内容
@@ -58,7 +59,7 @@ IRIS LocalAI 是运行在 Android 上的本地 AI 工作台：在一个应用里
 - **记忆三库**：日记、记忆库、知识库；常规对话只注入记忆摘要（按本轮对话相关度排序），需要回忆时由 `memory` 工具做向量 + 关键词混合检索。云端 Embedding 不可用时自动回退本地哈希，并在检索结果与记忆页标明原因。日记按应用打开过的日期自动生成，记忆库支持文件夹、标题、标签、类型、重要度、搜索、详情与编辑。
 - **记忆关系图**：记忆之间支持 `SHARED_TAG` / `SAME_FOLDER` 自动连边和手动关系，关系图支持拖拽缩放、节点点击与跨文件夹虚线；每轮回复结束后从对话中增量沉淀事实、偏好与事件（云端模型需单独开启），记忆页也提供“整理最近对话”手动补处理入口。
 - **场景**：背景图/视频、名称/介绍、底座样式（无/圆形舞台/网格平台/光晕底座/纹理）与颜色。
-- **语音**：系统 TTS/STT；云端支持 OpenAI 兼容 TTS/ASR，重点接入小米 MiMo `mimo-v2.5-tts-voiceclone` 音色复刻（wav/mp3 样本，≤10 MB）与 `mimo-v2.5-asr`；本地通过 sherpa-onnx 运行 Kokoro/MeloTTS 合成与 SenseVoice/Paraformer 识别，自动朗读、语音输入和视频通话都按所选引擎分流。
+- **语音**：系统 TTS/STT；云端支持 OpenAI 兼容 TTS/ASR，重点接入小米 MiMo `mimo-v2.5-tts-voiceclone` 音色复刻（wav/mp3 样本，≤10 MB）与 `mimo-v2.5-asr`；本地通过 sherpa-onnx 运行 Kokoro/MeloTTS 合成与 SenseVoice/Paraformer 识别，自动朗读、语音输入和视频通话都按所选引擎分流。开发者选项可开启流式识别内核：本地为 sherpa-onnx 流式 Paraformer（中英混说，边说边出字，Silero VAD 断句，VAD 不可用时回退能量阈值），云端支持火山引擎（豆包大模型双向流式）、OpenAI Realtime transcription 与讯飞实时语音识别，按厂商分流。
 - **桌面宠物**：悬浮桌宠服务，支持模型、缩放、拖动、点击/长按动作、待机动画与聊天气泡。
 
 ### 扩展能力
@@ -137,7 +138,7 @@ AppGraph（手动依赖装配）
 ### 核心模块
 
 - **engine/**：`EngineManager` 统一加载/卸载与状态；`LlamaEngine` 通过 JNI 调用 `libiris_llama.so`，`OpenAiCompatibleEngine` 解析云端 SSE 并按图片输入切换到视觉提供商，`StubEngine` 在无可用模型时回声兜底。
-- **agent/**：`AgentLoop` 负责系统提示、ReAct 循环、工具调用解析、权限判断与结果回填；`ConversationStore` 按空间管理会话；`AssistantMessageParser`、`ThinkTagFilter`、`DisplayTagFilter` 处理思考标签与展示内容。
+- **agent/**：`AgentLoop` 负责系统提示、ReAct 循环、工具调用解析、权限判断与结果回填；`ConversationStore` 按空间管理会话；`AssistantMessageParser`、`ThinkTagFilter`、`DisplayTagFilter` 处理思考标签与展示内容；`PromptBudget` 粗估 token 并裁剪历史留出余量；`SubAgentManager`/`SubAgentStore` 定义、持久化与串行运行子代理。
 - **browser/**：`BrowserController` 驱动可见 WebView 完成打开、正文读取、快照、按索引点击/输入、滚动、等待文字与翻页，`BrowserPolicy` 按域名允许/阻断名单与仅 http(s) 规则校验跳转。
 - **character/**：`CardCodec`/`CardSpec` 解析 PNG/JSON 角色卡，`CharacterCardStore` 管理卡与收藏，`CharacterModelStore` 管理 Live2D/VRM/GLB/MMD，`CharacterPlazaClient` 聚合角色模型站点。
 - **memory/**：日记、记忆库、知识库、记忆关系、打开日期、向量缓存与自动沉淀状态；`briefContext` 生成精简摘要供常规注入，`recall` 使用本地哈希向量或已配置的云端 Embedding 做详细检索，云端向量缓存写入 `vectors.json`；日记按打开日期自动生成，关系图与自动记忆分别由 `MemoryLink` 和 `MemoryAutoCapture` 维护。
@@ -162,8 +163,9 @@ app/src/main/
 │   ├── live2d.html / live2d.js       # Live2D 页面
 │   ├── mmd.html / mmd.js             # MMD 页面
 │   ├── motion/server.js              # PRoot 内置动作服务
-│   └── vrma_runtime/                 # Text-To-VRMA 源码与 node_modules（内置 VRMA 生成）
-│   ├── voice/                        # 本地语音模型清单（Kokoro/MeloTTS/SenseVoice/Paraformer）
+│   ├── vrma_runtime/                 # Text-To-VRMA 源码与 node_modules（内置 VRMA 生成）
+│   ├── voice/                        # 本地语音模型清单（Kokoro/MeloTTS/SenseVoice/Paraformer/Silero VAD/流式 Paraformer）
+│   ├── licenses/                     # MenthaAR 引擎与 SDK 许可文本
 │   ├── ysm/                          # YSMParser WASM 与许可文本
 │   └── model/                        # three.js、GLTFLoader、Cubism、Pixi、Babylon、MMD 运行时
 ├── java/com/iris/localai/
@@ -172,7 +174,8 @@ app/src/main/
 │   ├── MainActivity.kt               # 唯一 Activity
 │   ├── accessibility/                # 无障碍服务
 │   ├── agent/                        # AgentLoop、Tool、ToolCallParser、会话与消息解析
-│   │   └── tools/                    # 时间、设备、文件、网络、记忆、动作、浏览器、Shell 等工具
+│   │   ├── subagent/                 # 子代理定义、存储与串行执行管理
+│   │   └── tools/                    # 时间、设备、文件、网络、记忆、动作、浏览器、Shell、task 等工具
 │   ├── browser/                      # AI 浏览器控制器、策略校验与可见 WebView 页面
 │   ├── character/                    # 角色卡编解码、存储、模型仓库、角色广场客户端
 │   ├── code/                         # 编程设置、ShellTool
@@ -202,12 +205,13 @@ app/src/main/
 │   └── workspace/                    # 工作区条目、应用内/SAF 文件读写
 ├── jniLibs/
 │   ├── arm64-v8a/libiris_llama.so    # llama.cpp 推理库
+│   ├── arm64-v8a/libMenthaAR_Engine.so # MenthaAR（ORB-SLAM2）SLAM 引擎（自官方 release 提取）
 │   ├── arm64-v8a/libproot_*.so       # ARM64 PRoot 启动器
 │   └── x86_64/libproot_*.so          # x86_64 PRoot 启动器
 └── res/
 ```
 
-当前 Kotlin 源码约 229 个文件、6.0 万行。单元测试位于 `app/src/test/`（26 个文件），覆盖 API 鉴权、角色卡编解码、技能解析、工具注册与工具调用解析、消息/思考标签/角色状态解析、VPD→VMD、权限状态、插件清单、MCP 连接与 SSE 传输、主题预设编解码、记忆 Embedding 状态与 PRoot rootfs 等。
+当前 Kotlin 源码约 261 个文件、7.2 万行。单元测试位于 `app/src/test/`（33 个文件），覆盖 API 鉴权、角色卡编解码、技能解析、工具注册与工具调用解析、消息/思考标签/角色状态解析、VPD→VMD、权限状态、插件清单、MCP 连接与 SSE 传输、主题预设编解码、记忆 Embedding 状态与 PRoot rootfs 等。
 
 ## 四空间
 
@@ -314,7 +318,7 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 ## 已知限制
 
 - **推理后端**：本地仅接入 llama.cpp GGUF；MNN、LiteRT 与 NPU 尚未接入。`libiris_llama.so` 只提供 arm64-v8a，x86_64 仅带 PRoot 启动器。
-- **语音**：系统 TTS 与 SpeechRecognizer 可用；云端 TTS/ASR 已接通 MiMo 与 OpenAI 兼容端点；本地 sherpa-onnx 支持 Kokoro/MeloTTS 合成与 SenseVoice/Paraformer 识别。sherpa AAR 不随仓库内置，由 Gradle 首次构建从 JitPack 下载完整包。IndexTTS-2 因缺少 Python 运行时未加入本地引擎。
+- **语音**：系统 TTS 与 SpeechRecognizer 可用；云端 TTS/ASR 已接通 MiMo 与 OpenAI 兼容端点；本地 sherpa-onnx 支持 Kokoro/MeloTTS 合成与 SenseVoice/Paraformer 识别。开发者选项的流式识别（本地流式 Paraformer + 火山/OpenAI Realtime/讯飞实时 ASR）按厂商各自协议实现，凭证以明文存储。sherpa AAR 不随仓库内置，由 Gradle 首次构建从 JitPack 下载完整包。IndexTTS-2 因缺少 Python 运行时未加入本地引擎。
 - **MCP**：客户端支持 Streamable HTTP、旧版 HTTP+SSE 与 stdio；stdio 依赖已安装的 PRoot rootfs 与应用内工作区；OAuth 需填写 Access/Refresh Token、Token URL 与客户端信息，未实现浏览器授权码与动态注册；服务端支持 SSE 响应与 GET 事件流，但仍是 close 分隔、无 chunked 编码；MCP 连接需手动建立。
 - **API**：已提供 embeddings、图片生成代理与音频合成/转写。语音端点使用语音设置中的云端配置；图片生成把请求代理到当前语言模型提供商的 `/images/generations`，是否可用取决于提供商与模型；未实现音频实时流式端点。
 - **备份**：数据管理 › 备份可勾选角色卡、世界书、记忆与设置，导出为单个 ZIP（manifest + 角色卡 JSON/头像 + 世界书 + 记忆文件 + 设置与模型档案）；恢复时可按分类勾选，角色卡按同 id 覆盖并保留其他卡，世界书与记忆整体替换，设置立即生效。备份不含 API Key/令牌、角色模型、对话记录、插件与 MCP 配置。
@@ -324,14 +328,14 @@ AGP 9 默认下载的 aapt2 在 PRoot/ARM64 上可能无法执行。仓库提供
 - **自动沉淀**：每轮回复结束后触发一次增量抽取，归档会话时再补一次；只处理上次位置之后的新消息，同一会话 90 秒内不重复调用模型，`force` 只跳过开关与节流、不重跑已分析内容。云端语言模型默认不参与自动沉淀，需在设置 › 上下文推理 › 记忆与知识库开启“云端模型自动沉淀”；归档与手动整理不受该限制。引擎不可用、失败或返回非 JSON 时回退用户陈述规则提取。记忆页“整理最近对话”只补处理未分析内容。删除归档会话不会删除已写入的记忆。自动抽取质量受模型能力影响。
 - **工作区位置**：`workspaceLocation` / `customWorkspacePath` 已持久化，但 Shell、PRoot 与文件工具仍以 `WorkspaceStore` 的活动工作区为准。
 - **角色模型**：VRM/GLB、Live2D、MMD 已接入实际渲染；MMD VMD 动作编排、VRM 表情/动作切换与更多口型细节仍有缺口。TTS 播放已通过 Visualizer 提供真实振幅并驱动 Live2D 口型；Live2D 另带眨眼、视线游移、头部/身体摆动与呼吸，口型按振幅平滑并叠加音节包络，通话与生活空间共用同一套动作。
-- **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。AR 网格默认是 **IMU 姿态驱动的 3DoF 地平面锚定**（后置相机 + 固定相机高度）；设置 › 交互 可开启实验性 **OpenCV 光流位移**（后置相机 `ImageReader` YUV 灰度帧 + RANSAC 仿射估计平移/尺度，水平视场角由焦距/传感器尺寸估算，尺度变化用于微调相机高度），但仍是平面假设下的近似，没有单应分解、特征地图或 EKF，光照差、快速转动或走动会漂移，可在通话中点「重新定位」；双 Surface 会话失败时会退回纯预览。横屏时退回静态网格。模型尺寸直接绑定地面环的屏幕直径（高度 = 环直径 × 人物高度 / 2.4m），远近变化时与网格严格同比例；脚底位置按模型类型取默认值（Live2D 0.99 / MMD 0.70 / 3D 0.82），可用「脚底微调」修正。开启实验开关后可在通话中点「记录日志」，CSV 写到 `Android/data/com.iris.localai/files/tracking/`（逐帧 IMU、仿射、单应、特征点对与估计位移），用于校准符号和选解。
+- **视频通话**：已是本地采集加云端多模态对话链路（相机帧 + 麦克风 → ASR → 对话 → TTS），不是 WebRTC/P2P 或运营商级实时音视频；识别与合成延迟取决于云端服务。AR 网格默认是 **IMU 姿态驱动的 3DoF 地平面锚定**（后置相机 + 固定相机高度）；设置 › 交互 可开启实验性 **OpenCV 光流位移**（后置相机 `ImageReader` YUV 灰度帧 + RANSAC 仿射估计平移/尺度，水平视场角由焦距/传感器尺寸估算，尺度变化用于微调相机高度），但仍是平面假设下的近似，没有单应分解、特征地图或 EKF，光照差、快速转动或走动会漂移，可在通话中点「重新定位」；双 Surface 会话失败时会退回纯预览。横屏时退回静态网格。开发者选项可再开启实验性 **MenthaAR 6DoF SLAM**（ORB-SLAM2）：预编译 `libMenthaAR_Engine.so` + 手写 Binder 接口跑在独立 `:slam_process` 进程，锁定后模型按真实世界位姿渲染并支持锚点地图持久化，短时丢失用 IMU 增量保持，失败回退 IMU + 光流；未在所有机型验证。模型尺寸直接绑定地面环的屏幕直径（高度 = 环直径 × 人物高度 / 2.4m），远近变化时与网格严格同比例；脚底位置按模型类型取默认值（Live2D 0.99 / MMD 0.70 / 3D 0.82），可用「脚底微调」修正。开启实验开关后可在通话中点「记录日志」，CSV 写到 `Android/data/com.iris.localai/files/tracking/`（逐帧 IMU、仿射、单应、特征点对与估计位移），用于校准符号和选解。
 - **桌宠与虚拟屏**：桌宠依赖悬浮窗权限；虚拟屏依赖 Shizuku + HiddenApiBypass，freeform 依赖 ROM 支持。
 - **插件兼容**：Operit Compose DSL UI 通过兼容渲染器打开，支持 Column/Row/Box/Text/TextField/Button/Switch/Checkbox/Slider/Card/Surface/Icon/Image/Dialog/Lazy 列表/WebView/Markdown 等组件，复杂组件会降级；AiChat 可嵌入当前主聊天（无活跃会话时显示提示）。依赖任意 Java 反射、`Java.implement` 或宿主单例的插件无法等价运行；`loadDex`/`loadJar` 仅支持插件目录内文件，dex 类支持构造、实例方法与实例字段。已接入 chat_input、chat_message、chat_runtime、system_prompt_compose、tool_lifecycle、chat_message_menu_item、prompt_input、prompt_history、prompt_estimate_history、tool_prompt_compose、prompt_finalize、prompt_estimate_finalize、message_processing、chat_view、app_lifecycle、summary_generate、input_menu_toggle、desktop_widget、xml_render 与工具流式中间回调；插件 AI Provider 会同步为“插件”类型模型提供商，非流式返回。desktop_widget 以悬浮窗近似实现（Android AppWidget 无法渲染 Compose DSL）。跨工具调用已转译到宿主工具表，但插件内嵌套调用自身工具仍不支持。
 - **VRMA 生成**：内置 Text-To-VRMA 需要 PRoot 已安装 Node 20+，首次启动会复制约 43 MB 运行时；云端使用当前语言模型 provider（OpenAI 兼容或 Anthropic Claude），Gemini 与未配置 provider 会失败。生成走 8787 本地 API，ARDY 本地引擎未在手机启用。生活空间插件设置 `VRMA_GENERATION=TRUE` 时改用 `<vrma_motion>` 指令与 `vrma_generate`，FALSE 回退原动作/表情表。
 - **本地语音模型**：sherpa-onnx 1.13.8（Apache-2.0），Gradle 坐标 `com.github.k2-fsa.sherpa-onnx:sherpa-onnx:1.13.8`，首次构建从 JitPack 下载完整 AAR；官方 release 下载地址：`https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-static-link-onnxruntime-1.13.8.aar`。Kokoro/MeloTTS 与 SenseVoice/Paraformer 按各自模型作者的许可使用，首次使用需在设置中下载 pinned revision 的模型文件。
-- **安全**：API Key、云语音 Key、MCP 请求头与模型提供商 Key 等以明文存入 SharedPreferences；MCP 服务清单还会镜像到外置的 `mcp/servers.json`；外置目录可被具备文件访问能力的其他应用读取。
+- **安全**：API Key、云语音 Key、流式 ASR 凭证（讯飞 AppId/ApiKey/ApiSecret 等）、MCP 请求头与模型提供商 Key 等以明文存入 SharedPreferences；MCP 服务清单还会镜像到外置的 `mcp/servers.json`；外置目录可被具备文件访问能力的其他应用读取。
 - **存储可见性**：`Android/data` 路径在 DocumentsUI 中可能不可见；外置应用专属目录会随卸载删除，重要数据需自行备份。
-- **素材许可**：HAST-SEC 为非商用研究许可；角色模型、Live2D、MMD 与舞台素材请遵守各自作者许可。
+- **素材许可**：HAST-SEC 为非商用研究许可；MenthaAR 引擎为 GPLv3，SDK 为 Apache-2.0/GPLv3 双许可，许可文本见 `assets/licenses/`；角色模型、Live2D、MMD 与舞台素材请遵守各自作者许可。
 
 ## 参考项目与第三方资源
 

@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 相机是可选能力，无相机设备仍可安装；仅影响摄像头相关入口可用性。 -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -97,6 +101,12 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- 实验性 AR 6DoF：MenthaAR/ORB-SLAM2 引擎在独立进程运行（GPLv3）。 -->
+        <service
+            android:name="com.orb.slam2s.ipc.SlamService"
+            android:exported="false"
+            android:process=":slam_process" />
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

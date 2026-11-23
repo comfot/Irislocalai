@@ -68,6 +68,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.iris.localai.voice.StreamingAsrHandle
 import com.iris.localai.voice.VoiceRecorder
 import java.io.File
 import kotlinx.coroutines.launch
@@ -463,10 +464,11 @@ internal fun VoiceInputDialog(
     onDismiss: () -> Unit,
     onInsert: (String) -> Unit,
     onTranscribe: suspend (File) -> Result<String>,
+    startStreaming: (suspend () -> StreamingAsrHandle?)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val recorder = remember { VoiceRecorder() }
+    val recorder = remember { VoiceRecorder(context) }
     var recording by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var result by remember { mutableStateOf("") }
@@ -476,8 +478,37 @@ internal fun VoiceInputDialog(
         recording = true
         message = "正在录音，请说话…"
         scope.launch {
-            val file = recorder.record(maxMillis = 6_000)
+            val session = startStreaming?.invoke()
+            var lastPartial = ""
+            var partialAt = 0L
+            val file = recorder.record(
+                maxMillis = 15_000,
+                onFrame = session?.let { stream ->
+                    { samples: ShortArray, size: Int ->
+                        stream.accept(samples, size)
+                        val now = System.currentTimeMillis()
+                        if (now - partialAt >= 300) {
+                            partialAt = now
+                            val text = runCatching { stream.text() }.getOrDefault("")
+                            if (text.isNotBlank()) {
+                                lastPartial = text
+                                scope.launch { message = "正在听：$text" }
+                            }
+                        }
+                    }
+                },
+            )
+            val streamed = session?.let { runCatching { it.finishAndGetText(1_200) }.getOrDefault("") }
+                ?.ifBlank { lastPartial }
+                .orEmpty()
+            session?.close()
             recording = false
+            if (streamed.isNotBlank()) {
+                file?.delete()
+                result = streamed
+                message = null
+                return@launch
+            }
             if (file == null) {
                 message = "没有录到有效语音，请靠近麦克风再试"
                 return@launch

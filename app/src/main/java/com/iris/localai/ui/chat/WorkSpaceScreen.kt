@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.FolderZip
+import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Mic
@@ -111,6 +112,7 @@ fun WorkSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) {
             onToggle = viewModel::setPlanMode,
             onApprove = viewModel::approvePlan,
         )
+        ToolConfirmationCard(viewModel.toolConfirmation)
         if (messages.isEmpty()) {
             WorkEmptyState(
                 workspace = activeWorkspace,
@@ -144,6 +146,48 @@ fun WorkSpaceScreen(viewModel: ChatViewModel, modifier: Modifier = Modifier) {
             activeWorkspace = activeWorkspace,
         )
         PluginSlot("space.work.footer")
+    }
+}
+
+@Composable
+private fun ToolConfirmationCard(confirmation: com.iris.localai.agent.ToolConfirmation) {
+    val request by confirmation.request.collectAsStateWithLifecycle()
+    val current = request ?: return
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("工具执行确认", style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = "${current.tool} 请求执行以下调用：",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = current.arguments.ifBlank { "{}" },
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                maxLines = 6,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(onClick = { confirmation.confirm(true) }) { Text("允许本次") }
+                TextButton(onClick = { confirmation.confirm(false) }) { Text("拒绝") }
+            }
+            Text(
+                text = "不想再被询问时，可在「设置 › 智能体 › 工具」把该工具的权限改为允许或拒绝。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -427,6 +471,7 @@ private fun WorkComposer(
     var showConfig by remember { mutableStateOf(false) }
     var showVoice by remember { mutableStateOf(false) }
     var showFiles by remember { mutableStateOf(false) }
+    var showSubAgents by remember { mutableStateOf(false) }
     val attachments by viewModel.attachments.collectAsStateWithLifecycle()
     val attachmentError by viewModel.attachmentError.collectAsStateWithLifecycle()
 
@@ -598,6 +643,17 @@ private fun WorkComposer(
                         )
                     }
                     IconButton(
+                        onClick = { showSubAgents = true },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Hub,
+                            contentDescription = "子代理",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    IconButton(
                         onClick = { showConfig = true },
                         modifier = Modifier.size(36.dp),
                     ) {
@@ -692,7 +748,12 @@ private fun WorkComposer(
                 showVoice = false
             },
             onTranscribe = viewModel::transcribeVoice,
+            startStreaming = viewModel::startStreamingAsr,
         )
+    }
+
+    if (showSubAgents) {
+        SubAgentDialog(viewModel = viewModel, onDismiss = { showSubAgents = false })
     }
 
     if (showFiles) {

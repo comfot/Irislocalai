@@ -116,6 +116,9 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import java.util.Locale
 
+/** 流式期间展示格式重解析的最小间隔；结束（streaming=false）后立即全量解析。 */
+private const val STREAM_REPARSE_DELAY_MS = 100L
+
 @Composable
 internal fun WorkMessageList(
     messages: List<ChatMessage>,
@@ -290,7 +293,17 @@ private fun WorkAssistantMessage(
     renderPluginXml: suspend (String, String) -> String? = { _, _ -> null },
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    val display = remember(message.text) { AssistantMessageParser.parse(message.text) }
+    // 流式期间每个 delta 都变，AssistantMessageParser 多趟正则较重，限频重解析；
+    // LaunchedEffect 按 key 取消上一轮，实际以最后一次变化为准。
+    var display by remember { mutableStateOf(AssistantMessageParser.parse(message.text)) }
+    LaunchedEffect(message.text, streaming) {
+        if (!streaming) {
+            display = AssistantMessageParser.parse(message.text)
+        } else {
+            delay(STREAM_REPARSE_DELAY_MS)
+            display = AssistantMessageParser.parse(message.text)
+        }
+    }
     val displayText = display.mainText
     Box {
     Column(

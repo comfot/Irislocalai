@@ -11,6 +11,13 @@ enum class VoiceKind(val label: String) {
     STT("语音识别"),
 }
 
+/** 云端流式 ASR 厂商；每家协议不同，需各自实现。 */
+enum class StreamingAsrProvider(val label: String) {
+    VOLCENGINE("火山（豆包）"),
+    OPENAI("OpenAI Realtime"),
+    XFYUN("讯飞"),
+}
+
 enum class CloudVoiceProvider(val label: String, val defaultEndpoint: String) {
     OPENAI("OpenAI", "https://api.openai.com/v1"),
     MIMO("小米 MiMo", "https://api.xiaomimimo.com/v1"),
@@ -39,6 +46,8 @@ data class VoiceModelPack(
     val revision: String,
     val manifestAsset: String,
     val approximateBytes: Long,
+    /** 流式识别模型：只给开发者选项里的流式内核使用，不参与离线识别选包。 */
+    val streaming: Boolean = false,
 ) {
     val sizeLabel: String
         get() = when {
@@ -91,6 +100,17 @@ object VoiceModelCatalog {
             revision = "906992d326ebf0c5171cde675aa0902be9e5bc6c",
             manifestAsset = "voice/paraformer-zh-int8.json",
             approximateBytes = 228_000_000L,
+        ),
+        VoiceModelPack(
+            id = "streaming-paraformer",
+            kind = VoiceKind.STT,
+            title = "Paraformer 流式（中英）",
+            description = "sherpa-onnx 流式 Paraformer int8，边说边出字，支持中英混说",
+            repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+            revision = "8e40c43232a1c5c66c82111efc5820d3accca11b",
+            manifestAsset = "voice/streaming-paraformer-zh-en.json",
+            approximateBytes = 237_202_501L,
+            streaming = true,
         ),
     )
 

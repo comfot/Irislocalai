@@ -389,7 +389,7 @@ internal fun PluginUrlDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    text = "仅支持公网 HTTP/HTTPS，大小上限 64 MB。",
+                    text = "仅支持公网 HTTP/HTTPS，大小上限 256 MB。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

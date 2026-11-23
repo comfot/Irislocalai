@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.iris.localai.data.AppSettings
@@ -145,10 +146,10 @@ class TtsController(
         }
     }
 
+    /** TextToSpeech#getDefaultEngine 是实例方法，此处反射拿不到；改从系统设置读默认引擎包名。 */
     private fun defaultEngineName(): String? = runCatching {
-        TextToSpeech::class.java.getDeclaredMethod("getDefaultEngine")
-            .apply { isAccessible = true }
-            .invoke(null) as? String
+        Settings.Secure.getString(appContext.contentResolver, Settings.Secure.TTS_DEFAULT_SYNTH)
+            ?.takeIf { it.isNotBlank() }
     }.getOrNull()
 
     private fun attachSystemListener(instance: TextToSpeech) {

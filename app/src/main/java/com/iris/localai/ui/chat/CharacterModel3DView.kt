@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
 import android.util.Log
+import androidx.compose.ui.layout.onSizeChanged
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -28,6 +29,7 @@ import com.iris.localai.IrisApp
 import com.iris.localai.data.VrmMotionEngine
 import com.iris.localai.motion.HastMotionStore
 import com.iris.localai.motion.MotionBridge
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -49,6 +51,8 @@ internal fun CharacterModel3DView(
     accentHex: String?,
     dark: Boolean,
     portrait: Boolean = false,
+    arLook: Pair<Float, Float>? = null,
+    arWorld: ArWorldPose? = null,
     interactive: Boolean = true,
     modelRoot: String = "character_models",
     motionEndpoint: String = "",
@@ -71,6 +75,41 @@ internal fun CharacterModel3DView(
     var webView by remember { mutableStateOf<WebView?>(null) }
     LaunchedEffect(speaking, mouthAmplitude, webView) {
         applyCharacterMouth(webView, speaking, mouthAmplitude)
+    }
+    LaunchedEffect(arWorld, webView) {
+        val view = webView ?: return@LaunchedEffect
+        val pose = arWorld
+        while (true) {
+            if (pose == null) {
+                view.evaluateJavascript("window.irisAR&&window.irisAR.billboard()", null)
+            } else {
+                val m = pose.model.joinToString(",", "[", "]") { it.toString() }
+                val v = pose.view.joinToString(",", "[", "]") { it.toString() }
+                val p = pose.projection.joinToString(",", "[", "]") { it.toString() }
+                val up = pose.worldUp.joinToString(",", "[", "]") { it.toString() }
+                view.evaluateJavascript(
+                    "window.irisAR&&window.irisAR.world($m,$v,$p,${pose.modelHeightMeters.toDouble()},$up)",
+                    null,
+                )
+            }
+            delay(33)
+        }
+    }
+    LaunchedEffect(arLook, webView) {
+        val view = webView ?: return@LaunchedEffect
+        val look = arLook
+        // 页面加载完成后 window.irisAR 才存在；周期性重发，避免首次下发丢失。
+        while (true) {
+            if (look == null) {
+                view.evaluateJavascript("window.irisAR&&window.irisAR.clear()", null)
+            } else {
+                view.evaluateJavascript(
+                    "window.irisAR&&window.irisAR.look(${look.first.toDouble()}, ${look.second.toDouble()})",
+                    null,
+                )
+            }
+            delay(500)
+        }
     }
     val motionEnabled = previewVrmaUrl == null && (resolvedEndpoint.isNotBlank() || vrmaEnabled)
     DisposableEffect(motionEnabled) {
@@ -155,7 +194,9 @@ internal fun CharacterModel3DView(
             webView = null
             releaseModelWebView(view)
         },
-        modifier = modifier,
+        modifier = modifier.onSizeChanged { size ->
+            Log.d("Character3D", "arView size=${size.width}x${size.height}")
+        },
     )
 }
 

@@ -25,3 +25,8 @@ local.properties
 
 # 素材加工工作目录
 /work/
+
+# PRoot rootfs、设备镜像与本地探测工具等环境产物
+/rootfs/
+/build-tools/
+/init_boot_backup.img
