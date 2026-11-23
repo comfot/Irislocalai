@@ -1,6 +1,6 @@
 # 宿主 API 参考
 
-IRIS LocalAI 为插件提供三类扩展：
+IrisMoew 为插件提供三类扩展：
 
 1. 注册入口：settings_entry、navigation、plugin_slot、toolbox_ui、Hook、AI Provider。
 2. 宿主组件：HostChat、HostCharacter3DView、HostModelPicker，以及基础 Compose DSL。

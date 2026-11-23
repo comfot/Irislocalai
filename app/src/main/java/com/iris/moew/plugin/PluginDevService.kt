@@ -233,7 +233,7 @@ class PluginDevService(
     }
 
     fun capabilities(): JsonObject = buildJsonObject {
-        put("host", "IRIS LocalAI")
+        put("host", "IrisMoew")
         putJsonObject("versions") {
             put("plugin_api", 1)
             put("host_api", HOST_API_VERSION)

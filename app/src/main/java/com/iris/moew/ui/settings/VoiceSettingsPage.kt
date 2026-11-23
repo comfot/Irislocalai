@@ -161,7 +161,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                         }
                         Button(
                             onClick = {
-                                viewModel.testSystemTts("你好，这是 IRIS LocalAI 的语音测试。")
+                                viewModel.testSystemTts("你好，这是 IrisMoew 的语音测试。")
                             },
                             enabled = ttsStatus == SystemTtsStatus.READY,
                         ) { Text("测试朗读") }
@@ -227,7 +227,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                viewModel.testLocalTts("你好，这是 IRIS LocalAI 的本地语音测试。")
+                                viewModel.testLocalTts("你好，这是 IrisMoew 的本地语音测试。")
                             },
                         ) { Text("测试本地合成") }
                     }
@@ -370,7 +370,7 @@ internal fun VoiceSettingsPage(viewModel: VoiceViewModel = viewModel()) {
                             Text("选择克隆音频")
                         }
                         TextButton(
-                            onClick = { viewModel.testCloudTts("你好，这是 IRIS LocalAI 的云端语音测试。") },
+                            onClick = { viewModel.testCloudTts("你好，这是 IrisMoew 的云端语音测试。") },
                         ) { Text("测试合成") }
                     }
                     cloudTest?.let {

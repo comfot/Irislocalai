@@ -270,7 +270,7 @@ private fun SettingsHome(
         }
         item {
             Text(
-                text = "IRIS LocalAI 0.1.0 · 本地 AI 工作台",
+                text = "IrisMoew 0.1.0 · 本地 AI 工作台",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -304,7 +304,7 @@ private fun SettingsHeader(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                text = "IRIS LocalAI",
+                text = "IrisMoew",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,

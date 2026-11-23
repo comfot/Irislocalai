@@ -695,7 +695,7 @@ internal fun AboutPage() {
     SettingsPage {
         AppIconHeader()
         SettingsCard("应用") {
-            InfoRow("名称", "IRIS LocalAI")
+            InfoRow("名称", "IrisMoew")
             InfoRow("版本", "0.1.0")
             InfoRow("包名", "com.iris.moew")
             InfoRow("形态", "单模块应用")
@@ -727,7 +727,7 @@ private fun AppIconHeader() {
     ) {
         Image(
             painter = painterResource(R.drawable.ic_app_logo),
-            contentDescription = "IRIS LocalAI 图标",
+            contentDescription = "IrisMoew 图标",
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(88.dp)

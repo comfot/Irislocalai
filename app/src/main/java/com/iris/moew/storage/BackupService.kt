@@ -202,7 +202,9 @@ class BackupService(
     }
 
     private fun validateManifest(manifest: JsonObject) {
-        require((manifest["app"] as? JsonPrimitive)?.contentOrNull == APP_NAME) { "不是 IRIS 备份文件" }
+        val app = (manifest["app"] as? JsonPrimitive)?.contentOrNull
+        // "IRIS LocalAI" 是更名前（applicationId com.iris.localai）的备份标识，需继续接受。
+        require(app == APP_NAME || app == LEGACY_APP_NAME) { "不是 IrisMoew 备份文件" }
         val schema = (manifest["schema"] as? JsonPrimitive)?.intOrNull ?: 0
         require(schema in 1..SCHEMA) { "不支持的备份格式版本：$schema" }
     }
@@ -435,7 +437,8 @@ class BackupService(
     }
 
     private companion object {
-        const val APP_NAME = "IRIS LocalAI"
+        const val APP_NAME = "IrisMoew"
+        const val LEGACY_APP_NAME = "IRIS LocalAI"
         const val SCHEMA = 1
         const val MANIFEST = "manifest.json"
         const val CHARACTERS_INDEX = "characters/index.json"

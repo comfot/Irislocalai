@@ -111,7 +111,7 @@ fun AppSettings.withThemePreset(preset: ThemePreset): AppSettings = copy(
 object ThemePresetCodec {
 
     const val SCHEMA = 1
-    const val APP = "IRIS LocalAI"
+    const val APP = "IrisMoew"
 
     private val pretty = Json { prettyPrint = true }
 

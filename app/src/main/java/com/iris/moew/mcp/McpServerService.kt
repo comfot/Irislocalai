@@ -139,7 +139,7 @@ class McpServerService(
                         putJsonObject("tools") { put("listChanged", false) }
                     }
                     putJsonObject("serverInfo") {
-                        put("name", "IRIS LocalAI")
+                        put("name", "IrisMoew")
                         put("version", "0.1.0")
                     }
                 }

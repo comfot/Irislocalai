@@ -157,7 +157,7 @@ private fun writeText(context: Context, uri: Uri, text: String): Result<Unit> = 
 }
 
 private const val SAMPLE = """{
-  "app": "IRIS LocalAI",
+  "app": "IrisMoew",
   "schema": 1,
   "name": "雾青玻璃",
   "style": "glass",

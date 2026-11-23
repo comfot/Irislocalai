@@ -8,13 +8,13 @@ suite: builtin
 
 ## 主题创作
 
-主题预设是 IRIS LocalAI 的外观 JSON（schema 1），由用户在 设置 › 主题 右上角导入。
+主题预设是 IrisMoew 的外观 JSON（schema 1），由用户在 设置 › 主题 右上角导入。
 
 格式：
 
 ```json
 {
-  "app": "IRIS LocalAI",
+  "app": "IrisMoew",
   "schema": 1,
   "name": "雾青玻璃",
   "style": "glass",

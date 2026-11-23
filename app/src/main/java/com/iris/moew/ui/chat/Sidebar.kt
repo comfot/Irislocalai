@@ -139,7 +139,7 @@ fun Sidebar(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("IRIS LocalAI", style = MaterialTheme.typography.titleLarge)
+                    Text("IrisMoew", style = MaterialTheme.typography.titleLarge)
                     Text(
                         text = "$spaceLabel · ${inSpace.size} 个会话",
                         style = MaterialTheme.typography.labelSmall,

@@ -44,7 +44,7 @@ class McpClient(
             put("protocolVersion", "2025-06-18")
             putJsonObject("capabilities") { }
             putJsonObject("clientInfo") {
-                put("name", "IRIS LocalAI")
+                put("name", "IrisMoew")
                 put("version", "0.1.0")
             }
         }
